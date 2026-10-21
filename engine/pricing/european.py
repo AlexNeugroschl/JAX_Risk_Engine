@@ -196,7 +196,8 @@ def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarra
     """`[S, D]` option NPVs on every path and date (0 from expiry on), in `arithmetic` (the
     curves' own format, float64 or float32, by default); `variances` `[D]` from
     `variance_on_path`."""
-    alive = np.asarray([v > 0.0 for v in variances])
+    # Expiry is a date, not a volatility test: a live zero-variance option has intrinsic value.
+    alive = np.asarray(times) < terms.expiry_time
     arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
     return _european_cube(terms, schedule, times, disc, index, fixings,
                           np.asarray(variances, dtype=arithmetic.dtype), alive, arithmetic)

@@ -176,8 +176,14 @@ def hull_white_matching_zeta(a: float, hagan: "Sigma", last: float) -> "Sigma":
 def H(a: float, t: jax.Array, shift=0.0) -> jax.Array:
     """H(t) = (1-exp(-a*t))/a + shift, with the a -> 0 limit H(t) = t + shift
     (`Lgm1fParametrization::H`, its `shift_` added to the parametrization's own)."""
-    a_safe = jnp.where(a == 0.0, 1.0, a)
-    return jnp.where(t > 0.0, jnp.where(a == 0.0, t, (1.0 - jnp.exp(-a_safe * t)) / a_safe), 0.0) + shift
+    t = jnp.maximum(jnp.asarray(t), 0.0)
+    x = a * t
+    small = jnp.abs(x) < 1e-4
+    # The series preserves both derivatives at zero reversion. A constant `where(a == 0)`
+    # branch gives the right value but silently returns zero reversion sensitivities.
+    series = 1.0 + x * (-0.5 + x * (1.0 / 6.0 + x * (-1.0 / 24.0 + x / 120.0)))
+    safe = jnp.where(small, 1.0, x)
+    return t * jnp.where(small, series, -jnp.expm1(-safe) / safe) + shift
 
 
 def H_prime(a: float, t: jax.Array) -> jax.Array:

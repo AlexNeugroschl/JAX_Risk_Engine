@@ -174,8 +174,9 @@ errors, cold/compile/warm times, memory availability, observed output devices, d
 exact reproduction settings and finite-reference sampling diagnostics together. Both bounded
 workloads smoke-checked on CPU and the RTX 5060, with unavailable TPU cases and failed precision
 targets retained; no warm compilation. The [execution plan and outcome](details/comparison-report.md)
-describe the checks and limitations. This completes tooling, not target-device qualification,
-native-unit proof, larger-count research or cluster scaling.
+describe the checks and limitations. This completed the first comparison tool. The follow-through now includes local native
+lowering/traces and larger-count research; target-device qualification, idle performance
+and cluster scaling remain open. [Measured results](../../compliance/precision-research/2026-10-20/README.md).
 
 INT8, additional multi-pass methods/Qwix integration and reduced-precision today's PV or
 Greeks are outside this deadline, not prerequisites or promised new capabilities. FP4,
@@ -188,7 +189,21 @@ shown right on that target device ([I-121](known-issues.md#i-121)), and native F
 execution path verified ([I-97](known-issues.md#i-97), I-121). Cluster claims additionally need
 scaling measured there ([I-61](known-issues.md#i-61)); a single-device report does not wait for it.
 **Size.** L.
-**Details.** [details/precision.md](details/precision.md).
+**FP16/FP8 reliability follow-through (2026-10-20).** FP16 comparison, independent
+storage/compute policies, independent reference diagnostics, explicit seeds, bounded
+measurement and resumable model/market/grid campaigns are implemented. All eleven original
+acceptance records are refreshed. Selected single-swap market risk reaches 4,194,304
+scenarios over 32 seeds; exposure reaches 262,144 paths over 16 seeds under both models,
+with disjoint stress/grid holdouts. Native lowerings and twelve warm engine traces are
+recorded on the RTX 5060, not H100. Many reduced-precision figures fail the unchanged A-11;
+the [research report](../../compliance/precision-research/2026-10-20/README.md) publishes limits and failures rather than promoting
+experimental rows. Remaining work is domain-specific policy qualification, independent
+sampling/grid convergence, H100/TPU execution and controlled equal-accuracy timing
+([I-122](known-issues.md#i-122)). Retain FP32/FP64 wherever required figures fail.
+Supported intervals remain F-10.
+
+**Details.** [details/precision.md](details/precision.md);
+[native execution and numerical reliability plan](details/native-fp8-reliability.md).
 
 <a id="f-09"></a>
 ### F-09 — ORE's XML input files as a run request

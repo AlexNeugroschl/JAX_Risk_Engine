@@ -50,6 +50,11 @@ dev = [
 gpu = [
     "jax[cuda13]>=0.10.2,<0.11",
 ]
+# Installation candidate at JAX's compatible libtpu version; target correctness remains I-121.
+tpu = [
+    "jax[tpu]>=0.10.2,<0.11",
+    "libtpu==0.0.42; sys_platform == 'linux'",
+]
 profiling = [
     # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`
     # viewer. Only needed to collect/view a `jax.profiler.trace` timeline of a

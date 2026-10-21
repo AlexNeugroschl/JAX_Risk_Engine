@@ -201,7 +201,8 @@ def test_workloads_reuse_campaign_definitions_and_capture_all_inputs():
     single = COMPARISON_CAMPAIGNS["comparison_single"]()
     assert set(WORKLOADS) == set(COMPARISON_CAMPAIGNS)
     assert set(COMPARISON_CAMPAIGNS).isdisjoint(CAMPAIGNS)
-    assert set(FORMATS) == {"float64"} | {c.precision.pricing.compute for c in portfolio.cases}
+    assert set(FORMATS) == {"float64"} | {c.precision.pricing.compute for c in portfolio.cases
+                                        if c.label.count(":") == 1}
     assert [t.trade_id for t in portfolio.trades] == [t.trade_id for t in base.trades]
     assert single.trades == portfolio.trades[:1]
     a, b = workload_settings(base), workload_settings(portfolio)
@@ -210,8 +211,47 @@ def test_workloads_reuse_campaign_definitions_and_capture_all_inputs():
     for case in portfolio.cases:
         policy = json_settings(case.precision)
         assert policy["simulation"]["compute"] == "float64"
-        assert case.precision.pricing.compute in case.label
+        varied = case.precision.pricing.storage if ":storage:" in case.label else case.precision.pricing.compute
+        assert varied in case.label
     json.dumps(b, allow_nan=False)
+
+
+def test_fp16_policies_isolate_storage_and_product_errors():
+    cases = {c.label: c.precision.pricing for c in COMPARISON_CAMPAIGNS["comparison_single"]().cases}
+    combined, compute, storage = (cases[k] for k in
+        ("pricing:float16", "pricing:compute:float16", "pricing:storage:float16"))
+    assert (combined.storage, combined.compute, combined.accumulate) == ("float16", "float16", "float32")
+    assert (compute.storage, compute.compute, compute.accumulate) == ("float32", "float16", "float32")
+    assert (storage.storage, storage.compute, storage.accumulate) == ("float16", "float64", "float64")
+
+
+def test_independent_reference_is_used_and_convergence_retained(tmp_path):
+    baseline = point(tmp_path, paths=32)
+    candidate = point(tmp_path, label="pricing:float16", paths=32, shift=.25)
+    reference = point(tmp_path, label="float64:reference", paths=128)
+    reference["seeds"] = reference["timing"]["seeds"] = [101, 102, 103]
+    reference["timing"]["snapshots"] = {str(s): f"seed-{s}.npz" for s in reference["seeds"]}
+    data = build_report([baseline, candidate, reference])
+    assert data["reference_uncertainty"][0]["independent"] is True
+    assert data["reference_convergence"][0]["seeds"] == [101, 102, 103]
+    assert data["equal_accuracy"]  # Independent truth allows even a single candidate count.
+    assert data["comparisons"][-1]["accuracy"] == "independent reference"
+    reference["timing"]["seeds"] = reference["seeds"] = [1, 2, 3]
+    data = build_report([baseline, candidate, reference])
+    assert data["reference_convergence"][0]["status"] == "invalid"
+    assert "shares seed" in data["reference_convergence"][0]["reason"]
+    assert not data["equal_accuracy"]
+
+
+@pytest.mark.parametrize("args", [
+    ["--reference-seeds", "1", "101", "102"], ["--reference-seeds", "101", "102"],
+    ["--reference-paths", "256"], ["--reference-seeds", "101", "102", "103", "--reference-paths", "129"],
+    ["--seeds", "1", "2", str(2 ** 32)], ["--policies", "storage", "storage"]])
+def test_invalid_reference_or_policy_is_refused_before_work(tmp_path, args):
+    with pytest.raises(SystemExit) as exc:
+        main(["--out", str(tmp_path), *args])
+    assert exc.value.code == 2
+    assert not list(tmp_path.iterdir())
 
 
 def test_metadata_does_not_scan_reference_submodule_contents(monkeypatch):

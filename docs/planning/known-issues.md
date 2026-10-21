@@ -16,38 +16,33 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Comparison tooling (F-07), 2026-10-20. **3,959 collected** with
-`.venv/Scripts/python.exe -m pytest --collect-only -q tests/`: the previous 3,916 plus
-41 new comparison tests and two ORE snapshot checks. Pricing/precision production code
-and the published acceptance evidence are unchanged. Every green run below printed its
-summary line:
+Implementation and research, 2026-10-20 (overnight verification completed 2026-10-21 UTC).
+**4,011 collected; 4,002 passed, 9 skipped, zero failures/errors.** The complete
+Windows CPU suite ran on one frozen Python source in fresh batches of eight, as disjoint
+`slow` / `not slow` partitions. All 503 batches have successful exits, exact JUnit counts
+and printed summaries; the audit verifies their unique union equals the complete collection.
+Earlier interrupted or failed attempts are excluded. [Audit and logs](../../compliance/precision-research/2026-10-20/README.md#refreshed-acceptance-evidence-and-validation).
 
-- **Windows fast tier**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 4 -m "not slow"`:
-  **3,707 passed, 3 skipped**, 9m24s. Includes the core ORE parity suites at their existing
-  tolerances. The full tier additionally contains the extended sweeps and process tests.
-- **All affected files**, comparison report, timing, precision evidence, precision harness,
-  market-risk ORE parity and import layering: **153 passed**, 28s. Includes the final
-  regression refusing different JAX Python versions, demonstrated failing before its fix.
-  The two registry regressions were first reproduced failing, then fixed by keeping comparison workloads
-  separate from acceptance campaigns; neither the evidence nor its tests were weakened.
-- **Linux CPU**, WSL2 Ubuntu with `JAX_PLATFORMS=cpu`: comparison, timing and environment
-  checks, **75 passed**, 27s, including both real process-isolated CLI workloads and the
-  final JAX-version join regression.
-- **Final expanded-sweep case in a fresh process**,
-  `tests/test_ore_parity_sweep.py::test_market_risk_is_ores[seed-39]`: **1 passed**, 34s,
-  including teardown, with its existing scenarios and tolerances.
-- **Local comparison smoke**: both workloads at 128/512 scenarios, seeds 1/2/3, CPU and
-  RTX 5060 through cuBLAS, FP64/FP32/BF16/both FP8; unavailable TPU cases explicit. See
-  [the record](../../compliance/precision-timing/comparison-local-2026-10-20.md) for all
-  results, settings and limits. Native-unit/target-device qualification remains I-97/I-121.
+- **Independent numerical checks:** all nine boundary regressions pass (eight failed on the
+  old engine); 460 FP64/FP32 golden arrays stay within existing margins. Held-out ORE
+  component checks cover 68 today NPVs and 68 trade cubes; both tested option grids agree
+  with ORE separately. Existing tolerances remain unchanged.
+- **Linux CPU tooling:** 82 passed, one skipped for qualification/comparison/harness tools;
+  after the final lifecycle changes, worker/oracle checks: six passed, one Windows-only skip.
+- **Local native execution:** 504 operation checks pass, 264 rows contain FP8 lowering;
+  twelve warm engine captures have finite figures, GPU events and zero in-capture recompiles.
+  This measures RTX 5060/cuBLAS, not H100 or TPU.
+- **Accuracy research:** all eleven original campaign records refreshed and reviewed;
+  selected single-swap market risk reaches 4,194,304 scenarios over 32 seeds, exposure
+  262,144 paths over 16 seeds under both models, plus stress and option-grid holdouts.
+  Many FP16/FP8 figures fail. Precision scope is explicit in Python/HTTP results.
 
-**The Windows full-suite attempt is incomplete, not green.** At `-n 6` it reported the
-same two acceptance-registry failures subsequently reproduced and fixed above. Its last
-worker reached `test_market_risk_is_ores[seed-39] (teardown)`, retained roughly 12 GiB
-resident, and continued consuming CPU without a summary line. It was interrupted after
-more than an hour; the final case then passed in isolation. No full-suite pass or exact
-pass count is inferred from the progress log. This is recorded under [I-27](#i-27).
-The isolated/scoped successes above do not claim a fresh full GPU, TPU or H100 qualification.
+The [research report](../../compliance/precision-research/2026-10-20/README.md) retains measurements, failures, source archives, traces,
+reproduction commands and the four changed canonical ceilings. All timings are diagnostic:
+concurrent work and a long host suspension prevent performance claims. H100 (no host
+available), TPU, repeated 16 GB CI qualification and cluster scaling remain unmeasured.
+The weekly/manual full CI job is configured but has not been run here. After promoting
+the reviewed records, all 127 precision-evidence/report checks pass with a printed summary.
 
 ## Summary
 
@@ -56,11 +51,11 @@ The isolated/scoped successes above do not claim a fresh full GPU, TPU or H100 q
 | [I-121](#i-121) | Never run on a TPU or an H100: no TPU install, float64 emulation and the device check unverified there | Medium | OPEN | Validation | Clusters |
 | [I-97](#i-97) | XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100 | Medium | PARTIAL | Performance | Clusters |
 | [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Clusters |
+| [I-122](#i-122) | FP16/FP8 accuracy qualification remains narrow; expanded comparison and campaign tools implemented | Medium | PARTIAL | Validation | Precision research |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-120](#i-120) | The retired TraderX path (`/eod`) still ships, with its own pricers and its own defects | Medium | OPEN | API | Fix what exists |
 | [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
-| [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, H at small a·t | Low | OPEN | Correctness | Fix what exists |
-| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
+| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | PARTIAL | Tooling | Fix what exists |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
@@ -88,41 +83,7 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 
 ## Correctness
 
-<a id="i-104"></a>
-### I-104 — Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, H at small a·t
 
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
-project audit (AUD-08, AUD-11, AUD-12, AUD-14); confirmed in the code 2026-10-11
-
-**What is wrong.** Three narrow cases, each a number off on an input the engine accepts (a
-fourth, Theta's add-back of a coupon fixing inside a long roll at 0%, went on 2026-10-18 with the
-add-back itself, which ORE's sensitivity analytic does not make, I-116):
-
-- **A zero-variance European before expiry is 0 on the paths.** `european_cube`
-  (`engine/pricing/european.py`) marks a date alive by `variance > 0`, but expiry is a date.
-  Under `ConstantVariance` with a zero volatility the option's discounted intrinsic value is
-  dropped. (`ForwardVariance`, the default, floors the variance, so it never meets this.)
-- **A bond between its maturity and a delayed last payment is 0.** A coupon period may pay
-  after its accrual end (`CouponPeriod.payment_date`), so the last coupon can pay after
-  `maturity_date`, which must equal the last accrual end; `value_on`
-  (`engine/pricing/cube.py`) values the bond at 0 from `maturity_date` on, and the redemption
-  is paid on `maturity_date` though the coupon beside it is paid later. A weekend maturity
-  with a Monday payment loses that coupon for two days: a Theta date or exposure date there.
-- **The LGM's H(t) cancels at small a·t.** `engine.models.lgm.H` computes (1 − exp(−a t))/a;
-  the host's twin (`engine.models.cam`) uses −expm1(−a t)/a. The relative error is about
-  ε/(a t): 2e-3 in float32 at a = 0.01 and a one-day t, its effect on a path's log discount
-  of float32's own rounding size. float64 is unaffected at the reversions used.
-
-**Reach.** Configurations no test, demo or default uses: zero volatility under
-`ConstantVariance`, explicit bond payment dates after maturity; and float32 runs, by about one
-rounding.
-
-**Current handling.** None.
-
-**To close.** Liveness from the expiry date, the Bachelier formula taking zero variance (it
-does); a bond valued until its last payment, the redemption's payment date stated and checked
-against ORE's bond; H by `expm1`, host and JAX alike, with the a → 0 limit for its derivative.
-A test per case; the golden snapshot within the margin.
 
 <a id="i-54"></a>
 ### I-54 — No swaption smile: options away from the money read the ATM vol
@@ -187,6 +148,11 @@ the precision report names each format's execution. Speed: under XLA's default e
 FP8 runs emulated on its float16 units.
 
 **Current handling.** As above; the precision report says native or emulated per format.
+`jax-risk-worker --gpu-gemm cublas` selects the route before JAX starts; comparison workers
+select it automatically for GPU FP8. Extended local checks pass 504 operations with 264
+observed FP8 lowerings; twelve warm workload traces establish actual GPU execution with
+zero in-capture recompiles. [Artifacts and scope](../../compliance/precision-research/2026-10-20/README.md#native-execution-evidence).
+No H100 host was available, so neither emitter is qualified there.
 
 **To close.** The device check on H100 under both emitters (and on each new jax); the XLA
 reports filed; native FP8 under XLA's default emitter once its Triton code is right, or a
@@ -207,8 +173,8 @@ research timing
 **What is wrong.** The root README targets a TPU pod slice, and the research targets Ironwood and
 H100, but every run so far has been on a CPU and on one consumer GPU, the RTX 5060.
 
-- **No TPU install.** `pyproject.toml` has a `gpu` extra and no `tpu` one, and no TPU
-  environment is qualified against `constraints.txt`.
+- **TPU install not qualified.** The `tpu` extra now pins the JAX-compatible libtpu 0.0.42
+  installation candidate; no TPU environment or numerical execution has been qualified.
 - **float64 emulation unverified.** A TPU emulates float64. The engine's fixed stages
   (calibration, today's values, Greeks, reductions; A-10) run in float64, and so does the level
   of every kernel in difference form. Nobody knows whether the emulation gives the engine's
@@ -222,14 +188,50 @@ H100, but every run so far has been on a CPU and on one consumer GPU, the RTX 50
 **Reach.** Every figure of a run on a TPU or an H100 is unverified, though none is known to be
 wrong. CPU and the RTX 5060 are verified ([verification status](#verification-status)).
 
-**Current handling.** None. The user guide covers CPU and NVIDIA GPU only.
+**Current handling.** The user guide now covers the TPU installation candidate and its
+qualification requirements. No target measurement is inferred from the package pin.
 
-**To close.** Add a `tpu` extra at the pinned jax, and get `tests/test_environment.py` passing on
+**To close.** Install the pinned `tpu` candidate and get `tests/test_environment.py` passing on
 a TPU VM. Then, on a TPU and on an H100, run the device check, the full suite (split as
 [I-27](#i-27) requires), every ORE parity suite at its tolerance, and the golden snapshot
 against the CPU's within the margin (1e-10 at float64, 1e-4 at float32). Each difference found
 becomes a defect of its own, fixed before speed is measured ([I-61](#i-61)). A format shown
 right natively is marked native for that device, and the precision report says so.
+
+<a id="i-122"></a>
+### I-122 — FP16/FP8 precision limits remain specific to measured workloads
+
+**Severity:** Medium · **Status:** PARTIAL · **Category:** Validation · **Found:** 2026-10-20,
+review of all eleven compressed precision campaigns and the comparison registry
+
+**What is wrong.** Many reduced-precision figures fail A-11, and passing limits do not
+transfer automatically to other markets, models, pricing settings or sampling designs.
+The original acceptance campaigns stop at 16,384 exposure paths / 8,192 market-risk
+scenarios. New experimental studies reach 4,194,304 scenarios (single swap, 32 seeds)
+and 262,144 exposure paths (both IR models, 16 seeds), with stress and option-grid holdouts.
+These are bounded measured domains, not universal FP16/FP8 qualification. The large single
+swap has passing FP16 ES but failing mean/VaR figures; E4M3 passes none of its figures.
+
+**Reach.** Reduced-precision claims outside the archived domains. Precision acceptance
+does not establish sampling convergence, discretization error, model accuracy or supported
+confidence intervals. Native target qualification remains I-97/I-121.
+
+**Current handling.** FP16, separate storage/compute policies, explicit seed identities,
+independent FP64 reference diagnostics and isolated resumable campaigns are implemented.
+All eleven original records are refreshed without changing their configs or A-11; four
+ceilings moved. Larger/stress/grid results remain experimental. Runtime warnings retain
+per-figure settings/path limits and every Python/HTTP precision report states its empirical
+qualification scope. Market/model ranges and sampling design are not runtime lookup keys.
+Intervals remain unavailable without validated assumptions (I-111/F-10).
+
+**To close.** Extend the measured domains where a production use case needs them, including
+joint multicurrency oracle checks, near-cancelling portfolios and scenario-recalibrated
+option/grid refinements. Establish independent FP64 sampling/grid convergence and policy
+transfer on disjoint holdouts. Measure target-native accuracy and idle whole-job timing;
+use FP32/FP64 wherever the required figures fail. Broader evidence-domain keying requires
+measured false-transfer cases and regressions, not an inferred universal label. No
+tolerance relaxation or promise of universal FP8 accuracy.
+[Results](../../compliance/precision-research/2026-10-20/README.md); [remaining execution plan](details/native-fp8-reliability.md).
 
 <a id="i-117"></a>
 ### I-117 — ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations
@@ -534,7 +536,7 @@ and equity trades are [F-04](features.md#f-04).
 <a id="i-27"></a>
 ### I-27 — Long full-suite runs can hard-abort inside XLA or lose a worker process
 
-**Severity:** Medium · **Status:** OPEN · located, not root-caused · **Found:** 2026-09-17
+**Severity:** Medium · **Status:** PARTIAL · historical abort not root-caused · **Found:** 2026-09-17
 
 **What is wrong.** A long `pytest tests/` run has died with `Fatal Python error: Aborted` and
 no summary line, the crashing thread inside `jax/_src/compiler.py`
@@ -555,8 +557,7 @@ pointing at an empty directory).
 **Second hypothesis: memory.** On 2026-10-04 a Linux full run (Docker, 4 CPUs, `-n 4`, 25.2 GB)
 lost one xdist process with no traceback ("node down: Not properly terminated") inside an FP8
 storage test that passes alone at a 2.9 GB peak; the green rerun peaked at 24.2 GB (cgroup
-peak, page cache included). GitHub's 4-vCPU runner, where CI's `full` job runs with `-n auto`,
-has 16 GB.
+peak, page cache included). GitHub's 4-vCPU runner has 16 GB; its full job now uses bounded fresh batches instead of `-n auto`.
 
 **2026-10-04, three Linux full runs, none green** (see the verification status): one
 beside another container in the same Docker VM, 6 failed; one alone on a loaded host, the
@@ -611,31 +612,31 @@ processes at 7.8 GB (`tests/test_ore_xva_parity.py`'s simulation tests) and 8.8 
 (`tests/test_profiling_and_jit.py`'s Greeks compile counts). A Linux full run here now uses
 `-n 2`, and `-n auto` on a 16 GB CI runner would not fit.
 
-**2026-10-20, Windows CPU validation of the comparison tools.** A full `-n 6` attempt reached
-the expanded sweep's last case (`test_market_risk_is_ores[seed-39]`) in teardown but did not
-emit a summary; the worker retained roughly 12 GiB resident and the host had only 1.5 GiB
-available at one observation. It was interrupted after more than an hour. The same final
-case passed with teardown in 34s in a fresh process. The responsible cleanup operation is
-not established. The preceding slow seed-28 case also showed ORE repeatedly valuing the
-eight-trade, 128-scenario cube for its historical-VaR risk groups, while the oracle consumes
-the aggregate results. These are validation costs; the bounded comparison's warm jobs
-compiled nothing. The green fast tier and scoped reruns are in the verification status.
+**2026-10-20, bounded validation and owned workers.** `benchmarks.test_suite` runs all
+collected IDs in fresh batches of eight, retains exact JUnit/log evidence and requires
+successful exits and printed summaries. The final Windows CPU audit is complete:
+4,002 passed, 9 skipped across 4,011 unique IDs. Two known-bad repetitions
+both retain eight expected boundary failures and refuse `complete=true`.
 
-**Current handling.** Since 2026-10-04 no pool, and no executor thread, exists: HTTP tests
-start one engine worker, a separate process with no thread in the test process, and each
-module stops it when it ends (`tests/conftest.py`); a worker also exits once its parent is
-gone. If an abort recurs, the pool hypothesis is ruled out.
+Red-first lifecycle tests fix Unicode/disconnected-console pipe failures, descendant
+cleanup on timeout/normal exit, and the Windows venv-launcher attachment race (start
+suspended, attach to an owned kill-on-close job, then resume). ORE failure tracebacks
+also retained its CSV reader, masking calibration failures with Windows file-lock errors;
+the oracle now releases completed traceback frames before deleting its temporary files
+and preserves the original error. The real seed-35 case and the ownership regression pass.
+This does not establish the cause of earlier XLA aborts or every historical teardown hang.
 
-**To close.** Measure each xdist process's peak resident memory over a full run (Linux,
-`-n 4`) and the heaviest tests; if memory explains the deaths, lower `-n` for the `full` CI job
-or slim the heaviest fixtures. Then repeated clean full runs against a known-bad baseline,
-with `JAX_COMPILATION_CACHE_DIR` on an empty directory to rule the cache in or out; one green
-run proves nothing. Once the full tier fits CI's runner, run it on a schedule as well as by
-hand: it holds the slow ORE simulation tests (L4) and the worker tests, which no automatic run
-covers today (project audit, AUD-47). Also measure the expanded sweeps' cache growth and
-cleanup cost in bounded fresh-process batches. Investigate requesting only the ORE risk
-groups the oracle compares, proving the same trade P&L and aggregate VaR/ES against the
-unfiltered oracle before retaining any optimization; keep the scenarios and tolerances.
+**Current handling.** No executor pool exists. Benchmark child trees have explicit ownership
+on Windows/POSIX; each batch drops the process's compiler state on exit. CI's full job is
+weekly/manual, bounded, and retains hidden output directories even on failure. Its new
+configuration has not been exercised on the 16 GB hosted runner.
+
+**To close.** Demonstrate repeatable complete runs within that runner's memory limit,
+including repeated known-bad controls and explicit peak-memory evidence. Investigate any
+remaining XLA abort with a fresh compilation cache. Measure expanded sweeps' memory and
+ORE risk-group cost; any filtering optimization must preserve identical trade P&L and
+aggregate VaR/ES against the unfiltered oracle, with unchanged scenarios and tolerances.
+The [research archive](../../compliance/precision-research/2026-10-20/README.md) retains complete passing and negative-control evidence.
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker
@@ -763,6 +764,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 
 | ID | Fixed | Regression test |
 |---|---|---|
+| <a id="i-104"></a>I-104 | Zero-volatility live Europeans, delayed bond principal/coupon payment and small-reversion H(t), including zero-reversion derivatives, corrected; eight boundary checks failed before the fixes, all nine pass and golden arrays stay within existing margins (2026-10-20) | `tests/test_numerical_boundaries.py` |
 | <a id="i-01"></a>I-01 | Swap Delta/Gamma/Theta were silently absent from portfolio results | `tests/test_portfolio_gap_fixes.py::TestSwapGreeksReachThePortfolioPath` |
 | <a id="i-02"></a>I-02 | Bermudan Vega was never computed | `tests/test_portfolio_gap_fixes.py::TestBermudanVegaReachesThePortfolioPath` |
 | <a id="i-03"></a>I-03 | No per-instrument NPV | `tests/test_portfolio_gap_fixes.py::TestPerTradeBaseNpv` |

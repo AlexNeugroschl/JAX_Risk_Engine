@@ -105,6 +105,8 @@ class EqualAccuracy:
     float64_seconds: float
     paths: Optional[float]
     seconds: Optional[float]
+    reference_error: Optional[float] = None
+    reference_resolved: Optional[bool] = None
 
     @property
     def speedup(self) -> Optional[float]:
@@ -128,7 +130,7 @@ def _child(campaign: str, label: str, paths: int, seeds: Sequence[int], budget_d
     from tests.support.precision_campaigns import timing_campaign
 
     campaign = timing_campaign(campaign)
-    precision = Precision() if label == FLOAT64 else next(c.precision for c in campaign.cases if c.label == label)
+    precision = Precision() if label in (FLOAT64, "float64:reference") else next(c.precision for c in campaign.cases if c.label == label)
     budget = lgm_grid.induction_memory_budget()
     if budget_divisor:
         limit = _device_limit()
@@ -240,9 +242,11 @@ def execution_environment():
     root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
     for folder in ("benchmarks", "tests/support", "demos"):
-        for path in sorted((root / folder).glob("*.py")):
+        for path in sorted((root / folder).rglob("*.py")):
             digest.update(path.relative_to(root).as_posix().encode() + b"\0")
             digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    path = root / "tests/market_risk_support.py"
+    digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n"))
     versions = {name: importlib.metadata.version(name) for name in
                 ("jaxlib", "numpy", "scipy", "ml_dtypes", "open-source-risk-engine")}
     accelerator_libraries = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()
@@ -298,7 +302,8 @@ def run_case(campaign: str, label: str, paths: int, seeds: Sequence[int], budget
 # ---------------------------------------------------------------------------
 # Accuracy and equal accuracy
 # ---------------------------------------------------------------------------
-def figure_errors(timings: Sequence[CaseTiming], fixed: float) -> Dict[Tuple[str, int, str], float]:
+def figure_errors(timings: Sequence[CaseTiming], fixed: float,
+                  references: Optional[Sequence[CaseTiming]] = None) -> Dict[Tuple[str, int, str], float]:
     """`(case, paths, figure) -> error`: each figure's root mean square error over the seeds
     against the truth, root mean square over its varying entries, relative to its scale (see the
     module docstring). `fixed` is the share of the scale below which float64's spread holds an
@@ -306,7 +311,7 @@ def figure_errors(timings: Sequence[CaseTiming], fixed: float) -> Dict[Tuple[str
     import numpy as np
 
     timings = [t for t in timings if t.budget_divisor is None]
-    reference = [t for t in timings if t.case == FLOAT64]
+    reference = list(references) if references is not None else [t for t in timings if t.case == FLOAT64]
     largest = max(reference, key=lambda t: t.paths)
     errors = {}
     for figure, seeds in largest.figures.items():
@@ -353,10 +358,11 @@ def reached_at(errors: Sequence[Tuple[int, float]], target: float) -> Optional[f
     return None
 
 
-def equal_accuracy(timings: Sequence[CaseTiming], fixed: float) -> List[EqualAccuracy]:
+def equal_accuracy(timings: Sequence[CaseTiming], fixed: float,
+                   references: Optional[Sequence[CaseTiming]] = None) -> List[EqualAccuracy]:
     """Every case's cost at float64's accuracy, per figure and float64 path count but the
     largest (see the module docstring)."""
-    errors = figure_errors(timings, fixed)
+    errors = figure_errors(timings, fixed, references=references)
     plain = [t for t in timings if t.budget_divisor is None]
     by_case: Dict[str, List[CaseTiming]] = {}
     for t in sorted(plain, key=lambda t: t.paths):
@@ -364,17 +370,34 @@ def equal_accuracy(timings: Sequence[CaseTiming], fixed: float) -> List[EqualAcc
     reference = by_case[FLOAT64]
     rows = []
     for figure in sorted({f for _, _, f in errors}):
-        for target_timing in reference[:-1]:
+        for target_timing in (reference if references is not None else reference[:-1]):
             target = errors[(FLOAT64, target_timing.paths, figure)]
+            reference_error = resolved = None
+            if references is not None:
+                import numpy as np
+                largest = max(references, key=lambda t: t.paths)
+                values = np.asarray(largest.figures[figure])
+                mean = values.mean(axis=0)
+                scale = float(np.max(np.abs(mean)))
+                varying = np.max(np.stack([np.std(np.asarray(t.figures[figure]), axis=0, ddof=1)
+                                           for t in references]), axis=0) > fixed * scale
+                se = values.std(axis=0, ddof=1) / np.sqrt(len(values))
+                reference_error = float(np.sqrt(np.mean(se[varying] ** 2)) / scale)
+                # Engineering adequacy check on the finite reference, not a confidence bound:
+                # its empirical SE must be <=10% of the accuracy difference being resolved.
+                resolved = bool(np.isfinite(reference_error) and reference_error <= .1 * target)
             for case, runs in by_case.items():
                 if case == FLOAT64:
                     continue
                 measured = [(t.paths, errors[(case, t.paths, figure)]) for t in runs]
                 paths = reached_at(measured, target)
+                if resolved is False:
+                    paths = None
                 seconds = None
                 if paths is not None:
                     seconds = _log_interpolate(paths, [t.paths for t in runs], [t.warm for t in runs])
-                rows.append(EqualAccuracy(case, figure, target_timing.paths, target, target_timing.warm, paths, seconds))
+                rows.append(EqualAccuracy(case, figure, target_timing.paths, target, target_timing.warm, paths, seconds,
+                                          reference_error, resolved))
     return rows
 
 

@@ -28,7 +28,7 @@ change to a kernel it prices, from the repository's root, then regenerate the ev
 ```
 
 Timings belong to the device and machine named in each file. They establish compile reuse
-(none after a case's first seed), not a controlled comparison of speed. The 2026-10-16
+(none after a case's first seed), not a controlled comparison of speed. The 2026-10-20
 refresh includes concurrent CPU/GPU runs and a suspended long-running CPU campaign;
 its elapsed-time outliers must not be used for throughput claims. Dedicated hardware
 timing remains separate work.
@@ -66,3 +66,13 @@ campaigns do not: their trades, market, shifts and coarse grid, with the Bermuda
 and recalibrated under every scenario (I-112), in every combination they measure: the
 storage cases, each compute format to nearest, and the `rounding_market_risk` formats
 stochastically.
+
+All eleven campaigns were refreshed for engine digest `351a34c6d655168e` on 2026-10-20,
+preserving the original counts, seeds, products, policies and pricing settings. Nine are
+CPU records; `options` and `rounding_options` are GPU/cuBLAS records. Every warm recompile
+count is zero. Only four ceilings change: `compute_market_risk` Bermudan P&L for FP32 and
+BF16_3x falls from 8,192 to 2,048; `market_risk_calibrated` portfolio P&L for the same cases
+rises from 2,048 to 8,192. A-11 and the tests remain unchanged.
+The [review and research archive](../precision-research/2026-10-20/README.md) retains the
+exact changes, larger-count failures, held-out checks, complete source verification and
+reproduction artifacts. Its experimental records do not automatically enter acceptance.

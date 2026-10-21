@@ -2,7 +2,7 @@
 
 Market-risk product rounding, nearest versus stochastic per-path operands, matched draws; the pooled VaR and ES estimators remain unchanged.
 
-Kind: market_risk. Market: USD, the market-risk tests' sloped two-curve market (tests/market_risk_support.py). Seeds: 16 (1..16). Commit 0b4ec6768e39 (local changes: yes; engine digest 5483f49b9633b217), JAX 0.10.2 on cpu (cpu), 2026-10-20T00:15:10+00:00.
+Kind: market_risk. Market: USD, the market-risk tests' sloped two-curve market (tests/market_risk_support.py). Seeds: 16 (1..16). Commit 80273729fc80 (local changes: yes; engine digest 351a34c6d655168e), JAX 0.10.2 on cpu (cpu), 2026-10-20T21:38:21+00:00.
 
 Pricing settings (the evidence table's key, I-114): `bermudan_swaption` engine=LgmGrid nx=8 sx=3 model=fixed; `bond` engine=Discounting; `european_swaption` engine=Bachelier; `swap` engine=Discounting.
 
@@ -14,14 +14,14 @@ Coverage below is diagnostic Student t coverage, not available confidence bounds
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float16:nearest | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.03 |
-| pricing:compute:float16:stochastic | 0.0614 | trades/bond/PnL | 0.0614 | 0.0208 | 0.0187 | 1.57 | 0 | — | 0 | 0.04 |
-| pricing:compute:bfloat16:nearest | 0.35 | trades/bond/PnL | 0.35 | 0.0549 | 0.0874 | 1.67 | 0 | — | 0 | 0.03 |
-| pricing:compute:bfloat16:stochastic | 0.382 | trades/bond/PnL | 0.382 | 0.117 | 0.0937 | 1.72 | 0 | — | 0 | 0.04 |
-| pricing:compute:float8_e4m3fn:nearest | 6.67 | trades/bond/PnL | 6.67 | 0.472 | 1.65 | 3.09 | 0 | — | 0 | 0.03 |
-| pricing:compute:float8_e4m3fn:stochastic | 6.38 | trades/bond/PnL | 6.38 | 0.92 | 3.62 | 4.83 | 0 | — | 0 | 0.04 |
-| pricing:compute:float8_e5m2:nearest | 10.2 | trades/bond/PnL | 10.2 | 0.719 | 2.94 | 2.58 | 0 | — | 0 | 0.03 |
-| pricing:compute:float8_e5m2:stochastic | 16.6 | trades/bermudan/PnL | 16.6 | 1.74 | 11.1 | 6.31 | 0 | — | 0 | 0.04 |
+| pricing:compute:float16:nearest | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.04 |
+| pricing:compute:float16:stochastic | 0.0614 | trades/bond/PnL | 0.0614 | 0.0208 | 0.0187 | 1.57 | 0 | — | 0 | 0.06 |
+| pricing:compute:bfloat16:nearest | 0.35 | trades/bond/PnL | 0.35 | 0.0548 | 0.0874 | 1.67 | 0 | — | 0 | 0.04 |
+| pricing:compute:bfloat16:stochastic | 0.382 | trades/bond/PnL | 0.382 | 0.117 | 0.0937 | 1.72 | 0 | — | 0 | 0.06 |
+| pricing:compute:float8_e4m3fn:nearest | 6.67 | trades/bond/PnL | 6.67 | 0.472 | 1.65 | 3.09 | 0 | — | 0 | 0.04 |
+| pricing:compute:float8_e4m3fn:stochastic | 6.38 | trades/bond/PnL | 6.38 | 0.92 | 3.62 | 4.83 | 0 | — | 0 | 0.06 |
+| pricing:compute:float8_e5m2:nearest | 10.2 | trades/bond/PnL | 10.2 | 0.719 | 2.94 | 2.58 | 0 | — | 0 | 0.04 |
+| pricing:compute:float8_e5m2:stochastic | 16.6 | trades/bermudan/PnL | 16.6 | 1.74 | 11.1 | 6.31 | 0 | — | 0 | 0.06 |
 
 ### P&L attribution, 2048 scenarios
 
@@ -42,14 +42,14 @@ Against the float64 P&L on the same scenarios, over the seeds (A-11's statistics
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float16:nearest | 0.0753 | trades/bermudan/PnL | 0.0753 | 0.0133 | 0.0291 | 3.5 | 0 | — | 0 | 0.07 |
-| pricing:compute:float16:stochastic | 0.151 | trades/bermudan/PnL | 0.151 | 0.0475 | 0.0927 | 3.18 | 0 | — | 0 | 0.13 |
-| pricing:compute:bfloat16:nearest | 0.644 | trades/bermudan/PnL | 0.644 | 0.132 | 0.112 | 2.03 | 0 | — | 0 | 0.07 |
-| pricing:compute:bfloat16:stochastic | 0.881 | portfolio/PnL | 0.881 | 0.15 | 0.397 | 2.22 | 0 | — | 0 | 0.13 |
-| pricing:compute:float8_e4m3fn:nearest | 11.8 | trades/bermudan/PnL | 11.8 | 0.498 | 1.3 | 6.31 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e4m3fn:stochastic | 23.7 | trades/bermudan/PnL | 23.7 | 0.81 | 19.5 | 9.03 | 0 | — | 0 | 0.14 |
-| pricing:compute:float8_e5m2:nearest | 33.4 | trades/bermudan/PnL | 33.4 | 0.711 | 29.4 | 7.24 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e5m2:stochastic | 72.9 | trades/bermudan/PnL | 72.9 | 2.34 | 64.8 | 12.5 | 0 | — | 0 | 0.14 |
+| pricing:compute:float16:nearest | 0.0763 | trades/bermudan/PnL | 0.0763 | 0.0133 | 0.0311 | 3.51 | 0 | — | 0 | 0.13 |
+| pricing:compute:float16:stochastic | 0.152 | trades/bermudan/PnL | 0.152 | 0.0475 | 0.0941 | 3.23 | 0 | — | 0 | 0.19 |
+| pricing:compute:bfloat16:nearest | 0.645 | trades/bermudan/PnL | 0.645 | 0.132 | 0.115 | 2.03 | 0 | — | 0 | 0.13 |
+| pricing:compute:bfloat16:stochastic | 0.883 | portfolio/PnL | 0.883 | 0.15 | 0.398 | 2.22 | 0 | — | 0 | 0.18 |
+| pricing:compute:float8_e4m3fn:nearest | 11.8 | trades/bermudan/PnL | 11.8 | 0.498 | 1.3 | 6.31 | 0 | — | 0 | 0.13 |
+| pricing:compute:float8_e4m3fn:stochastic | 23.7 | trades/bermudan/PnL | 23.7 | 0.81 | 19.6 | 9.03 | 0 | — | 0 | 0.19 |
+| pricing:compute:float8_e5m2:nearest | 33.4 | trades/bermudan/PnL | 33.4 | 0.711 | 29.4 | 7.24 | 0 | — | 0 | 0.14 |
+| pricing:compute:float8_e5m2:stochastic | 72.9 | trades/bermudan/PnL | 72.9 | 2.34 | 64.8 | 12.5 | 0 | — | 0 | 0.20 |
 
 ### P&L attribution, 8192 scenarios
 

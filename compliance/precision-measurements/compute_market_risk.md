@@ -2,7 +2,7 @@
 
 The `market_risk` campaign's revaluation, each trade's matrix products in one compute format, accumulated and stored in float32 (the `float32` case is the accumulator's floor), the Bermudan's induction in difference form (2026-10-13). A format below float32 carries the operand every path shares in two terms; `<format>_1x` is its single pass (A-23).
 
-Kind: market_risk. Market: USD, the market-risk tests' sloped two-curve market (tests/market_risk_support.py). Seeds: 16 (1..16). Commit 0b4ec6768e39 (local changes: yes; engine digest 5483f49b9633b217), JAX 0.10.2 on cpu (cpu), 2026-10-20T00:12:18+00:00.
+Kind: market_risk. Market: USD, the market-risk tests' sloped two-curve market (tests/market_risk_support.py). Seeds: 16 (1..16). Commit 80273729fc80 (local changes: yes; engine digest 351a34c6d655168e), JAX 0.10.2 on cpu (cpu), 2026-10-20T21:33:24+00:00.
 
 Pricing settings (the evidence table's key, I-114): `bermudan_swaption` engine=LgmGrid nx=8 sx=3 model=fixed; `bond` engine=Discounting; `european_swaption` engine=Bachelier; `swap` engine=Discounting.
 
@@ -14,18 +14,18 @@ Coverage below is diagnostic Student t coverage, not available confidence bounds
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float32 | 0.00156 | trades/bermudan/PnL | 0.00156 | 2.24e-05 | 0.00156 | 233 | 0 | — | 0 | 0.02 |
-| pricing:compute:bfloat16_3x | 0.00167 | trades/bermudan/PnL | 0.00167 | 0.000174 | 0.00162 | 16.9 | 0 | — | 0 | 0.03 |
-| pricing:compute:tensorfloat32 | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.02 |
-| pricing:compute:tensorfloat32_1x | 0.0415 | trades/bermudan/PnL | 0.0415 | 0.0125 | 0.0231 | 30.8 | 0 | — | 0 | 0.02 |
-| pricing:compute:float16 | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.02 |
-| pricing:compute:float16_1x | 0.0415 | trades/bermudan/PnL | 0.0415 | 0.0125 | 0.0231 | 30.8 | 0 | — | 0 | 0.02 |
-| pricing:compute:bfloat16 | 0.35 | trades/bond/PnL | 0.35 | 0.0549 | 0.0874 | 1.67 | 0 | — | 0 | 0.03 |
-| pricing:compute:bfloat16_1x | 0.347 | trades/bond/PnL | 0.347 | 0.0968 | 0.269 | 68.4 | 0 | — | 0 | 0.02 |
-| pricing:compute:float8_e4m3fn | 6.67 | trades/bond/PnL | 6.67 | 0.472 | 1.65 | 3.09 | 0 | — | 0 | 0.03 |
-| pricing:compute:float8_e4m3fn_1x | 6.67 | trades/bond/PnL | 6.67 | 1.33 | 3.1 | 23.5 | 0 | — | 0 | 0.06 |
-| pricing:compute:float8_e5m2 | 10.2 | trades/bond/PnL | 10.2 | 0.719 | 2.94 | 2.58 | 0 | — | 0 | 0.03 |
-| pricing:compute:float8_e5m2_1x | 11.3 | trades/bermudan/PnL | 11.3 | 1.16 | 10.4 | 35.1 | 0 | — | 0 | 0.03 |
+| pricing:compute:float32 | 0.00201 | trades/bermudan/PnL | 0.00201 | 2.29e-05 | 0.00201 | 317 | 0 | — | 0 | 0.04 |
+| pricing:compute:bfloat16_3x | 0.00225 | trades/bermudan/PnL | 0.00225 | 0.000174 | 0.00222 | 22.9 | 0 | — | 0 | 0.05 |
+| pricing:compute:tensorfloat32 | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.04 |
+| pricing:compute:tensorfloat32_1x | 0.0417 | trades/bermudan/PnL | 0.0417 | 0.0125 | 0.0235 | 30.8 | 0 | — | 0 | 0.04 |
+| pricing:compute:float16 | 0.0395 | trades/bond/PnL | 0.0395 | 0.00638 | 0.0117 | 1.64 | 0 | — | 0 | 0.04 |
+| pricing:compute:float16_1x | 0.0417 | trades/bermudan/PnL | 0.0417 | 0.0125 | 0.0235 | 30.8 | 0 | — | 0 | 0.04 |
+| pricing:compute:bfloat16 | 0.35 | trades/bond/PnL | 0.35 | 0.0548 | 0.0874 | 1.67 | 0 | — | 0 | 0.04 |
+| pricing:compute:bfloat16_1x | 0.347 | trades/bond/PnL | 0.347 | 0.0968 | 0.269 | 68.4 | 0 | — | 0 | 0.04 |
+| pricing:compute:float8_e4m3fn | 6.67 | trades/bond/PnL | 6.67 | 0.472 | 1.65 | 3.09 | 0 | — | 0 | 0.05 |
+| pricing:compute:float8_e4m3fn_1x | 6.67 | trades/bond/PnL | 6.67 | 1.33 | 3.1 | 23.5 | 0 | — | 0 | 0.04 |
+| pricing:compute:float8_e5m2 | 10.2 | trades/bond/PnL | 10.2 | 0.719 | 2.94 | 2.58 | 0 | — | 0 | 0.04 |
+| pricing:compute:float8_e5m2_1x | 11.3 | trades/bermudan/PnL | 11.3 | 1.16 | 10.4 | 35.1 | 0 | — | 0 | 0.05 |
 
 ### P&L attribution, 2048 scenarios
 
@@ -44,24 +44,24 @@ Against the float64 P&L on the same scenarios, over the seeds (A-11's statistics
 | pricing:compute:float8_e4m3fn | 0.999296 | 0.007324 |
 | pricing:compute:float8_e4m3fn_1x | 0.998933 | 0.014160 |
 | pricing:compute:float8_e5m2 | 0.997382 | 0.011719 |
-| pricing:compute:float8_e5m2_1x | 0.992163 | 0.014648 |
+| pricing:compute:float8_e5m2_1x | 0.992166 | 0.014648 |
 
 ## 8192 paths
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float32 | 0.00905 | trades/bermudan/PnL | 0.00905 | 4.35e-05 | 0.00905 | 502 | 0 | — | 0 | 0.05 |
-| pricing:compute:bfloat16_3x | 0.00938 | trades/bermudan/PnL | 0.00938 | 0.000374 | 0.00936 | 52.7 | 0 | — | 0 | 0.09 |
-| pricing:compute:tensorfloat32 | 0.0753 | trades/bermudan/PnL | 0.0753 | 0.0133 | 0.0291 | 3.5 | 0 | — | 0 | 0.06 |
-| pricing:compute:tensorfloat32_1x | 0.212 | trades/bermudan/PnL | 0.212 | 0.0283 | 0.199 | 76.7 | 0 | — | 0 | 0.06 |
-| pricing:compute:float16 | 0.0753 | trades/bermudan/PnL | 0.0753 | 0.0133 | 0.0291 | 3.5 | 0 | — | 0 | 0.08 |
-| pricing:compute:float16_1x | 0.212 | trades/bermudan/PnL | 0.212 | 0.0283 | 0.199 | 76.2 | 0 | — | 0 | 0.06 |
-| pricing:compute:bfloat16 | 0.644 | trades/bermudan/PnL | 0.644 | 0.132 | 0.112 | 2.03 | 0 | — | 0 | 0.08 |
-| pricing:compute:bfloat16_1x | 3 | portfolio/PnL | 3 | 0.188 | 2.99 | 172 | 0 | — | 0 | 0.06 |
-| pricing:compute:float8_e4m3fn | 11.8 | trades/bermudan/PnL | 11.8 | 0.498 | 1.3 | 6.31 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e4m3fn_1x | 22 | trades/bermudan/PnL | 22 | 2.24 | 18.7 | 50.3 | 0 | — | 0 | 0.07 |
-| pricing:compute:float8_e5m2 | 33.4 | trades/bermudan/PnL | 33.4 | 0.711 | 29.4 | 7.24 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e5m2_1x | 52.7 | trades/bermudan/PnL | 52.7 | 1.04 | 49.5 | 70 | 0 | — | 0 | 0.07 |
+| pricing:compute:float32 | 0.0117 | trades/bermudan/PnL | 0.0117 | 4.47e-05 | 0.0117 | 683 | 0 | — | 0 | 0.10 |
+| pricing:compute:bfloat16_3x | 0.0128 | trades/bermudan/PnL | 0.0128 | 0.000374 | 0.0128 | 68.9 | 0 | — | 0 | 0.15 |
+| pricing:compute:tensorfloat32 | 0.0763 | trades/bermudan/PnL | 0.0763 | 0.0133 | 0.0311 | 3.5 | 0 | — | 0 | 0.12 |
+| pricing:compute:tensorfloat32_1x | 0.214 | trades/bermudan/PnL | 0.214 | 0.0283 | 0.201 | 76.6 | 0 | — | 0 | 0.11 |
+| pricing:compute:float16 | 0.0763 | trades/bermudan/PnL | 0.0763 | 0.0133 | 0.0311 | 3.51 | 0 | — | 0 | 0.13 |
+| pricing:compute:float16_1x | 0.214 | trades/bermudan/PnL | 0.214 | 0.0283 | 0.201 | 76.2 | 0 | — | 0 | 0.12 |
+| pricing:compute:bfloat16 | 0.645 | trades/bermudan/PnL | 0.645 | 0.132 | 0.115 | 2.03 | 0 | — | 0 | 0.13 |
+| pricing:compute:bfloat16_1x | 3 | portfolio/PnL | 3 | 0.188 | 2.99 | 172 | 0 | — | 0 | 0.11 |
+| pricing:compute:float8_e4m3fn | 11.8 | trades/bermudan/PnL | 11.8 | 0.498 | 1.3 | 6.31 | 0 | — | 0 | 0.14 |
+| pricing:compute:float8_e4m3fn_1x | 22 | trades/bermudan/PnL | 22 | 2.24 | 18.7 | 50.3 | 0 | — | 0 | 0.13 |
+| pricing:compute:float8_e5m2 | 33.4 | trades/bermudan/PnL | 33.4 | 0.711 | 29.4 | 7.24 | 0 | — | 0 | 0.13 |
+| pricing:compute:float8_e5m2_1x | 52.8 | trades/bermudan/PnL | 52.8 | 1.04 | 49.5 | 70 | 0 | — | 0 | 0.13 |
 
 ### P&L attribution, 8192 scenarios
 
@@ -80,5 +80,5 @@ Against the float64 P&L on the same scenarios, over the seeds (A-11's statistics
 | pricing:compute:float8_e4m3fn | 0.999356 | 0.004150 |
 | pricing:compute:float8_e4m3fn_1x | 0.998996 | 0.009155 |
 | pricing:compute:float8_e5m2 | 0.997624 | 0.006470 |
-| pricing:compute:float8_e5m2_1x | 0.992345 | 0.008423 |
+| pricing:compute:float8_e5m2_1x | 0.992346 | 0.008423 |
 

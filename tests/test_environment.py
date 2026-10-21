@@ -29,6 +29,7 @@ NUMERICAL_PACKAGES = ["jax", "jaxlib", "open-source-risk-engine", "numpy", "scip
 # GPU run computes with, and JAX refuses to load a plugin whose version is not jaxlib's.
 GPU_PLUGINS = sorted(canonicalize_name(d.metadata["Name"]) for d in distributions()
                      if canonicalize_name(d.metadata["Name"]).startswith("jax-cuda"))
+TPU_PLUGINS = ["libtpu"] if any(canonicalize_name(d.metadata["Name"]) == "libtpu" for d in distributions()) else []
 
 
 def _locked_versions():
@@ -53,7 +54,7 @@ def _declared_requirements():
 LOCKED = _locked_versions()
 
 
-@pytest.mark.parametrize("package", NUMERICAL_PACKAGES + GPU_PLUGINS)
+@pytest.mark.parametrize("package", NUMERICAL_PACKAGES + GPU_PLUGINS + TPU_PLUGINS)
 def test_installed_numerical_package_matches_lock(package):
     assert canonicalize_name(package) in LOCKED, f"{package} {version(package)} is installed but not pinned in constraints.txt"
     assert version(package) == LOCKED[canonicalize_name(package)], (

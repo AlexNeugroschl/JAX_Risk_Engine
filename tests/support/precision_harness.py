@@ -465,6 +465,9 @@ class Measurements:
         if (other.campaign, other.market, other.cases, other.seeds, other.replicates, other.settings) != (
                 self.campaign, self.market, self.cases, self.seeds, self.replicates, self.settings):
             raise ValueError("only measurements of one campaign, its cases, seeds and pricing settings merge")
+        if self.products != other.products or self.dates != other.dates or any(
+                self.environment.get(k) != other.environment.get(k) for k in ("engine", "jax", "backend", "devices")):
+            raise ValueError("measurement implementations, devices, products or dates differ")
         overlap = set(self.paths) & set(other.paths)
         if overlap:
             raise ValueError(f"path counts {sorted(overlap)} measured twice")
@@ -518,12 +521,50 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
         raise ValueError("the statistical error of a figure is its spread over seeds: give at least two")
     if len({c.label for c in cases}) != len(cases):
         raise ValueError("case labels name rows: they must be unique")
+    if len(set(seeds)) != len(seeds) or any(s < 0 or s >= 2 ** 32 for s in seeds):
+        raise ValueError("independent seed identities must be distinct uint32 values")
+    if not cases:
+        raise ValueError("at least one precision case is required")
+    from types import SimpleNamespace
+
+    # Retain only per-seed summaries. Holding every seed's scenarios and complete reference/
+    # candidate cubes simultaneously made the large-count experiment scale in memory with
+    # both path count AND seed count. Each seed now needs one reference and one candidate.
+    reference_figures = {}
+    values = {case.label: {} for case in cases}
+    reports = {case.label: {} for case in cases}
+    attribution = {case.label: [] for case in cases}
+    exercise = {case.label: [] for case in cases}
+    recompiles = {case.label: 0 for case in cases}
+    warm = {case.label: [] for case in cases}
     started = time.perf_counter()
-    inputs = {seed: campaign.scenarios(paths, seed) for seed in seeds}
-    reference = {seed: campaign.run(inputs[seed], Precision()) for seed in seeds}
-    reference_figures = {seed: campaign.figures(r) for seed, r in reference.items()}
-    progress(f"{campaign.name} {paths} paths: float64 reference, {len(seeds)} seeds, "
-             f"{time.perf_counter() - started:.1f}s")
+    for i, seed in enumerate(seeds):
+        inputs = campaign.scenarios(paths, seed)
+        reference = campaign.run(inputs, Precision())
+        reference_figures[seed] = campaign.figures(reference)
+        for case in cases:
+            precision = case.precision
+            if precision.rounding == "stochastic" or any(s.compute_rounding == "stochastic" for s in precision._stages()):
+                precision = dataclasses.replace(precision, rounding_seed=seed)
+            tick = time.perf_counter()
+            if i == 0:
+                result = campaign.run(inputs, precision)
+            else:
+                with count_compiles() as counter:
+                    result = campaign.run(inputs, precision)
+                recompiles[case.label] += sum(counter.values())
+            values[case.label][seed] = campaign.figures(result)
+            reports[case.label][seed] = SimpleNamespace(precision=result.precision)
+            if i:
+                warm[case.label].append(time.perf_counter() - tick)
+            row = _attribution_row(campaign, case, paths, {seed: reference}, {seed: result})
+            if row is not None:
+                attribution[case.label].append(row)
+            exercise[case.label].append(_exercise_rows(campaign, case, paths, {seed: reference}, {seed: result}))
+            del result
+        del reference, inputs
+        progress(f"{campaign.name} {paths} paths: seed {seed} ({i + 1}/{len(seeds)}), "
+                 f"{time.perf_counter() - started:.1f}s")
     figures = reference_figures[seeds[0]]
     out = Measurements(
         campaign=campaign.name, kind=campaign.kind, description=campaign.description, market=campaign.market_name,
@@ -533,30 +574,19 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
         environment=environment(),
         replicates=campaign.simulation.replicates if campaign.kind == "portfolio" else campaign.replicates)
     for case in cases:
-        started = time.perf_counter()
-        results, recompiles, warm = {}, 0, []
-        for i, seed in enumerate(seeds):
-            precision = case.precision
-            if precision.rounding == "stochastic" or any(s.compute_rounding == "stochastic" for s in precision._stages()):
-                precision = dataclasses.replace(precision, rounding_seed=seed)
-            tick = time.perf_counter()
-            if i == 0:
-                results[seed] = campaign.run(inputs[seed], precision)
-            else:
-                with count_compiles() as counter:
-                    results[seed] = campaign.run(inputs[seed], precision)
-                recompiles += sum(counter.values())
-                warm.append(time.perf_counter() - tick)
-        out.runs.append(CaseRun(case.label, paths, recompiles, statistics.median(warm)))
-        out.figures.extend(_figure_rows(campaign, case, paths, reference_figures,
-                                        {s: campaign.figures(r) for s, r in results.items()}))
-        out.coverage.extend(_coverage_rows(campaign, case, paths, reference_figures, results))
-        attribution = _attribution_row(campaign, case, paths, reference, results)
-        if attribution is not None:
-            out.attribution.append(attribution)
-        out.exercise.extend(_exercise_rows(campaign, case, paths, reference, results))
-        progress(f"{campaign.name} {paths} paths: {case.label}, {time.perf_counter() - started:.1f}s"
-                 f"{f', {recompiles} recompiles' if recompiles else ''}")
+        label = case.label
+        out.runs.append(CaseRun(label, paths, recompiles[label], statistics.median(warm[label])))
+        out.figures.extend(_figure_rows(campaign, case, paths, reference_figures, values[label]))
+        out.coverage.extend(_coverage_rows(campaign, case, paths, reference_figures, reports[label]))
+        rows = attribution[label]
+        if rows:
+            out.attribution.append(AttributionRow(label, paths,
+                tuple(v for row in rows for v in row.spearman),
+                tuple(v for row in rows for v in row.kolmogorov_smirnov)))
+        for group in zip(*exercise[label]):
+            shares = np.asarray([r.flipped for r in group])
+            out.exercise.append(dataclasses.replace(group[0], flipped=_floats(shares.mean(axis=0)),
+                                                     worst=_floats(shares.max(axis=0))))
     return out
 
 

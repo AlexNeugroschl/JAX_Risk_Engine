@@ -107,6 +107,22 @@ class TestCases:
 
 
 class TestMeasure:
+    def test_large_path_memory_does_not_grow_with_seed_count(self, monkeypatch):
+        """Only one seed's reference and current candidate may remain alive (I-122)."""
+        import weakref
+        refs = []
+        original = PortfolioCampaign.run
+        def run(campaign, scenarios, precision):
+            assert sum(r() is not None for r in refs) <= 1
+            result = original(campaign, scenarios, precision)
+            refs.append(weakref.ref(result))
+            return result
+        monkeypatch.setattr(PortfolioCampaign, "run", run)
+        campaign = _portfolio((Case("fp32", Precision.throughout("float32")),), seeds=(1, 2, 3, 4))
+        result = measure(campaign, 32)
+        assert result.seeds == (1, 2, 3, 4)
+        assert all(r() is None for r in refs)
+
     def test_a_float64_case_measures_exactly_zero(self, tiny):
         """The reference is the float64 run on the same paths: a case at float64 differs from
         it nowhere, so its every error is exactly 0 and its statistical error is the spread over

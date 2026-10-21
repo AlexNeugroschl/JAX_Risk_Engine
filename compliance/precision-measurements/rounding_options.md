@@ -2,7 +2,7 @@
 
 Rollback product rounding for Bermudans and Americans, nearest versus stochastic per-path operands, with long continuation values projected onto zero before wrapping. Shared operands retain two terms.
 
-Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 0b4ec6768e39 (local changes: yes; engine digest 5483f49b9633b217), JAX 0.10.2 on cpu (cpu), 2026-10-20T00:32:53+00:00.
+Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 80273729fc80 (local changes: yes; engine digest 351a34c6d655168e), JAX 0.10.2 on gpu (NVIDIA GeForce RTX 5060 Laptop GPU), 2026-10-20T22:36:49+00:00.
 
 Pricing settings (the evidence table's key, I-114): `american_swaption` engine=LgmGrid nx=8 sx=3 steps_per_year=24 model=fixed; `bermudan_swaption` engine=LgmGrid nx=8 sx=3 model=fixed.
 
@@ -14,16 +14,16 @@ Coverage below is diagnostic Student t coverage, not available confidence bounds
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float16:nearest | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.82 |
-| pricing:compute:float16:stochastic | 0.153 | trades/bermudan-receiver-cash/PFE_95 | 0.149 | 0.153 | 0.072 | 2.76 | 0 | — | 0 | 1.20 |
-| pricing:compute:tensorfloat32:nearest | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.63 |
-| pricing:compute:tensorfloat32:stochastic | 0.153 | trades/bermudan-receiver-cash/PFE_95 | 0.149 | 0.153 | 0.072 | 2.76 | 0 | — | 0 | 1.22 |
-| pricing:compute:bfloat16:nearest | 1.18 | trades/american-payer/EE_B | 1.18 | 0.478 | 1.18 | 54.8 | 0 | — | 0 | 0.68 |
-| pricing:compute:bfloat16:stochastic | 0.841 | trades/bermudan-payer-physical/EPE | 0.841 | 0.489 | 0.286 | 2.99 | 0 | — | 0 | 1.25 |
-| pricing:compute:float8_e4m3fn:nearest | 67.4 | trades/american-payer/EE_B | 67.4 | 6.9 | 67 | 57.1 | 0.00105 | — | 0 | 0.82 |
-| pricing:compute:float8_e4m3fn:stochastic | 28.7 | netting_set/EPE_B | 28.7 | 3.87 | 28.3 | 31.9 | 0.0071 | — | 0 | 1.21 |
-| pricing:compute:float8_e5m2:nearest | 40.6 | trades/american-payer/EE_B | 40.6 | 15 | 39.8 | 107 | 0.00236 | — | 0 | 0.79 |
-| pricing:compute:float8_e5m2:stochastic | 127 | netting_set/EPE_B | 127 | 12.2 | 127 | 54.5 | 0.0319 | — | 0 | 1.29 |
+| pricing:compute:float16:nearest | 0.279 | trades/american-payer/EPE | 0.279 | 0.154 | 0.269 | 23.6 | 0 | — | 0 | 2.08 |
+| pricing:compute:float16:stochastic | 0.153 | trades/bermudan-receiver-cash/PFE_95 | 0.149 | 0.153 | 0.0717 | 2.76 | 0 | — | 0 | 2.14 |
+| pricing:compute:tensorfloat32:nearest | 0.279 | trades/american-payer/EPE | 0.279 | 0.154 | 0.268 | 23.3 | 0 | — | 0 | 2.08 |
+| pricing:compute:tensorfloat32:stochastic | 0.153 | trades/bermudan-receiver-cash/PFE_95 | 0.149 | 0.153 | 0.0718 | 2.76 | 0 | — | 0 | 2.11 |
+| pricing:compute:bfloat16:nearest | 1.18 | trades/american-payer/EPE | 1.18 | 0.478 | 1.18 | 54.9 | 0 | — | 0 | 2.07 |
+| pricing:compute:bfloat16:stochastic | 0.838 | trades/bermudan-payer-physical/EPE | 0.838 | 0.489 | 0.285 | 2.99 | 0 | — | 0 | 2.12 |
+| pricing:compute:float8_e4m3fn:nearest | 67.4 | trades/american-payer/EE_B | 67.4 | 6.9 | 67 | 57.1 | 0.00105 | — | 0 | 2.07 |
+| pricing:compute:float8_e4m3fn:stochastic | 28.7 | netting_set/EPE_B | 28.7 | 3.87 | 28.3 | 31.9 | 0.0071 | — | 0 | 2.10 |
+| pricing:compute:float8_e5m2:nearest | 40.6 | trades/american-payer/EE_B | 40.6 | 15 | 39.8 | 107 | 0.00236 | — | 0 | 2.04 |
+| pricing:compute:float8_e5m2:stochastic | 127 | netting_set/EPE_B | 127 | 12.2 | 127 | 54.5 | 0.0319 | — | 0 | 2.08 |
 
 ### Exercise decisions flipped, 1024 paths
 
@@ -31,9 +31,9 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | `bermudan-payer-physical` | `bermudan-receiver-cash` | `american-payer` |
 |---|---|---|---|
-| pricing:compute:float16:nearest | 0.01% (0.10%) | 0.02% (0.20%) | 0.03% (0.10%) |
+| pricing:compute:float16:nearest | 0.01% (0.10%) | 0.02% (0.20%) | 0.04% (0.10%) |
 | pricing:compute:float16:stochastic | 0.00% (0.00%) | 0.02% (0.29%) | 0.03% (0.10%) |
-| pricing:compute:tensorfloat32:nearest | 0.01% (0.10%) | 0.02% (0.20%) | 0.03% (0.10%) |
+| pricing:compute:tensorfloat32:nearest | 0.01% (0.10%) | 0.02% (0.20%) | 0.04% (0.10%) |
 | pricing:compute:tensorfloat32:stochastic | 0.00% (0.00%) | 0.02% (0.29%) | 0.03% (0.10%) |
 | pricing:compute:bfloat16:nearest | 0.04% (0.20%) | 0.13% (0.39%) | 0.27% (0.68%) |
 | pricing:compute:bfloat16:stochastic | 0.09% (0.29%) | 0.13% (0.49%) | 0.23% (0.39%) |
@@ -46,16 +46,16 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float16:nearest | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.35 |
-| pricing:compute:float16:stochastic | 0.289 | trades/american-payer/NPV | 0.289 | 0.191 | 0.0907 | 2.66 | 0 | — | 0 | 2.38 |
-| pricing:compute:tensorfloat32:nearest | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.25 |
-| pricing:compute:tensorfloat32:stochastic | 0.289 | trades/american-payer/NPV | 0.289 | 0.191 | 0.0907 | 2.66 | 0 | — | 0 | 2.37 |
-| pricing:compute:bfloat16:nearest | 6.46 | trades/american-payer/EE_B | 6.46 | 0.831 | 6.46 | 83.7 | 0 | — | 0 | 1.44 |
-| pricing:compute:bfloat16:stochastic | 1.46 | trades/bermudan-payer-physical/EPE | 1.46 | 0.938 | 0.501 | 4.77 | 0 | — | 0 | 2.30 |
-| pricing:compute:float8_e4m3fn:nearest | 198 | trades/american-payer/EPE | 198 | 13.8 | 198 | 115 | 0 | — | 0 | 1.42 |
-| pricing:compute:float8_e4m3fn:stochastic | 132 | trades/american-payer/EEPE_B | 132 | 6.04 | 132 | 62.6 | 0.00548 | — | 0 | 2.40 |
-| pricing:compute:float8_e5m2:nearest | 177 | trades/american-payer/EE_B | 177 | 44.2 | 177 | 189 | 0.00121 | — | 0 | 1.42 |
-| pricing:compute:float8_e5m2:stochastic | 495 | trades/american-payer/EEPE_B | 495 | 26.9 | 495 | 132 | 0.0312 | — | 0 | 2.41 |
+| pricing:compute:float16:nearest | 0.811 | trades/american-payer/EE_B | 0.811 | 0.159 | 0.803 | 41.2 | 0 | — | 0 | 2.36 |
+| pricing:compute:float16:stochastic | 0.289 | trades/american-payer/NPV | 0.289 | 0.191 | 0.0908 | 3.12 | 0 | — | 0 | 2.42 |
+| pricing:compute:tensorfloat32:nearest | 0.811 | trades/american-payer/EE_B | 0.811 | 0.159 | 0.803 | 41.2 | 0 | — | 0 | 2.40 |
+| pricing:compute:tensorfloat32:stochastic | 0.289 | trades/american-payer/NPV | 0.289 | 0.191 | 0.0908 | 3.22 | 0 | — | 0 | 2.41 |
+| pricing:compute:bfloat16:nearest | 6.47 | trades/american-payer/EE_B | 6.47 | 0.831 | 6.46 | 83.3 | 0 | — | 0 | 2.54 |
+| pricing:compute:bfloat16:stochastic | 1.46 | trades/bermudan-payer-physical/EPE | 1.46 | 0.938 | 0.495 | 4.81 | 0 | — | 0 | 2.47 |
+| pricing:compute:float8_e4m3fn:nearest | 198 | trades/american-payer/EPE | 198 | 13.8 | 198 | 115 | 0 | — | 0 | 2.45 |
+| pricing:compute:float8_e4m3fn:stochastic | 132 | trades/american-payer/EEPE_B | 132 | 6.04 | 132 | 62.7 | 0.00548 | — | 0 | 2.54 |
+| pricing:compute:float8_e5m2:nearest | 177 | trades/american-payer/EE_B | 177 | 44.2 | 177 | 189 | 0.00121 | — | 0 | 2.40 |
+| pricing:compute:float8_e5m2:stochastic | 495 | trades/american-payer/EEPE_B | 495 | 26.9 | 495 | 132 | 0.0312 | — | 0 | 2.46 |
 
 ### Exercise decisions flipped, 4096 paths
 
@@ -63,9 +63,9 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | `bermudan-payer-physical` | `bermudan-receiver-cash` | `american-payer` |
 |---|---|---|---|
-| pricing:compute:float16:nearest | 0.01% (0.05%) | 0.01% (0.05%) | 0.03% (0.07%) |
+| pricing:compute:float16:nearest | 0.01% (0.05%) | 0.01% (0.05%) | 0.04% (0.10%) |
 | pricing:compute:float16:stochastic | 0.01% (0.05%) | 0.02% (0.10%) | 0.03% (0.07%) |
-| pricing:compute:tensorfloat32:nearest | 0.01% (0.05%) | 0.01% (0.05%) | 0.03% (0.07%) |
+| pricing:compute:tensorfloat32:nearest | 0.01% (0.05%) | 0.01% (0.05%) | 0.04% (0.10%) |
 | pricing:compute:tensorfloat32:stochastic | 0.01% (0.05%) | 0.02% (0.10%) | 0.03% (0.07%) |
 | pricing:compute:bfloat16:nearest | 0.04% (0.10%) | 0.07% (0.15%) | 0.25% (0.37%) |
 | pricing:compute:bfloat16:stochastic | 0.09% (0.17%) | 0.12% (0.20%) | 0.24% (0.34%) |
@@ -78,16 +78,16 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float16:nearest | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 3.85 |
-| pricing:compute:float16:stochastic | 0.727 | trades/bermudan-payer-physical/EE_B | 0.727 | 0.513 | 0.189 | 2.75 | 0 | — | 0 | 7.42 |
-| pricing:compute:tensorfloat32:nearest | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 4.11 |
-| pricing:compute:tensorfloat32:stochastic | 0.727 | trades/bermudan-payer-physical/EE_B | 0.727 | 0.513 | 0.189 | 2.75 | 0 | — | 0 | 7.74 |
-| pricing:compute:bfloat16:nearest | 44.6 | trades/american-payer/EPE | 44.6 | 1.69 | 44.5 | 148 | 0 | — | 0 | 4.49 |
-| pricing:compute:bfloat16:stochastic | 5.03 | trades/bermudan-payer-physical/EE_B | 5.03 | 1.24 | 2.54 | 7.24 | 0 | — | 0 | 8.16 |
-| pricing:compute:float8_e4m3fn:nearest | 1.65e+03 | trades/american-payer/EPE | 1.65e+03 | 32.2 | 1.65e+03 | 261 | 0 | — | 0 | 4.67 |
-| pricing:compute:float8_e4m3fn:stochastic | 891 | trades/american-payer/EPE | 891 | 14.2 | 890 | 166 | 0.00484 | — | 0 | 7.94 |
-| pricing:compute:float8_e5m2:nearest | 1.23e+03 | trades/american-payer/EPE | 1.23e+03 | 130 | 1.23e+03 | 597 | 0.000249 | — | 0 | 4.60 |
-| pricing:compute:float8_e5m2:stochastic | 3.3e+03 | trades/american-payer/EPE | 3.3e+03 | 108 | 3.3e+03 | 288 | 0.0301 | — | 0 | 7.92 |
+| pricing:compute:float16:nearest | 7 | trades/american-payer/EPE | 7 | 0.256 | 6.99 | 96.6 | 0 | — | 0 | 2.22 |
+| pricing:compute:float16:stochastic | 0.727 | trades/bermudan-payer-physical/EE_B | 0.727 | 0.513 | 0.216 | 3.6 | 0 | — | 0 | 2.22 |
+| pricing:compute:tensorfloat32:nearest | 6.98 | trades/american-payer/EPE | 6.98 | 0.256 | 6.97 | 95.9 | 0 | — | 0 | 2.17 |
+| pricing:compute:tensorfloat32:stochastic | 0.727 | trades/bermudan-payer-physical/EE_B | 0.727 | 0.513 | 0.225 | 3.74 | 0 | — | 0 | 2.20 |
+| pricing:compute:bfloat16:nearest | 44.6 | trades/american-payer/EPE | 44.6 | 1.69 | 44.5 | 148 | 0 | — | 0 | 2.21 |
+| pricing:compute:bfloat16:stochastic | 5.04 | trades/bermudan-payer-physical/EE_B | 5.04 | 1.24 | 2.56 | 7.21 | 0 | — | 0 | 2.20 |
+| pricing:compute:float8_e4m3fn:nearest | 1.65e+03 | trades/american-payer/EPE | 1.65e+03 | 32.2 | 1.65e+03 | 262 | 0 | — | 0 | 2.25 |
+| pricing:compute:float8_e4m3fn:stochastic | 891 | trades/american-payer/EPE | 891 | 14.2 | 890 | 166 | 0.00484 | — | 0 | 2.26 |
+| pricing:compute:float8_e5m2:nearest | 1.23e+03 | trades/american-payer/EPE | 1.23e+03 | 130 | 1.23e+03 | 597 | 0.000249 | — | 0 | 2.21 |
+| pricing:compute:float8_e5m2:stochastic | 3.3e+03 | trades/american-payer/EPE | 3.3e+03 | 108 | 3.3e+03 | 288 | 0.0301 | — | 0 | 2.22 |
 
 ### Exercise decisions flipped, 16384 paths
 
@@ -104,5 +104,5 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 | pricing:compute:float8_e4m3fn:nearest | 0.80% (0.99%) | 0.90% (1.01%) | 2.99% (3.16%) |
 | pricing:compute:float8_e4m3fn:stochastic | 1.50% (1.66%) | 1.95% (2.09%) | 7.65% (7.95%) |
 | pricing:compute:float8_e5m2:nearest | 0.93% (1.03%) | 1.92% (2.12%) | 8.20% (8.54%) |
-| pricing:compute:float8_e5m2:stochastic | 5.35% (5.58%) | 4.27% (4.49%) | 11.58% (11.91%) |
+| pricing:compute:float8_e5m2:stochastic | 5.35% (5.59%) | 4.27% (4.49%) | 11.58% (11.91%) |
 

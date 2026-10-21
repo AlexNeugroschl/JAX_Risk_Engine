@@ -86,6 +86,11 @@ block on Windows).
 
 ### On a GPU (Linux, or WSL2 on Windows)
 
+For H100 precision qualification, use the [native checks and reproducible accuracy
+commands](../../benchmarks/README.md#h100-native-qualification). FP8 benchmark workers
+select cuBLAS automatically; normal FP64 workers keep their existing emitter settings.
+An H100 claim requires H100 measurements, regardless of results on another GPU.
+
 The engine runs on an NVIDIA GPU through JAX's CUDA 13 plugin, the `gpu` extra. JAX publishes
 no CUDA build for native Windows, so on Windows it runs under WSL2. Verified on the
 reference machine's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2 Ubuntu 24.04
@@ -189,6 +194,19 @@ without `cd`-ing anywhere in particular. What the repository root buys you is th
 If you're using the project's own `.venv/` on Windows, replace `python` in the commands
 below with `.venv\Scripts\python.exe` (or activate the venv first with
 `.venv\Scripts\activate`). On Linux/macOS the interpreter is `.venv/bin/python`.
+
+### On a TPU VM (installation candidate)
+
+The `tpu` extra selects JAX 0.10.2 and libtpu 0.0.42, matching the installed JAX package's
+declared TPU dependency. Install on a Linux TPU VM with
+`python -m pip install -c constraints.txt -e ".[api,dev,tpu]"`, then run
+`python -m pytest tests/test_environment.py -q`. The libtpu pin is an installation
+candidate, **not a numerically qualified TPU runtime**. Validate FP64 fixed stages,
+ORE parity and the CPU golden comparison on the actual VM before any speed claims;
+native FP8 remains gated by target qualification (I-121).
+
+See the [libtpu package](https://pypi.org/project/libtpu/0.0.42/) and the
+[qualification tools](../../benchmarks/README.md). No TPU VM is provisioned by installing the extra.
 
 ## Running the demos
 
@@ -315,13 +333,17 @@ also guards [I-28](../planning/known-issues.md#i-28).
 ## Running the tests
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, in 8 processes
-.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite
+.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 2   # fast tier; choose concurrency by memory
+.venv/Scripts/python.exe -m benchmarks.test_suite --out .profile-out-full --batch-size 8  # complete suite
 .venv/Scripts/python.exe -m pytest tests/test_pricing.py -q      # one area while working on it
 ```
 
 (`.venv/bin/python` on Linux.) Use the virtualenv's interpreter: the system one lacks the API
-and schema dependencies.
+and schema dependencies. The full-suite runner collects every case under `tests/`,
+executes fresh batches, and retains logs, JUnit counts and a source manifest. Use an empty
+output directory; `complete=true` requires every collected case to finish successfully
+with a printed summary. It bounds process lifetime to prevent compiled state accumulating
+across the whole suite. It does not make an interrupted or failed run green.
 
 **The ORE parity sweeps** (`tests/test_ore_parity_sweep.py`) compare seeded random markets,
 portfolios and settings with ORE run in-process: the fast tier runs a fixed sample of seeds,
@@ -349,12 +371,12 @@ three things matter:
   after a fresh clone, or after a jax upgrade, pays the full compile. Point
   `JAX_COMPILATION_CACHE_DIR` elsewhere to keep it outside the tree; delete the directory
   to reset it, for example to measure cold compiles.
-- **`-n N` runs the tests in `N` processes** (`pytest-xdist`). Each takes 1.5–3 GB, so
-  choose `N` by memory, not cores: `-n auto` starts one per logical core, which on the
-  reference machine (24 threads, 32 GB) ran out of memory and failed tests with
-  `MemoryError`. `-n 8` is as fast there. `--dist loadscope` keeps each module on one
-  process, so its module-scoped fixtures (a portfolio run, a market-risk run) are computed
-  once, about 10% faster again.
+- **`-n N` runs the fast tests in `N` processes** (`pytest-xdist`). Choose concurrency
+  by available memory and measured peaks, not logical cores. Long-lived processes can grow
+  to 8–9 GB during the full suite despite cache clearing; use fresh batches for that tier.
+  `--dist loadscope` can reuse module fixtures but also keeps their compiled state together.
+
+The following timing table is historical; it does not size the current suite.
 
 Measured on the reference Windows machine on 2026-10-02 (2,254 fast-tier tests):
 
@@ -382,19 +404,18 @@ before committing. `--lf` reruns only what failed last time.
   and the process tests of `tests/test_engine_worker.py`), or
 - it takes 5 seconds or more.
 
-**ORE-parity tests are never marked slow**, however long they take
-(`tests/test_ore_*.py`, `tests/test_market_risk_ore_parity.py`). They are what the
-pinned versions protect, so they run on every push. The slow tier is mostly portfolio
-end-to-end runs, Bermudan Greeks, and compile-count checks. Give a new test the marker
-if it meets either rule. `--strict-markers` is on, so a misspelt marker fails collection
-and can't silently put a test in the wrong tier.
+**Fixed ORE-parity coverage runs in the fast tier**, including its configured sweep
+sample. Extended sweeps and the heavier distribution checks also run in the full tier;
+their `slow` markers preserve the push-time sample. `--strict-markers` is on, so misspelt
+markers fail collection.
 
 **CI.** [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) installs through
 `requirements.txt` (so with the pinned versions) on Linux, Python 3.11, and runs the fast
 tier on every push to `main` and every pull request, with `-n auto` (one process per core of
-the 4-core runner). The full suite is the `full` job, with `-n 2`: a full-suite process grows to
-8–9 GB, and four of them outgrew a 24 GB Linux VM (2026-10-11):
-start it by hand from the repository's Actions tab ("Run workflow"). Run it before
+the 4-core runner). The full suite is the `full` job, using fresh batches of eight,
+weekly on Monday and by manual dispatch from the Actions tab ("Run workflow"). Logs,
+JUnit and manifests are retained even on failure. The bounded configuration still needs
+repeatability/peak-memory qualification on that 16 GB hosted runner (I-27). Run it before
 merging anything that touches pricing, calibration or Greeks, and after upgrading a pin.
 CI does not check out the `reference/` submodules; the one test that reads
 `reference/traderX` skips without it.

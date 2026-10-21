@@ -90,6 +90,7 @@ class PrecisionReportSchema(BaseModel):
     replicates: int = 1
     uncertainty_method: str = "unavailable"
     interval: IntervalAvailability = Field(default_factory=IntervalAvailability)
+    qualification_scope: str = PrecisionReport.__dataclass_fields__["qualification_scope"].default
 
     @classmethod
     def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
@@ -99,7 +100,7 @@ class PrecisionReportSchema(BaseModel):
                    backend=report.backend, jax_version=report.jax_version, paths=report.paths,
                    paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()},
                    replicates=report.replicates, uncertainty_method=report.uncertainty_method,
-                   interval=report.interval)
+                   interval=report.interval, qualification_scope=report.qualification_scope)
 
 
 class RiskMetricsSchema(BaseModel):

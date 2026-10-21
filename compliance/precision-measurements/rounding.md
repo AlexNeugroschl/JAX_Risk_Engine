@@ -2,7 +2,7 @@
 
 FP8 product rounding on the linear portfolio, nearest versus stochastic per-path operands; shared operands retain two terms. Matched single-scramble draws; stochastic seed varies with the outer seed.
 
-Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 0b4ec6768e39 (local changes: yes; engine digest 5483f49b9633b217), JAX 0.10.2 on cpu (cpu), 2026-10-20T00:13:12+00:00.
+Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 80273729fc80 (local changes: yes; engine digest 351a34c6d655168e), JAX 0.10.2 on cpu (cpu), 2026-10-20T21:34:57+00:00.
 
 Pricing settings (the evidence table's key, I-114): `bond` engine=Discounting; `european_swaption` engine=Bachelier; `swap` engine=Discounting.
 
@@ -14,18 +14,18 @@ Coverage below is diagnostic Student t coverage, not available confidence bounds
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| simulation:compute:float8_e4m3fn:nearest | 4.11 | netting_set/EEPE_B | 4.11 | 3.25 | 1.92 | 7.91 | 0 | — | 0 | 0.05 |
-| simulation:compute:float8_e4m3fn:stochastic | 6.72 | netting_set/EEPE_B | 6.72 | 3.59 | 4.93 | 4.8 | 0 | — | 0 | 0.05 |
-| simulation:compute:float8_e5m2:nearest | 7.89 | netting_set/EEPE_B | 7.89 | 5.09 | 4.56 | 6.89 | 0 | — | 0 | 0.06 |
-| simulation:compute:float8_e5m2:stochastic | 15.3 | trades/swap-payer/EE_B | 15.3 | 5.13 | 13.1 | 20.1 | 0 | — | 0 | 0.05 |
-| market:compute:float8_e4m3fn:nearest | 5.46 | trades/european-payer/PFE_95 | 2.98 | 5.46 | 2.75 | 11 | 0 | — | 0 | 0.05 |
-| market:compute:float8_e4m3fn:stochastic | 5.66 | trades/european-receiver-otm-cash/PFE_95 | 4.24 | 5.66 | 2.75 | 11 | 0 | — | 0 | 0.05 |
-| market:compute:float8_e5m2:nearest | 7.74 | trades/swap-payer/EE_B | 7.74 | 6.05 | 7.13 | 23.9 | 0 | — | 0 | 0.05 |
-| market:compute:float8_e5m2:stochastic | 13.1 | trades/swap-payer/EE_B | 13.1 | 6.05 | 11.7 | 23.9 | 0 | — | 0 | 0.05 |
-| pricing:compute:float8_e4m3fn:nearest | 2.75 | netting_set/PFE_95 | 2.56 | 2.75 | 2.63 | 14.5 | 0 | — | 0 | 0.06 |
-| pricing:compute:float8_e4m3fn:stochastic | 3.31 | trades/bond/NPV | 3.31 | 2.55 | 2.38 | 9.86 | 0 | — | 0 | 0.06 |
-| pricing:compute:float8_e5m2:nearest | 25.8 | trades/swap-payer/PFE_95 | 5.67 | 25.8 | 25.8 | 103 | 0 | — | 0 | 0.06 |
-| pricing:compute:float8_e5m2:stochastic | 26.9 | trades/swap-payer/PFE_95 | 6.34 | 26.9 | 7.77 | 13.9 | 0 | — | 0 | 0.06 |
+| simulation:compute:float8_e4m3fn:nearest | 4.11 | netting_set/EEPE_B | 4.11 | 3.25 | 1.92 | 7.91 | 0 | — | 0 | 0.10 |
+| simulation:compute:float8_e4m3fn:stochastic | 6.72 | netting_set/EEPE_B | 6.72 | 3.59 | 4.93 | 4.8 | 0 | — | 0 | 0.10 |
+| simulation:compute:float8_e5m2:nearest | 7.89 | netting_set/EEPE_B | 7.89 | 5.09 | 4.56 | 6.89 | 0 | — | 0 | 0.11 |
+| simulation:compute:float8_e5m2:stochastic | 15.3 | trades/swap-payer/EE_B | 15.3 | 5.13 | 13.1 | 20.1 | 0 | — | 0 | 0.10 |
+| market:compute:float8_e4m3fn:nearest | 5.46 | trades/european-payer/PFE_95 | 2.98 | 5.46 | 2.75 | 11 | 0 | — | 0 | 0.10 |
+| market:compute:float8_e4m3fn:stochastic | 5.66 | trades/european-receiver-otm-cash/PFE_95 | 4.24 | 5.66 | 2.75 | 11 | 0 | — | 0 | 0.12 |
+| market:compute:float8_e5m2:nearest | 7.74 | trades/swap-payer/EE_B | 7.74 | 6.05 | 7.13 | 23.9 | 0 | — | 0 | 0.10 |
+| market:compute:float8_e5m2:stochastic | 13.1 | trades/swap-payer/EE_B | 13.1 | 6.05 | 11.7 | 23.9 | 0 | — | 0 | 0.10 |
+| pricing:compute:float8_e4m3fn:nearest | 2.75 | netting_set/PFE_95 | 2.56 | 2.75 | 2.63 | 14.5 | 0 | — | 0 | 0.10 |
+| pricing:compute:float8_e4m3fn:stochastic | 3.31 | trades/bond/NPV | 3.31 | 2.55 | 2.38 | 9.86 | 0 | — | 0 | 0.11 |
+| pricing:compute:float8_e5m2:nearest | 25.8 | trades/swap-payer/PFE_95 | 5.67 | 25.8 | 25.8 | 103 | 0 | — | 0 | 0.10 |
+| pricing:compute:float8_e5m2:stochastic | 26.9 | trades/swap-payer/PFE_95 | 6.34 | 26.9 | 7.77 | 13.9 | 0 | — | 0 | 0.11 |
 
 ### Exercise decisions flipped, 1024 paths
 
@@ -50,18 +50,18 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| simulation:compute:float8_e4m3fn:nearest | 14.4 | trades/swap-payer/EPE | 14.4 | 7.82 | 13.3 | 14.4 | 0 | — | 0 | 0.07 |
-| simulation:compute:float8_e4m3fn:stochastic | 20.7 | trades/swap-payer/EPE | 20.7 | 5.7 | 17.3 | 8.1 | 0 | — | 0 | 0.07 |
-| simulation:compute:float8_e5m2:nearest | 27 | trades/swap-payer/EPE | 27 | 11.5 | 25.8 | 42.2 | 0 | — | 0 | 0.07 |
-| simulation:compute:float8_e5m2:stochastic | 68.1 | trades/swap-payer/EPE | 68.1 | 13.5 | 64.2 | 38.1 | 0 | — | 0 | 0.07 |
-| market:compute:float8_e4m3fn:nearest | 13.8 | trades/bond/PFE_95 | 5.81 | 13.8 | 8.38 | 32.1 | 0 | — | 0 | 0.07 |
-| market:compute:float8_e4m3fn:stochastic | 14.9 | trades/european-receiver-otm-cash/PFE_95 | 11.2 | 14.9 | 8.02 | 32.1 | 0 | — | 0 | 0.07 |
-| market:compute:float8_e5m2:nearest | 43 | trades/swap-payer/EPE | 43 | 14.3 | 42.7 | 57 | 0 | — | 0 | 0.07 |
-| market:compute:float8_e5m2:stochastic | 77.1 | trades/swap-payer/EPE | 77.1 | 14.3 | 73.4 | 57 | 0 | — | 0 | 0.07 |
-| pricing:compute:float8_e4m3fn:nearest | 9.45 | trades/swap-payer/EPE | 9.45 | 5.44 | 8.58 | 35 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e4m3fn:stochastic | 11 | trades/swap-payer/EPE | 11 | 5.04 | 4.72 | 23.2 | 0 | — | 0 | 0.09 |
-| pricing:compute:float8_e5m2:nearest | 72.7 | trades/swap-payer/PFE_95 | 33.4 | 72.7 | 72.7 | 291 | 0 | — | 0 | 0.08 |
-| pricing:compute:float8_e5m2:stochastic | 74.4 | trades/swap-payer/PFE_95 | 25.6 | 74.4 | 12 | 30.5 | 0 | — | 0 | 0.10 |
+| simulation:compute:float8_e4m3fn:nearest | 14.4 | trades/swap-payer/EPE | 14.4 | 7.82 | 13.3 | 14.4 | 0 | — | 0 | 0.15 |
+| simulation:compute:float8_e4m3fn:stochastic | 20.7 | trades/swap-payer/EE_B | 20.7 | 5.7 | 17.3 | 8.1 | 0 | — | 0 | 0.15 |
+| simulation:compute:float8_e5m2:nearest | 27 | trades/swap-payer/EPE | 27 | 11.5 | 25.8 | 42.2 | 0 | — | 0 | 0.14 |
+| simulation:compute:float8_e5m2:stochastic | 68.1 | trades/swap-payer/EE_B | 68.1 | 13.5 | 64.2 | 38.1 | 0 | — | 0 | 0.15 |
+| market:compute:float8_e4m3fn:nearest | 13.8 | trades/bond/PFE_95 | 5.81 | 13.8 | 8.38 | 32.1 | 0 | — | 0 | 0.15 |
+| market:compute:float8_e4m3fn:stochastic | 14.9 | trades/european-receiver-otm-cash/PFE_95 | 11.2 | 14.9 | 8.02 | 32.1 | 0 | — | 0 | 0.14 |
+| market:compute:float8_e5m2:nearest | 43 | trades/swap-payer/EE_B | 43 | 14.3 | 42.7 | 57 | 0 | — | 0 | 0.14 |
+| market:compute:float8_e5m2:stochastic | 77.1 | trades/swap-payer/EE_B | 77.1 | 14.3 | 73.4 | 57 | 0 | — | 0 | 0.14 |
+| pricing:compute:float8_e4m3fn:nearest | 9.45 | trades/swap-payer/EE_B | 9.45 | 5.44 | 8.58 | 35 | 0 | — | 0 | 0.13 |
+| pricing:compute:float8_e4m3fn:stochastic | 11 | trades/swap-payer/EE_B | 11 | 5.04 | 4.72 | 23.2 | 0 | — | 0 | 0.16 |
+| pricing:compute:float8_e5m2:nearest | 72.7 | trades/swap-payer/PFE_95 | 33.4 | 72.7 | 72.7 | 291 | 0 | — | 0 | 0.13 |
+| pricing:compute:float8_e5m2:stochastic | 74.4 | trades/swap-payer/PFE_95 | 25.6 | 74.4 | 12 | 30.5 | 0 | — | 0 | 0.16 |
 
 ### Exercise decisions flipped, 4096 paths
 
@@ -86,18 +86,18 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| simulation:compute:float8_e4m3fn:nearest | 54 | trades/swap-payer/EE_B | 54 | 15.7 | 53.1 | 26.5 | 0 | — | 0 | 0.17 |
-| simulation:compute:float8_e4m3fn:stochastic | 55.1 | trades/swap-payer/EE_B | 55.1 | 14.4 | 51.2 | 18.1 | 0 | — | 0 | 0.17 |
-| simulation:compute:float8_e5m2:nearest | 136 | trades/european-payer/EE_B | 136 | 33.3 | 133 | 107 | 0 | — | 0 | 0.16 |
-| simulation:compute:float8_e5m2:stochastic | 223 | trades/swap-payer/EE_B | 223 | 32.6 | 213 | 107 | 1.08e-06 | — | 0 | 0.17 |
-| market:compute:float8_e4m3fn:nearest | 44.2 | trades/european-payer/PFE_95 | 18.1 | 44.2 | 38.6 | 102 | 0 | — | 0 | 0.15 |
-| market:compute:float8_e4m3fn:stochastic | 44.9 | trades/european-payer/PFE_95 | 33 | 44.9 | 29.4 | 102 | 0 | — | 0 | 0.16 |
-| market:compute:float8_e5m2:nearest | 147 | trades/swap-payer/EE_B | 147 | 45.9 | 147 | 184 | 0 | — | 0 | 0.15 |
-| market:compute:float8_e5m2:stochastic | 243 | trades/swap-payer/EE_B | 243 | 45.9 | 240 | 184 | 8.27e-06 | — | 0 | 0.15 |
-| pricing:compute:float8_e4m3fn:nearest | 29.8 | trades/swap-payer/EE_B | 29.8 | 14 | 29.2 | 86.2 | 0 | — | 0 | 0.16 |
-| pricing:compute:float8_e4m3fn:stochastic | 23.7 | trades/swap-payer/EE_B | 23.7 | 12.3 | 13.5 | 49.4 | 0 | — | 0 | 0.20 |
-| pricing:compute:float8_e5m2:nearest | 213 | trades/swap-payer/PFE_95 | 115 | 213 | 213 | 853 | 0 | — | 0 | 0.16 |
-| pricing:compute:float8_e5m2:stochastic | 217 | trades/swap-payer/PFE_95 | 47.8 | 217 | 57 | 76 | 0 | — | 0 | 0.21 |
+| simulation:compute:float8_e4m3fn:nearest | 54 | trades/swap-payer/EPE | 54 | 15.7 | 53.1 | 26.5 | 0 | — | 0 | 0.26 |
+| simulation:compute:float8_e4m3fn:stochastic | 55.1 | trades/swap-payer/EE_B | 55.1 | 14.4 | 51.2 | 18.1 | 0 | — | 0 | 0.28 |
+| simulation:compute:float8_e5m2:nearest | 136 | trades/european-payer/EE_B | 136 | 33.3 | 133 | 107 | 0 | — | 0 | 0.26 |
+| simulation:compute:float8_e5m2:stochastic | 223 | trades/swap-payer/EE_B | 223 | 32.6 | 213 | 107 | 1.08e-06 | — | 0 | 0.27 |
+| market:compute:float8_e4m3fn:nearest | 44.2 | trades/european-payer/PFE_95 | 18.1 | 44.2 | 38.6 | 102 | 0 | — | 0 | 0.26 |
+| market:compute:float8_e4m3fn:stochastic | 44.9 | trades/european-payer/PFE_95 | 33 | 44.9 | 29.4 | 102 | 0 | — | 0 | 0.26 |
+| market:compute:float8_e5m2:nearest | 147 | trades/swap-payer/EE_B | 147 | 45.9 | 147 | 184 | 0 | — | 0 | 0.27 |
+| market:compute:float8_e5m2:stochastic | 243 | trades/swap-payer/EE_B | 243 | 45.9 | 240 | 184 | 8.27e-06 | — | 0 | 0.26 |
+| pricing:compute:float8_e4m3fn:nearest | 29.8 | trades/swap-payer/EE_B | 29.8 | 14 | 29.2 | 86.2 | 0 | — | 0 | 0.26 |
+| pricing:compute:float8_e4m3fn:stochastic | 23.7 | trades/swap-payer/EE_B | 23.7 | 12.3 | 13.5 | 49.4 | 0 | — | 0 | 0.30 |
+| pricing:compute:float8_e5m2:nearest | 213 | trades/swap-payer/PFE_95 | 115 | 213 | 213 | 853 | 0 | — | 0 | 0.25 |
+| pricing:compute:float8_e5m2:stochastic | 217 | trades/swap-payer/PFE_95 | 47.8 | 217 | 57 | 76 | 0 | — | 0 | 0.29 |
 
 ### Exercise decisions flipped, 16384 paths
 

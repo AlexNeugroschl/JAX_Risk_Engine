@@ -63,9 +63,9 @@ class BondConfig:
 
     def __post_init__(self):
         _validate_identity(self.trade_id, self.evaluation_date)
-        if self.maturity_date <= self.evaluation_date:
+        if self.last_payment_date <= self.evaluation_date:
             raise BondPricingError(
-                f"maturity_date {_iso(self.maturity_date)} is not after "
+                f"maturity_date {_iso(self.maturity_date)} (last payment {_iso(self.last_payment_date)}) is not after "
                 f"evaluation_date {_iso(self.evaluation_date)}. A matured bond has "
                 f"no remaining cashflow to discount; its value is a settlement "
                 f"question, not a pricing one."
@@ -101,6 +101,16 @@ class BondConfig:
         """Whether this is the zero-coupon single-cashflow case."""
         return not self.coupon_schedule
 
+    @property
+    def redemption_date(self) -> ORE.Date:
+        """Principal pays with the final coupon, including its explicit payment adjustment."""
+        return self.coupon_schedule[-1].payment() if self.coupon_schedule else self.maturity_date
+
+    @property
+    def last_payment_date(self) -> ORE.Date:
+        """The final outstanding payment date, distinct from the last accrual end."""
+        return max((p.payment() for p in self.coupon_schedule), default=self.maturity_date)
+
 
 def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> None:
     """Structure and contiguity of an explicit coupon schedule, as
@@ -127,8 +137,8 @@ def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> 
     if schedule and schedule[-1].end_date != maturity:
         raise BondPricingError(
             f"the coupon schedule ends {_iso(schedule[-1].end_date)} but maturity_date "
-            f"is {_iso(maturity)}. The redemption and the final coupon must fall on the "
-            f"same date; a disagreement means the two describe different instruments."
+            f"is {_iso(maturity)}. The last accrual end must equal maturity; "
+            f"the final coupon and redemption pay on its payment date."
         )
 
 
@@ -173,5 +183,6 @@ def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
                 period.start_date, period.end_date,
             )
             flows.append((payment, cfg.coupon_rate * accrual_fraction))
-    flows.append((cfg.maturity_date, cfg.redemption_fraction))
+    if cfg.redemption_date > cfg.evaluation_date:
+        flows.append((cfg.redemption_date, cfg.redemption_fraction))
     return tuple(flows)

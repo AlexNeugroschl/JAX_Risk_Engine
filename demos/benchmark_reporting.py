@@ -5,8 +5,11 @@ No engine execution lives here; the benchmark workload and its timing are in mai
 import csv
 import dataclasses
 import json
+import os
 import re
+import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -23,38 +26,87 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _terminal(line):
+    """A disconnected or limited-encoding console must not stop draining a worker's pipe."""
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        encoding = getattr(stream, "encoding", None)
+        if encoding:
+            line = line.encode(encoding, errors="backslashreplace").decode(encoding)
+        stream.write(line)
+        stream.flush()
+    except (OSError, ValueError, UnicodeError):
+        pass  # The UTF-8 file is the persistent log; console output is best effort.
+
+
+def _stop_worker(process, job):
+    """Stop this worker and its ordinary descendants, including inherited output pipes."""
+    if os.name == "nt":
+        job.close()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.kill()
+    process.wait()
+
+
 def launch_worker(command, destination, timeout):
     """Stream the child's messages to both the terminal and a persistent log."""
     destination.mkdir(parents=True, exist_ok=True)
     with (destination / "worker.log").open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, encoding="utf-8", errors="replace", bufsize=1)
+        if __package__:
+            from .worker_process import WindowsJob
+        else:  # demo_gpu_scaling.py also supports direct script execution.
+            from worker_process import WindowsJob
+        job = WindowsJob() if os.name == "nt" else None
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                       env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                                       start_new_session=os.name != "nt",
+                                       creationflags=0x4 if job is not None else 0)  # CREATE_SUSPENDED
+        except BaseException:
+            if job is not None:
+                job.close()
+            raise
+        try:
+            if job is not None:
+                job.attach(process)
+                job.resume(process)
+        except BaseException:
+            process.kill()
+            process.wait()
+            process.stdout.close()
+            job.close()
+            raise
 
         def copy_output():
             for line in process.stdout:
                 log.write(line)
                 log.flush()
-                print(line, end="", flush=True)
+                _terminal(line)
 
         thread = threading.Thread(target=copy_output, daemon=True)
         thread.start()
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+            _stop_worker(process, job)
             code = 124
-            print(f"Worker timed out after {timeout}s; partial results are retained.", flush=True)
+            _terminal(f"Worker timed out after {timeout}s; partial results are retained.\n")
         except BaseException:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            thread.join()
+            _stop_worker(process, job)
             raise
-        thread.join()
+        finally:
+            # A worker that exits while a descendant holds stdout open is finished too.
+            _stop_worker(process, job)
+            thread.join()
+            process.stdout.close()
     return code
 
 

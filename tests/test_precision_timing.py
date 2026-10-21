@@ -65,6 +65,14 @@ class TestReachedAt:
 
 
 class TestEqualAccuracy:
+    def test_uncertain_independent_reference_cannot_produce_a_speedup(self):
+        reference = _timing("float64:reference", 1024, [[1.], [2.], [3.]])
+        timings = [_timing(FLOAT64, 64, [[1.], [2.], [3.]]),
+                   _timing("fp8", 64, [[1.], [2.], [3.]], warm=.1)]
+        (row,) = equal_accuracy(timings, fixed=1e-9, references=[reference])
+        assert row.reference_resolved is False and row.reference_error > .1 * row.target
+        assert row.paths is None and row.speedup is None
+
     def test_the_speedup_is_float64s_time_over_the_cases_where_its_error_reaches_float64s(self):
         """float64's error falls as 1/N, the case's too but twice as large: it reaches float64's
         error at 1,024 paths at twice the paths, and runs four times faster per path."""

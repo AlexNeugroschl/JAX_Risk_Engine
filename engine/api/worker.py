@@ -133,6 +133,8 @@ def main(argv=None) -> None:
     parser.add_argument("--distributed", action="store_true",
                         help="one worker of a set on every host of a pod slice (engine.api.hosts): process 0 "
                              "serves the queue and every host runs each job")
+    parser.add_argument("--gpu-gemm", choices=("default", "cublas"), default=None,
+                        help="GPU matrix-product route, set before JAX starts; cublas enables the native FP8 route")
     parser.add_argument("--poll-seconds", type=float, default=None,
                         help=f"idle wait between looks at the queue (default {POLL_SECONDS} s, "
                              f"{DISTRIBUTED_POLL_SECONDS} s with --distributed)")
@@ -141,9 +143,24 @@ def main(argv=None) -> None:
         DISTRIBUTED_POLL_SECONDS if args.distributed else POLL_SECONDS
     # Before JAX is imported (`serve` imports it after taking the lock), which reads these.
     os.environ.update(compilation_cache_environment(args.queue, os.environ))
+    os.environ.update(gemm_environment(args.gpu_gemm, os.environ))
     os.environ.update(deterministic_kernels_environment(os.environ))
     sys.exit(serve(args.queue, lock_path=args.lock, parent_pid=args.parent_pid, poll_seconds=poll,
                    distributed=args.distributed))
+
+
+def gemm_environment(route, environ) -> dict:
+    """Explicit process route without importing JAX or changing any unrelated XLA flag.
+    None preserves inherited settings; a running backend cannot be switched per job."""
+    if route is None:
+        return {}
+    if route not in ("default", "cublas"):
+        raise ValueError(f"unknown GPU GEMM route: {route}")
+    flags = [f for f in environ.get("XLA_FLAGS", "").split()
+             if not f.startswith("--xla_gpu_enable_triton_gemm=")]
+    if route == "cublas":
+        flags.append("--xla_gpu_enable_triton_gemm=false")
+    return {"XLA_FLAGS": " ".join(flags)}
 
 
 def compilation_cache_environment(queue_path, environ) -> dict:

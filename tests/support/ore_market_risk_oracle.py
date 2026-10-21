@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import gc
 import tempfile
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Sequence, Tuple
@@ -190,12 +191,29 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
     # parameter, whose path the analytic then asks the filesystem about: on Linux that fails on so
     # long a name ("File name too long"). ORE holds the file open while its reader lives (on
     # Windows the directory cannot be removed then), so its objects go before the directory.
+    failure = None
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "scenarios.csv"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         parameters.setScenarioReader(str(path))
-        app = run.run("historical_PnL" if trade_pnl else "var")
-        reports = {name: report_columns(app, name) for name in ("historical_PnL",) + (() if trade_pnl else ("var",))}
-        del app, parameters, run
-        gc.collect()
+        app = None
+        try:
+            app = run.run("historical_PnL" if trade_pnl else "var")
+            reports = {name: report_columns(app, name) for name in ("historical_PnL",) + (() if trade_pnl else ("var",))}
+        except BaseException as error:
+            failure = error
+            # A failed run's traceback owns OREApp/InputParameters too. Keep its diagnostic
+            # stack, but release completed frames' locals before removing the scenario file.
+            pending, seen = [error], set()
+            while pending:
+                current = pending.pop()
+                if current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    traceback.clear_frames(current.__traceback__)
+                    pending.extend((current.__cause__, current.__context__))
+        finally:
+            del app, parameters, run
+            gc.collect()
+    if failure is not None:
+        raise failure
     return reports

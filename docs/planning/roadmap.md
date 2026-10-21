@@ -26,9 +26,10 @@ order of its table. Items marked *parallel* touch code that no earlier step chan
 start at any time. Items waiting on someone outside the project are listed
 [separately](#waiting-on-others), with who to chase.
 
-**Deadline scope** (owner, 2026-10-19). The first deliverable is one reproducible comparison
+**Deadline scope** (owner, 2026-10-19; FP16/reliability follow-through requested 2026-10-20).
+The first deliverable is one reproducible comparison
 on existing formats: CPU FP64/FP32 references, accelerator FP64/FP32 baselines, native FP8,
-and BF16 where already supported. Cover a single trade and a small representative portfolio
+FP16, and BF16 where already supported. Cover a single trade and a small representative portfolio
 with simple trades and options; compare scenario PV, portfolio P&L, VaR and ES. Keep the
 market, model, pricing settings and output requirements fixed. Use matched scenarios to
 isolate precision error, then multiple seeds and scenario counts to measure accuracy versus
@@ -132,9 +133,16 @@ existing harnesses; [plan and smoke outcome](details/comparison-report.md). Qual
 and native execution before reading target-device speed results; keep the first workload
 bounded by the deadline scope.
 
+The 2026-10-20 [native FP8 and reliability plan](details/native-fp8-reliability.md) supplies
+the concrete checks. FP16/policy/reference tooling, local lowering/traces, boundary fixes,
+the complete Windows CPU suite and bounded larger-count/holdout research are delivered;
+[results](../../compliance/precision-research/2026-10-20/README.md). Remaining work is target execution, domain-specific policy coverage,
+sampling/grid convergence, repeatable 16 GB CI runs and controlled timing. No H100 host is
+currently available. Per-figure qualification remains required.
+
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 1.1 | *Parallel.* Secure the hardware slots and install on a TPU VM: a `tpu` extra in `pyproject.toml` at the pinned jax; `tests/test_environment.py` passing against `constraints.txt`; a TPU section in the user guide beside the GPU one | [I-121](known-issues.md#i-121) (install) | Booked hardware for installation | S |
+| 1.1 | *Parallel.* Secure hardware slots; install the documented pinned TPU candidate on a TPU VM and pass `tests/test_environment.py` against `constraints.txt`. The optional extra and installation guide are implemented; hardware installation is unverified | [I-121](known-issues.md#i-121) (install) | Booked hardware for installation | S |
 | 1.2 | The engine's numbers on a TPU and an H100. On each: the device check (`tests/support/precision_devices.py`); the full suite (split as [I-27](known-issues.md#i-27) requires); every ORE parity suite at its tolerance; the golden snapshot within the margin of the CPU's. Verify the first comparison's workloads and formats early. This qualifies the TPU's emulated float64, which the fixed stages and every kernel's float64 level run on. Fix discrepancies affecting a measurement before publishing it | [I-121](known-issues.md#i-121) (correctness) | 1.1 for TPU; booked hardware for H100 | M |
 | 1.3 | **Native FP8, alongside correctness checks as hardware permits.** On H100, check XLA's default emitter and cuBLAS (`--xla_gpu_enable_triton_gemm=false`); use the correct native route without waiting for an upstream fix. On Ironwood, qualify native FP8 before enabling its device dispatch. Compare against CPU emulation and FP64; inspect lowering or a device trace for the representative engine shapes to establish which operations actually use FP8 units, recording fallbacks and the process flags/library versions. An execution label alone is not proof of FP8 hardware use. Include supported BF16 checks. Record an unavailable native route as a limitation | [I-97](known-issues.md#i-97) (target GPU qualification); [I-121](known-issues.md#i-121) (native TPU products) | Booked hardware; 1.1 for TPU | M |
 | 1.4 | Speed across devices and hosts, with the same representative workload and accuracy checks: one device versus several on TPU and H100, then a pod slice's hosts (`jax-risk-worker --distributed`). Check scenario/storage-block alignment and collective completion. Keep total scenarios fixed for the scaling comparison; separately compare accuracy gained within a time budget. Record the FP64 fixed stages' share (A-25). Change their placement only if measurements show a bottleneck that materially blocks the research; a host-placement redesign is not an automatic prerequisite | [I-61](known-issues.md#i-61) | Comparison tooling complete; 1.2, 1.3 for measured formats/devices | M |
@@ -142,17 +150,24 @@ bounded by the deadline scope.
 The first verified target device's comparison proceeds to 2.1 while the other device and
 1.4 remain in progress. Tooling smoke results on CPU/the RTX 5060 do not qualify those targets.
 Compiler bug reports and rechecking an eventual upstream fix remain useful follow-up work
-(4.12), but a correct cuBLAS route is sufficient for the first H100 measurement. A defect
+(4.11), but a correct cuBLAS route is sufficient for the first H100 measurement. A defect
 such as excessive compilation (I-81, I-53) moves ahead of a report only when it prevents a
 correct or representative measurement; otherwise its cost is included and reported.
 
 <a id="stage-2"></a>
 ## Stage 2 — The precision research result
 
+Comparison FP16 coverage, independent policies/reference diagnostics, resumable campaigns
+and the first large/holdout studies are complete. The [research report](../../compliance/precision-research/2026-10-20/README.md) records
+4M/32-seed single-swap results, 262K/16-seed exposure under both models, stress/grid
+holdouts and the limits of each. Remaining work below extends those measured domains and
+establishes target-device performance.
+
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 2.1 | **First deadline deliverable: a reproducible result on the first verified target device.** Use the [comparison report](../../benchmarks/README.md) on one single trade and one small portfolio of simple trades and options, with scenario PV and portfolio P&L/VaR/ES. Compare CPU FP64/FP32 references, accelerator FP64/FP32, native FP8 and supported BF16; label the current mixed-precision policy, including FP64 calibration and reductions. Include matched-scenario precision errors and accuracy over multiple seeds/counts, an FP64 reference whose sampling uncertainty is stated, and warm whole-job time at equal accuracy. Count host preparation, calibration, conversions, transfers, pairing if used, reductions and required output; separate compile/cold time. Report peak memory (or explicit unavailability), native/fallback evidence and exact reproduction settings. Start with existing measured pricing settings (I-114); small counts smoke-check the tool, then include counts from 65,536 upward as memory permits to test whether scenario work dominates on this device. Keep failed accuracy targets, memory failures and no-speedup cases visible. Do not wait for exhaustive format/product sweeps, tuning or cluster completion | [F-07](features.md#f-07) (first measured result) | Comparison tooling complete; 1.2 and 1.3 on the device/formats measured | M |
-| 2.2 | Complete the cluster research result: extend the same report to the other target platform and the device/host counts qualified by 1.4. Report end-to-end speed at equal accuracy and scaling separately. Every hardware claim is limited to measured devices, workloads and native execution. Compare existing two-term and single-pass methods (A-23) where useful; sweep the induction budget (`--budget-divisors`) or isolate storage/compute costs only when the first measurements identify a bottleneck. Broader sweeps follow the deadline result | [F-07](features.md#f-07) (cluster result) | 2.1; 1.2 to 1.4 on the added devices | M |
+| 2.2 | Extend the first measured per-figure limits to required production domains without relaxing A-11. The selected single swap already reaches 4M/32 seeds; broader exposure/portfolio work still needs independently converged FP64 references, policy-specific floor diagnosis and disjoint holdouts. Cover both IR models, stressed markets, near-cancelling portfolios, default/refined grids and fixed/recalibrated options. Publish limits/failures per figure and review evidence-domain labels before regenerating records. Full matrix, native checks and reference gates: [execution plan](details/native-fp8-reliability.md) | [I-122](known-issues.md#i-122); [F-07](features.md#f-07) (accuracy qualification) | First bounded result; qualified execution for each added device; relevant correctness fixes | M–L |
+| 2.3 | Complete the cluster research result: extend the same report to the other target platform and the device/host counts qualified by 1.4. Report end-to-end speed at equal accuracy and scaling separately. Every hardware claim is limited to measured devices, workloads and native execution. Compare existing two-term and single-pass methods (A-23) where useful; sweep the induction budget (`--budget-divisors`) or isolate storage/compute costs only when the first measurements identify a bottleneck. Broader sweeps follow the deadline result | [F-07](features.md#f-07) (cluster result) | 2.1; 1.2 to 1.4 on the added devices; 2.2 for broader accuracy claims | M |
 
 **Precision scope** (owner, 2026-10-15). In this first comparison, PFE and VaR use the
 existing, uncorrected quantile estimators, and ES uses the existing tail estimator. The paired
@@ -164,7 +179,9 @@ in stage 5, and none delays this measurement: multilevel quantile correction (on
 measurements justify its cost), FP4, and supported confidence intervals (F-10).
 
 Precision design: [details/precision.md](details/precision.md); its rounding and uncertainty
-work: [details/precision-accuracy.md](details/precision-accuracy.md).
+work: [details/precision-accuracy.md](details/precision-accuracy.md). Native FP8, larger-count
+FP16/FP8 qualification and reliability gates:
+[details/native-fp8-reliability.md](details/native-fp8-reliability.md).
 
 <a id="stage-3"></a>
 ## Stage 3 — Basel III
@@ -175,7 +192,7 @@ oracle. Each figure is an entry in the run request's `analytics` list.
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 3.1 | Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles; P0.9 keeps regulatory runs with the job queue's `keep`), and P2's data acquisition, which takes calendar time and so starts first | [F-05](features.md#f-05) (P0, P2) | Stage 2 | L |
-| 3.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 3.1's P0 (USD swaps also need [I-05](known-issues.md#i-05)); P7's evidence pack needs 4.5 | L |
+| 3.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 3.1's P0 (USD swaps also need [I-05](known-issues.md#i-05)); P7's evidence pack needs 4.4 | L |
 
 3.2 follows the Basel plan's phases, and each phase waits only for what its row lists. Several
 prerequisites are already met: FRTB-SA's sensitivities are ORE's (I-51), as is a calibrated
@@ -198,18 +215,17 @@ steps at any time, then unchecked behaviour, then speed, then tooling.
 | 4.1 | *Parallel, can start now* (A-20). Ruff in `pyproject.toml` and CI with pyflakes' rules only (ruff's `F` set: unused imports and variables, undefined names, empty f-strings; no style or formatting rules). Fix or mark each finding; an "unused" import that other modules import from there is a re-export and goes in `__all__`, checked one by one. `pandas`, which nothing imports, leaves the dependencies | [I-66](known-issues.md#i-66) (linter) | — | S |
 | 4.2 | *Parallel, can start now.* Retire the `/eod` path: delete `engine/traderx/`, its routes, tests, fixtures and documents, once the owner has confirmed that TraderX needs nothing that only that path gives it | [I-120](known-issues.md#i-120) | — | S |
 | 4.3 | *Parallel, can start now.* Correct the documentation's contradictions | [I-110](known-issues.md#i-110) | — | S |
-| 4.4 | The narrow cases: a European's liveness by its expiry date, not its variance; a bond valued until its last payment; the LGM's H by `expm1`, host and JAX alike | [I-104](known-issues.md#i-104) | — | S |
-| 4.5 | The full-suite aborts and lost worker processes. Show the full suite on CI's 16 GB runner; then run it repeatedly against a known-bad baseline; then put the full tier on a schedule. This comes before Basel P7 (3.2), whose evidence pack rests on a complete suite run | [I-27](known-issues.md#i-27) | — | M |
-| 4.6 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as was done for the AD Greeks; the snapshot within the margin | [I-81](known-issues.md#i-81) | — | S |
-| 4.7 | The pipeline's remaining speed. Find why, on a Windows CPU only, pricing runs 10–25% slower in a process that has run AD Greeks. Win back the 3 s that a cold job lost to the bootstrap's compile under Newton. Schedule the leg kernel's products with their operand fusions | [I-53](known-issues.md#i-53) | — | S |
-| 4.8 | Shared test helpers in `tests/support/`; public-entry tests where private-symbol tests are obsolete | [I-67](known-issues.md#i-67) | 4.2 | S |
-| 4.9 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 4.1 | S |
-| 4.10 | Where ORE's sensitivity analytic disagrees with itself or fails. Report the two inconsistencies to ORE, each with a one-trade reproduction: a holiday as-of date's volatility reference, and a deal strike that its fallback moves on an ACT/ACT (ICMA) swap index. Report its optimiser's miss on a large basket under a 5bp volatility shift. Each then becomes a parity test or a difference by decision. Decide in the run request's preflight (`engine.run.validate_run`) whether an as-of date that is not a business day is refused | [I-117](known-issues.md#i-117) | — | S |
-| 4.11 | *Parallel, can start now* (the run request's dispatch alone). Do once the work that several analytics in one run share: hand the cross-asset model's calibration from `calibration` to `exposure`, validate the request once, build the trades' ORE schedules once per run. The result still equals each analytic alone bit for bit; each shared stage is counted and timed against the code before | [I-118](known-issues.md#i-118) | — | S |
-| 4.12 | XLA follow-up: the calibrated option's reverse-mode compile failure (I-119) and the two existing native-product reproductions ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), I-97), reported upstream and rechecked on new jax versions. Retain the verified cuBLAS workaround for native FP8 while the default emitter is wrong; neither upstream resolution nor reverse-mode support gates the first report using existing supported methods | [I-119](known-issues.md#i-119); [I-97](known-issues.md#i-97) (upstream follow-up) | — | S |
-| 4.13 | Before the API is reachable from outside a trusted network: authentication, a body-size limit, a per-caller limit on queued jobs | [I-90](known-issues.md#i-90) | — | S |
+| 4.4 | Prove repeatable complete bounded full-suite runs on CI's 16 GB runner, record peak memory, repeat known-bad controls there, and investigate any remaining XLA abort. Fresh-process tooling, owned worker cleanup, local complete/negative-control runs and weekly scheduling are implemented. This comes before Basel P7 (3.2), whose evidence pack rests on a complete suite run | [I-27](known-issues.md#i-27) | — | M |
+| 4.5 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as was done for the AD Greeks; the snapshot within the margin | [I-81](known-issues.md#i-81) | — | S |
+| 4.6 | The pipeline's remaining speed. Find why, on a Windows CPU only, pricing runs 10–25% slower in a process that has run AD Greeks. Win back the 3 s that a cold job lost to the bootstrap's compile under Newton. Schedule the leg kernel's products with their operand fusions | [I-53](known-issues.md#i-53) | — | S |
+| 4.7 | Shared test helpers in `tests/support/`; public-entry tests where private-symbol tests are obsolete | [I-67](known-issues.md#i-67) | 4.2 | S |
+| 4.8 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 4.1 | S |
+| 4.9 | Where ORE's sensitivity analytic disagrees with itself or fails. Report the two inconsistencies to ORE, each with a one-trade reproduction: a holiday as-of date's volatility reference, and a deal strike that its fallback moves on an ACT/ACT (ICMA) swap index. Report its optimiser's miss on a large basket under a 5bp volatility shift. Each then becomes a parity test or a difference by decision. Decide in the run request's preflight (`engine.run.validate_run`) whether an as-of date that is not a business day is refused | [I-117](known-issues.md#i-117) | — | S |
+| 4.10 | *Parallel, can start now* (the run request's dispatch alone). Do once the work that several analytics in one run share: hand the cross-asset model's calibration from `calibration` to `exposure`, validate the request once, build the trades' ORE schedules once per run. The result still equals each analytic alone bit for bit; each shared stage is counted and timed against the code before | [I-118](known-issues.md#i-118) | — | S |
+| 4.11 | XLA follow-up: the calibrated option's reverse-mode compile failure (I-119) and the two existing native-product reproductions ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), I-97), reported upstream and rechecked on new jax versions. Retain the verified cuBLAS workaround for native FP8 while the default emitter is wrong; neither upstream resolution nor reverse-mode support gates the first report using existing supported methods | [I-119](known-issues.md#i-119); [I-97](known-issues.md#i-97) (upstream follow-up) | — | S |
+| 4.12 | Before the API is reachable from outside a trusted network: authentication, a body-size limit, a per-caller limit on queued jobs | [I-90](known-issues.md#i-90) | — | S |
 
-4.2 comes before 4.8 because it removes the fixtures that 15 test files repeat. 4.5's runs can
+4.2 comes before 4.7 because it removes the fixtures that 15 test files repeat. 4.4's runs can
 be made whenever a full run is being made anyway; only the conclusion waits for repeated runs.
 
 <a id="stage-5"></a>

@@ -138,3 +138,7 @@ nvidia-nvjitlink==13.4.92
 nvidia-nvshmem-cu13==3.8.0
 nvidia-nvvm==13.4.92
 uvloop==0.23.0
+
+# TPU installation candidate selected from JAX 0.10.2's libtpu==0.0.42.* requirement.
+# Installation is reproducible; TPU numerical/hardware qualification remains I-121.
+libtpu==0.0.42

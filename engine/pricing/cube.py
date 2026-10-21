@@ -189,6 +189,8 @@ def trade_maturity(cfg: Trade) -> ORE.Date:
         return cfg.exercise_date
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.settlement == "Cash":
         return max(contract_exercise_dates(cfg))
+    if isinstance(cfg, BondConfig):
+        return cfg.last_payment_date
     return cfg.maturity_date
 
 
@@ -285,7 +287,7 @@ def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> flo
         return position_sign(cfg) * _long_option_on(cfg, context, pricing)
     currency = cfg.currency
     if isinstance(cfg, BondConfig):
-        if context.date >= cfg.maturity_date:
+        if context.date >= cfg.last_payment_date:
             # Rolled to or past maturity (the Theta date): nothing left to value; a flow paid on
             # that date has occurred, so it leaves Theta as it leaves ORE's (I-116).
             return 0.0

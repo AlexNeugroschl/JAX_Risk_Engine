@@ -68,6 +68,11 @@ class PrecisionReport:
     #: Applies to every figure/entry, including zero empirical SEs and unpaired runs.
     #: Standard errors above remain raw variance diagnostics, never nominal bounds.
     interval: IntervalAvailability = field(default_factory=IntervalAvailability)
+    qualification_scope: str = (
+        "Precision acceptance is empirical evidence on the recorded markets, models, sampling designs and pricing "
+        "settings, within measured path ceilings. It does not establish accuracy on arbitrary inputs or certify "
+        "sampling convergence, discretization error or confidence coverage. Native/emulated product labels describe "
+        "dispatch; per-operation hardware use requires device qualification artifacts.")
 
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,

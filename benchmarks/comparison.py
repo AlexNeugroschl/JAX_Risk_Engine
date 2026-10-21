@@ -14,7 +14,8 @@ import zipfile
 
 from demos.benchmark_reporting import atomic_json, launch_worker, named_errors, read_json
 
-FORMATS = ("float64", "float32", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+FORMATS = ("float64", "float32", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+POLICIES = ("combined", "compute", "storage")
 BACKENDS = {"cpu": "cpu", "gpu": "cuda,cpu", "tpu": "tpu,cpu"}
 WORKLOADS = ("comparison_single", "comparison_portfolio")
 
@@ -24,6 +25,10 @@ def worker(arguments, destination):
     os.environ["JAX_PLATFORMS"] = BACKENDS[arguments["backend"]]
     os.environ["JAX_ENABLE_COMPILATION_CACHE"] = "false"
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    route = arguments.get("gemm", "auto")
+    if arguments["backend"] == "gpu" and (route != "auto" or "float8" in arguments["label"]):
+        from engine.api.worker import gemm_environment
+        os.environ.update(gemm_environment("cublas" if route == "auto" else route, os.environ))
     from engine.api.worker import deterministic_kernels_environment
     os.environ.update(deterministic_kernels_environment(os.environ))
     import jax
@@ -36,6 +41,9 @@ def worker(arguments, destination):
     expected = arguments["backend"]
     if devices[0].platform != expected:
         raise RuntimeError(f"requested {expected}, got {devices[0].platform}")
+    required = arguments.get("expected_gpu")
+    if expected == "gpu" and required and any(required.lower() not in d.device_kind.lower() for d in devices):
+        raise ValueError(f"expected GPU {required}, got {[d.device_kind for d in devices]}")
     if jax.config.jax_disable_jit:
         raise ValueError("comparison requires JIT execution; JAX_DISABLE_JIT is set")
     from tests.support.precision_timing import _child
@@ -53,7 +61,8 @@ def worker(arguments, destination):
     return 0
 
 
-def collect(directory, paths, seeds, backends, formats, workloads, timeout, rtol=1e-4, atol=1e-8):
+def collect(directory, paths, seeds, backends, formats, workloads, timeout, rtol=1e-4, atol=1e-8,
+            policies=("combined",), reference_seeds=None, reference_paths=None, gemm="auto", expected_gpu=None):
     """Persist the full expected matrix before starting; never reuse stale worker results."""
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -63,12 +72,21 @@ def collect(directory, paths, seeds, backends, formats, workloads, timeout, rtol
     for campaign in workloads:
         for backend in backends:
             for name in formats:
-                for count in paths:
-                    point = {"campaign": campaign, "backend": backend,
-                             "label": "float64" if name == "float64" else f"pricing:{name}",
-                             "paths": count, "seeds": seeds}
-                    point["directory"] = f"{campaign}/{backend}/{name}/{count}"
-                    requests.append(point)
+                for policy in (("combined",) if name == "float64" else policies):
+                    for count in paths:
+                        label = "float64" if name == "float64" else f"pricing:{name}" if policy == "combined" else f"pricing:{policy}:{name}"
+                        point = {"campaign": campaign, "backend": backend, "label": label,
+                                 "paths": count, "seeds": seeds}
+                        folder = name if policy == "combined" else f"{policy}-{name}"
+                        point["directory"] = f"{campaign}/{backend}/{folder}/{count}"
+                        requests.append(point)
+        if reference_seeds:
+            for count in reference_paths or [max(paths)]:
+                requests.append({"campaign": campaign, "backend": "cpu", "label": "float64:reference",
+                                 "paths": count, "seeds": reference_seeds,
+                                 "directory": f"{campaign}/cpu/independent-reference/{count}"})
+    for point in requests:
+        point.update(gemm=gemm, expected_gpu=expected_gpu)
     atomic_json(directory / "manifest.json", {"schema_version": 1, "requests": requests})
     for point in requests:
         destination = directory / point["directory"]
@@ -109,10 +127,12 @@ def load_points(directories):
     return points
 
 
-def compatible(reference, candidate):
+def compatible(reference, candidate, *, independent=False):
     """Precision/device may differ; workload, implementation, inputs and outputs may not."""
     a, b = reference["timing"], candidate["timing"]
-    if a["seeds"] != b["seeds"]:
+    if independent and set(a["seeds"]) & set(b["seeds"]):
+        raise ValueError("independent reference shares seed identities")
+    if not independent and a["seeds"] != b["seeds"]:
         raise ValueError("seed identities differ")
     for name in ("workload", "input_generation"):
         if a["metadata"][name] != b["metadata"][name]:
@@ -154,7 +174,9 @@ def build_report(points, rtol=1e-4, atol=1e-8):
         row = {k: point[k] for k in ("campaign", "backend", "label", "paths", "status")}
         row["reason"] = point.get("reason")
         ref = references.get((point["campaign"], point["paths"]))
-        if point["status"] == "ok" and ref is not None:
+        if point["status"] == "ok" and point["label"] == "float64:reference":
+            row["accuracy"] = "independent reference"
+        elif point["status"] == "ok" and ref is not None:
             try:
                 compatible(ref, point)
                 row["seeds"] = {seed: named_errors(snapshot_path(ref, ref["timing"]["snapshots"][seed]),
@@ -170,7 +192,7 @@ def build_report(points, rtol=1e-4, atol=1e-8):
             row.update(accuracy="unmeasured", reason="CPU FP64 reference unavailable")
         comparisons.append(row)
 
-    accuracy, uncertainty, errors = [], [], []
+    accuracy, uncertainty, errors, reference_checks = [], [], [], []
     for campaign in sorted({p["campaign"] for p in points}):
         valid = [p for p, r in zip(points, comparisons) if p["campaign"] == campaign and "seeds" in r]
         if not valid:
@@ -181,20 +203,41 @@ def build_report(points, rtol=1e-4, atol=1e-8):
                  else f"{p['backend']}/{p['label']}"}
             timings.append(CaseTiming(**t))
         reference = [t for t in timings if t.case == "float64"]
-        largest = max(reference, key=lambda t: t.paths)
+        independent = [p for p in points if p["campaign"] == campaign and p["label"] == "float64:reference"]
+        independent_timings = []
+        if independent:
+            try:
+                for p in independent:
+                    if p["status"] != "ok":
+                        raise ValueError("independent reference unavailable")
+                    for candidate in valid:
+                        compatible(p, candidate, independent=True)
+                    independent_timings.append(CaseTiming(**p["timing"]))
+            except (ValueError, KeyError) as exc:
+                reference_checks.append({"campaign": campaign, "status": "invalid", "reason": str(exc)})
+                continue
+        reference_runs = independent_timings or reference
+        largest = max(reference_runs, key=lambda t: t.paths)
         for name, values in largest.figures.items():
             values = np.asarray(values)
             uncertainty.append({"campaign": campaign, "figure": name, "paths": largest.paths,
                                 "mean": values.mean(axis=0).tolist(),
                                 "empirical_standard_error": (values.std(axis=0, ddof=1) / np.sqrt(len(values))).tolist(),
-                                "seeds": list(largest.seeds), "confidence_interval": "unavailable"})
+                                "seeds": list(largest.seeds), "confidence_interval": "unavailable",
+                                "independent": bool(independent_timings)})
+        for t in sorted(reference_runs, key=lambda t: t.paths):
+            reference_checks.append({"campaign": campaign, "status": "measured", "paths": t.paths,
+                                     "seeds": list(t.seeds), "independent": bool(independent_timings),
+                                     "mean_changes_to_largest": {
+                                         name: (np.mean(t.figures[name], axis=0) - np.mean(values, axis=0)).tolist()
+                                         for name, values in largest.figures.items()}})
         accuracy.extend({"campaign": campaign, **dataclasses.asdict(r), "speedup": r.speedup}
-                        for r in equal_accuracy(timings, FIXED))
+                        for r in equal_accuracy(timings, FIXED, references=independent_timings or None))
         errors.extend({"campaign": campaign, "case": case, "paths": paths, "figure": figure, "relative_rms": error}
-                      for (case, paths, figure), error in figure_errors(timings, FIXED).items())
+                      for (case, paths, figure), error in figure_errors(timings, FIXED, references=independent_timings or None).items())
     return {"schema_version": 1, "tolerances": {"rtol": rtol, "atol": atol}, "points": points,
             "comparisons": comparisons, "equal_accuracy": accuracy, "reference_uncertainty": uncertainty,
-            "sampling_errors": errors}
+            "sampling_errors": errors, "reference_convergence": reference_checks}
 
 
 def write_report(directory, points, rtol=1e-4, atol=1e-8):
@@ -249,7 +292,9 @@ def markdown(data):
     lines += ["", "## Equal accuracy", "",
               "Empirical RMS error against CPU FP64's multi-seed mean at the largest count; this finite reference is not truth.",
               "Its mean and empirical SE per figure are in comparison.json; nominal confidence bounds are unavailable.",
-              "The reference shares seeds with the candidates, so errors are dependent. Interpolation is descriptive, never extrapolated.",
+              "Reference seed independence and convergence are recorded per campaign in comparison.json. Without separate reference seeds errors are dependent.",
+              "Finite-reference uncertainty remains empirical; convergence diagnostics are not confidence bounds. Interpolation never extrapolates.",
+              "With independent references, speedups are withheld unless reference empirical SE is <=10% of the target error.",
               "Fixed entries are excluded by the existing timing estimator; matched errors above still check them.", "",
               "| Workload / case / figure | CPU FP64 paths | Candidate paths | Whole-job speedup |", "|---|---:|---:|---:|"]
     for r in data["equal_accuracy"]:
@@ -268,6 +313,13 @@ def main(argv=None):
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=list(BACKENDS))
     parser.add_argument("--formats", nargs="+", choices=FORMATS, default=list(FORMATS))
+    parser.add_argument("--policies", nargs="+", choices=POLICIES, default=["combined"],
+                        help="vary pricing storage/compute together or independently")
+    parser.add_argument("--reference-seeds", type=int, nargs="+", help="disjoint CPU FP64 reference seeds")
+    parser.add_argument("--reference-paths", type=int, nargs="+", help="reference convergence counts (default: largest count)")
+    parser.add_argument("--gemm", choices=("auto", "default", "cublas"), default="auto",
+                        help="auto uses cuBLAS for GPU FP8; explicit routes permit paired baseline measurements")
+    parser.add_argument("--expected-gpu", help="required GPU model substring, e.g. H100")
     parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=list(WORKLOADS))
     parser.add_argument("--timeout", type=float, default=3600)
     parser.add_argument("--rtol", type=float, default=1e-4)
@@ -283,17 +335,31 @@ def main(argv=None):
                      "(ES at 99% needs at least one tail observation)")
     if any(not math.isfinite(v) or v < 0 for v in (args.rtol, args.atol)) or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("tolerances must be finite/non-negative and timeout finite/positive")
-    for items in (args.backends, args.formats, args.workloads):
+    for items in (args.backends, args.formats, args.workloads, args.policies):
         if len(items) != len(set(items)):
             parser.error("duplicate matrix selections")
+    if args.reference_paths and not args.reference_seeds:
+        parser.error("--reference-paths requires --reference-seeds")
+    if args.reference_seeds is not None and (len(args.reference_seeds) < 3
+            or len(set(args.reference_seeds)) != len(args.reference_seeds)
+            or min(args.reference_seeds) < 0 or max(args.reference_seeds) >= 2 ** 32
+            or set(args.reference_seeds) & set(args.seeds)):
+        parser.error("use at least three distinct uint32 reference seeds disjoint from candidate seeds")
+    if max(args.seeds) >= 2 ** 32:
+        parser.error("seed identities must fit uint32")
+    if args.reference_paths and (len(set(args.reference_paths)) != len(args.reference_paths)
+            or any(n < 128 or n & (n - 1) for n in args.reference_paths)):
+        parser.error("reference counts must be distinct powers of two >= 128")
     if not args.merge:
         collect(args.out, sorted(args.paths), args.seeds, args.backends, args.formats, args.workloads, args.timeout,
-                args.rtol, args.atol)
+                args.rtol, args.atol, args.policies, args.reference_seeds, args.reference_paths,
+                args.gemm, args.expected_gpu)
     points = load_points(args.merge or [args.out])
     data = write_report(args.out, points, args.rtol, args.atol)
     print(f"Comparison report: {args.out / 'report.md'}", flush=True)
     return int(any(p["status"] in ("failed", "invalid") or r.get("accuracy") == "unmeasured"
-                   for p, r in zip(points, data["comparisons"])))
+                   for p, r in zip(points, data["comparisons"]))
+               or any(r["status"] == "invalid" for r in data["reference_convergence"]))
 
 
 if __name__ == "__main__":

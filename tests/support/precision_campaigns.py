@@ -213,15 +213,17 @@ def comparison(single=False) -> MarketRiskCampaign:
     simulation has no matrix product. Calibrated-scenario research remains a separate campaign.
     """
     base = market_risk()
-    formats = ("float32", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+    formats = ("float32", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
     return dataclasses.replace(
         base, name="comparison_single" if single else "comparison_portfolio",
         description="F-07 bounded comparison: " + ("one payer swap" if single else "the existing five-trade portfolio")
                     + " on the market-risk campaign's curves and shocks, fixed-LGM coarse grid; "
                     "FP64 inputs, pricing compute/storage varied together; arithmetic-consistent P&L anchor.",
         trades=base.trades[:1] if single else base.trades,
-        cases=tuple(Case(f"pricing:{name}", Precision(pricing=Precision.throughout(name).pricing))
-                    for name in formats))
+        cases=(tuple(Case(f"pricing:{name}", Precision(pricing=Precision.throughout(name).pricing))
+                     for name in formats)
+               + compute_cases(stages=("pricing",))
+               + tuple(Case(f"pricing:storage:{name}", Precision(pricing=StagePrecision(name))) for name in formats)))
 
 
 def rounding_cases(stages, formats, roundings=("nearest", "stochastic")):
@@ -286,17 +288,25 @@ def main(argv=None) -> int:
                                      description="Run a campaign of the precision harness (I-75, F-07).")
     parser.add_argument("campaign", choices=sorted(CAMPAIGNS))
     parser.add_argument("--paths", type=int, nargs="+", help="path counts (default: the campaign's)")
-    parser.add_argument("--seeds", type=int, help="the first K of the campaign's seeds (at least 2)")
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument("--seeds", type=int, help="K independent seeds, starting at 1 (at least 2)")
+    seed_group.add_argument("--seed-ids", type=int, nargs="+", help="explicit independent non-negative seed identities")
     parser.add_argument("--cases", nargs="+", help="keep the cases whose label contains any of these")
     parser.add_argument("--out", type=Path, default=RECORD, help=f"directory (default: {RECORD})")
     args = parser.parse_args(argv)
 
     campaign = CAMPAIGNS[args.campaign]()
-    if args.seeds:
-        campaign = dataclasses.replace(campaign, seeds=campaign.seeds[:args.seeds])
+    seeds = tuple(args.seed_ids) if args.seed_ids is not None else tuple(range(1, args.seeds + 1)) if args.seeds is not None else campaign.seeds
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds) or any(s < 0 or s >= 2 ** 32 for s in seeds):
+        parser.error("use at least two distinct uint32 seed identities")
+    campaign = dataclasses.replace(campaign, seeds=seeds)
+    if args.paths is not None and (len(set(args.paths)) != len(args.paths) or any(n < 32 or n & (n - 1) for n in args.paths)):
+        parser.error("path counts must be distinct powers of two >= 32")
     if args.cases:
         campaign = dataclasses.replace(campaign, cases=tuple(c for c in campaign.cases
                                                              if any(text in c.label for text in args.cases)))
+        if not campaign.cases:
+            parser.error("no cases match the requested filters")
     args.out.mkdir(parents=True, exist_ok=True)
     measurements = None
     for paths in args.paths or campaign.paths:

@@ -2,7 +2,7 @@
 
 The `options` campaign's portfolio, market and simulation, computed below float32: each case runs the pricing stage's matrix products (the rollback's operator, the cashflows' functions on the grid, F-07, 2026-10-13) in one compute format, accumulated and stored in float32, every other stage float64 (the `float32` case is the accumulator's floor), or every stage in the format (`throughout`). A format below float32 carries the operand every path shares in two terms; `<format>_1x` is its single pass (A-23).
 
-Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 0b4ec6768e39 (local changes: yes; engine digest 5483f49b9633b217), JAX 0.10.2 on cpu (cpu), 2026-10-20T01:03:51+00:00.
+Kind: portfolio. Market: USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py). Seeds: 16 (1..16). Commit 80273729fc80 (local changes: yes; engine digest 351a34c6d655168e), JAX 0.10.2 on cpu (cpu), 2026-10-20T21:38:20+00:00.
 
 Pricing settings (the evidence table's key, I-114): `american_swaption` engine=LgmGrid nx=8 sx=3 steps_per_year=24 model=fixed; `bermudan_swaption` engine=LgmGrid nx=8 sx=3 model=fixed.
 
@@ -14,30 +14,30 @@ Coverage below is diagnostic Student t coverage, not available confidence bounds
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float32 | 0.000396 | trades/american-payer/EE_B | 0.000396 | 4.72e-05 | 0.000396 | 140 | 0 | — | 0 | 0.52 |
-| pricing:compute:bfloat16_3x | 0.00252 | trades/american-payer/EE_B | 0.00252 | 0.000809 | 0.0024 | 47.6 | 0 | — | 0 | 1.08 |
-| pricing:compute:tensorfloat32 | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.63 |
-| pricing:compute:tensorfloat32_1x | 0.254 | trades/bermudan-payer-physical/EPE | 0.254 | 0.158 | 0.24 | 52.7 | 0 | — | 0 | 0.53 |
-| pricing:compute:float16 | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.71 |
-| pricing:compute:float16_1x | 0.254 | trades/bermudan-payer-physical/EPE | 0.254 | 0.158 | 0.24 | 52.7 | 0 | — | 0 | 0.77 |
-| pricing:compute:bfloat16 | 1.18 | trades/american-payer/EE_B | 1.18 | 0.478 | 1.18 | 54.8 | 0 | — | 0 | 0.68 |
-| pricing:compute:bfloat16_1x | 1.6 | trades/american-payer/EE_B | 1.6 | 0.408 | 1.59 | 41.6 | 0 | — | 0 | 0.68 |
-| pricing:compute:float8_e4m3fn | 67.4 | trades/american-payer/EE_B | 67.4 | 6.9 | 67 | 57.1 | 0.00105 | — | 0 | 0.82 |
-| pricing:compute:float8_e4m3fn_1x | 43 | trades/american-payer/EE_B | 43 | 8.2 | 43 | 96.3 | 0 | — | 0 | 0.91 |
-| pricing:compute:float8_e5m2 | 40.6 | trades/american-payer/EE_B | 40.6 | 15 | 39.8 | 107 | 0.00236 | — | 0 | 0.78 |
-| pricing:compute:float8_e5m2_1x | 79.4 | trades/american-payer/EE_B | 79.4 | 19.6 | 79.4 | 229 | 0 | — | 0 | 0.90 |
-| throughout:float32 | 0.00987 | trades/american-payer/PFE_95 | 0.00169 | 0.00987 | 0.00246 | 47.6 | 0 | — | 0 | 0.54 |
-| throughout:bfloat16_3x | 0.00989 | trades/american-payer/PFE_95 | 0.00314 | 0.00989 | 0.00263 | 15.1 | 0 | — | 0 | 1.09 |
-| throughout:tensorfloat32 | 0.272 | trades/american-payer/EPE_B | 0.272 | 0.152 | 0.267 | 19.8 | 0 | — | 0 | 0.61 |
-| throughout:tensorfloat32_1x | 0.416 | trades/american-payer/EE_B | 0.416 | 0.211 | 0.412 | 91.9 | 0 | — | 0 | 0.51 |
-| throughout:float16 | 0.272 | trades/american-payer/EPE_B | 0.272 | 0.144 | 0.266 | 18.2 | 0 | — | 0 | 0.67 |
-| throughout:float16_1x | 0.447 | trades/american-payer/EPE | 0.447 | 0.181 | 0.432 | 61.1 | 0 | — | 0 | 0.73 |
-| throughout:bfloat16 | 1.56 | trades/american-payer/NPV | 1.56 | 1.52 | 1.39 | 17.2 | 0 | — | 0 | 0.66 |
-| throughout:bfloat16_1x | 3.19 | netting_set/EE_B | 3.19 | 0.967 | 3.11 | 30.6 | 0 | — | 0 | 0.64 |
-| throughout:float8_e4m3fn | 83.5 | trades/american-payer/EE_B | 83.5 | 7.29 | 82.3 | 41.5 | 0.00299 | — | 0 | 0.76 |
-| throughout:float8_e4m3fn_1x | 106 | netting_set/EPE_B | 106 | 12.8 | 105 | 56.6 | 0 | — | 0 | 0.83 |
-| throughout:float8_e5m2 | 372 | trades/american-payer/EE_B | 372 | 25.1 | 370 | 101 | 0 | — | 0 | 0.74 |
-| throughout:float8_e5m2_1x | 97.8 | trades/american-payer/EE_B | 97.8 | 53.9 | 97.3 | 103 | 0 | — | 0 | 0.82 |
+| pricing:compute:float32 | 0.000396 | trades/american-payer/EPE | 0.000396 | 4.72e-05 | 0.000396 | 140 | 0 | — | 0 | 0.75 |
+| pricing:compute:bfloat16_3x | 0.00252 | trades/american-payer/EE_B | 0.00252 | 0.000809 | 0.0024 | 47.6 | 0 | — | 0 | 1.22 |
+| pricing:compute:tensorfloat32 | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.94 |
+| pricing:compute:tensorfloat32_1x | 0.254 | trades/bermudan-payer-physical/EPE | 0.254 | 0.158 | 0.24 | 52.7 | 0 | — | 0 | 0.79 |
+| pricing:compute:float16 | 0.279 | trades/american-payer/EE_B | 0.279 | 0.154 | 0.269 | 23.3 | 0 | — | 0 | 0.98 |
+| pricing:compute:float16_1x | 0.254 | trades/bermudan-payer-physical/EPE | 0.254 | 0.158 | 0.24 | 52.7 | 0 | — | 0 | 0.98 |
+| pricing:compute:bfloat16 | 1.18 | trades/american-payer/EE_B | 1.18 | 0.478 | 1.18 | 54.8 | 0 | — | 0 | 1.02 |
+| pricing:compute:bfloat16_1x | 1.6 | trades/american-payer/EE_B | 1.6 | 0.408 | 1.59 | 41.6 | 0 | — | 0 | 0.92 |
+| pricing:compute:float8_e4m3fn | 67.4 | trades/american-payer/EE_B | 67.4 | 6.9 | 67 | 57.1 | 0.00105 | — | 0 | 1.05 |
+| pricing:compute:float8_e4m3fn_1x | 43 | trades/american-payer/EPE | 43 | 8.2 | 43 | 96.3 | 0 | — | 0 | 1.05 |
+| pricing:compute:float8_e5m2 | 40.6 | trades/american-payer/EE_B | 40.6 | 15 | 39.8 | 107 | 0.00236 | — | 0 | 1.04 |
+| pricing:compute:float8_e5m2_1x | 79.4 | trades/american-payer/EE_B | 79.4 | 19.6 | 79.4 | 229 | 0 | — | 0 | 1.03 |
+| throughout:float32 | 0.00987 | trades/american-payer/PFE_95 | 0.00169 | 0.00987 | 0.00246 | 47.6 | 0 | — | 0 | 0.79 |
+| throughout:bfloat16_3x | 0.00989 | trades/american-payer/PFE_95 | 0.00314 | 0.00989 | 0.00263 | 15.1 | 0 | — | 0 | 1.24 |
+| throughout:tensorfloat32 | 0.272 | trades/american-payer/EPE_B | 0.272 | 0.152 | 0.267 | 19.8 | 0 | — | 0 | 0.95 |
+| throughout:tensorfloat32_1x | 0.416 | trades/american-payer/EE_B | 0.416 | 0.211 | 0.412 | 91.9 | 0 | — | 0 | 0.78 |
+| throughout:float16 | 0.272 | trades/american-payer/EPE_B | 0.272 | 0.144 | 0.266 | 18.2 | 0 | — | 0 | 1.00 |
+| throughout:float16_1x | 0.447 | trades/american-payer/EE_B | 0.447 | 0.181 | 0.432 | 61.1 | 0 | — | 0 | 1.04 |
+| throughout:bfloat16 | 1.56 | trades/american-payer/NPV | 1.56 | 1.52 | 1.39 | 17.2 | 0 | — | 0 | 1.03 |
+| throughout:bfloat16_1x | 3.19 | netting_set/EE_B | 3.19 | 0.967 | 3.11 | 30.6 | 0 | — | 0 | 0.86 |
+| throughout:float8_e4m3fn | 83.5 | trades/american-payer/EPE | 83.5 | 7.29 | 82.3 | 41.5 | 0.00299 | — | 0 | 1.07 |
+| throughout:float8_e4m3fn_1x | 106 | netting_set/EPE_B | 106 | 12.8 | 105 | 56.6 | 0 | — | 0 | 1.10 |
+| throughout:float8_e5m2 | 372 | trades/american-payer/EPE | 372 | 25.1 | 370 | 101 | 0 | — | 0 | 1.01 |
+| throughout:float8_e5m2_1x | 97.8 | trades/american-payer/EE_B | 97.8 | 53.9 | 97.3 | 103 | 0 | — | 0 | 1.06 |
 
 ### Exercise decisions flipped, 1024 paths
 
@@ -74,30 +74,30 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float32 | 0.00319 | trades/american-payer/EE_B | 0.00319 | 0.000142 | 0.00319 | 240 | 0 | — | 0 | 0.90 |
-| pricing:compute:bfloat16_3x | 0.00761 | trades/american-payer/EPE | 0.00761 | 0.00182 | 0.00753 | 99.7 | 0 | — | 0 | 1.64 |
-| pricing:compute:tensorfloat32 | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.23 |
-| pricing:compute:tensorfloat32_1x | 0.764 | trades/bermudan-payer-physical/EPE | 0.764 | 0.166 | 0.752 | 83.9 | 0 | — | 0 | 1.09 |
-| pricing:compute:float16 | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.33 |
-| pricing:compute:float16_1x | 0.764 | trades/bermudan-payer-physical/EPE | 0.764 | 0.166 | 0.752 | 83.9 | 0 | — | 0 | 1.43 |
-| pricing:compute:bfloat16 | 6.46 | trades/american-payer/EE_B | 6.46 | 0.831 | 6.46 | 83.7 | 0 | — | 0 | 1.30 |
-| pricing:compute:bfloat16_1x | 12.6 | trades/american-payer/EE_B | 12.6 | 0.752 | 12.6 | 84.8 | 0 | — | 0 | 1.15 |
-| pricing:compute:float8_e4m3fn | 198 | trades/american-payer/EPE | 198 | 13.8 | 198 | 115 | 0 | — | 0 | 1.66 |
-| pricing:compute:float8_e4m3fn_1x | 355 | trades/american-payer/EPE | 355 | 16 | 355 | 254 | 0 | — | 0 | 1.50 |
-| pricing:compute:float8_e5m2 | 177 | trades/american-payer/EE_B | 177 | 44.2 | 177 | 189 | 0.00121 | — | 0 | 1.44 |
-| pricing:compute:float8_e5m2_1x | 426 | trades/american-payer/EE_B | 426 | 57.1 | 426 | 446 | 0 | — | 0 | 1.50 |
-| throughout:float32 | 0.00284 | trades/american-payer/EE_B | 0.00284 | 0.000151 | 0.00278 | 101 | 0 | — | 0 | 1.03 |
-| throughout:bfloat16_3x | 0.00847 | trades/american-payer/EE_B | 0.00847 | 0.00369 | 0.00741 | 36.1 | 0 | — | 0 | 1.55 |
-| throughout:tensorfloat32 | 0.801 | trades/american-payer/EPE | 0.801 | 0.276 | 0.79 | 29.4 | 0 | — | 0 | 1.14 |
-| throughout:tensorfloat32_1x | 3.55 | trades/american-payer/EPE | 3.55 | 0.266 | 3.54 | 106 | 0 | — | 0 | 1.10 |
-| throughout:float16 | 0.864 | trades/american-payer/EPE | 0.864 | 0.404 | 0.857 | 30.8 | 0 | — | 0 | 1.33 |
-| throughout:float16_1x | 3.84 | trades/american-payer/EPE | 3.84 | 0.408 | 3.81 | 79.6 | 0 | — | 0 | 1.47 |
-| throughout:bfloat16 | 6.68 | trades/american-payer/EE_B | 6.68 | 4.64 | 6.65 | 47.8 | 0 | — | 0 | 1.28 |
-| throughout:bfloat16_1x | 22.5 | trades/american-payer/EE_B | 22.5 | 2.63 | 22 | 60.9 | 0 | — | 0 | 1.06 |
-| throughout:float8_e4m3fn | 643 | trades/american-payer/EPE | 643 | 17 | 642 | 72.3 | 0.00244 | — | 0 | 1.42 |
-| throughout:float8_e4m3fn_1x | 620 | trades/american-payer/EPE | 620 | 30.1 | 619 | 151 | 0 | — | 0 | 1.43 |
-| throughout:float8_e5m2 | 3.08e+03 | trades/american-payer/EPE | 3.08e+03 | 36.4 | 3.07e+03 | 144 | 0 | — | 0 | 1.33 |
-| throughout:float8_e5m2_1x | 753 | trades/american-payer/EPE | 753 | 150 | 743 | 368 | 0 | — | 0 | 1.41 |
+| pricing:compute:float32 | 0.00319 | trades/american-payer/EE_B | 0.00319 | 0.000142 | 0.00319 | 240 | 0 | — | 0 | 1.26 |
+| pricing:compute:bfloat16_3x | 0.00761 | trades/american-payer/EPE | 0.00761 | 0.00182 | 0.00753 | 99.7 | 0 | — | 0 | 1.86 |
+| pricing:compute:tensorfloat32 | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.44 |
+| pricing:compute:tensorfloat32_1x | 0.764 | trades/bermudan-payer-physical/EPE | 0.764 | 0.166 | 0.752 | 83.9 | 0 | — | 0 | 1.25 |
+| pricing:compute:float16 | 0.815 | trades/american-payer/EPE | 0.815 | 0.159 | 0.807 | 41.4 | 0 | — | 0 | 1.52 |
+| pricing:compute:float16_1x | 0.764 | trades/bermudan-payer-physical/EPE | 0.764 | 0.166 | 0.752 | 83.9 | 0 | — | 0 | 1.57 |
+| pricing:compute:bfloat16 | 6.46 | trades/american-payer/EE_B | 6.46 | 0.831 | 6.46 | 83.7 | 0 | — | 0 | 1.52 |
+| pricing:compute:bfloat16_1x | 12.6 | trades/american-payer/EPE | 12.6 | 0.752 | 12.6 | 84.8 | 0 | — | 0 | 1.34 |
+| pricing:compute:float8_e4m3fn | 198 | trades/american-payer/EPE | 198 | 13.8 | 198 | 115 | 0 | — | 0 | 1.67 |
+| pricing:compute:float8_e4m3fn_1x | 355 | trades/american-payer/EPE | 355 | 16 | 355 | 254 | 0 | — | 0 | 1.75 |
+| pricing:compute:float8_e5m2 | 177 | trades/american-payer/EE_B | 177 | 44.2 | 177 | 189 | 0.00121 | — | 0 | 1.60 |
+| pricing:compute:float8_e5m2_1x | 426 | trades/american-payer/EE_B | 426 | 57.1 | 426 | 446 | 0 | — | 0 | 1.78 |
+| throughout:float32 | 0.00284 | trades/american-payer/EE_B | 0.00284 | 0.000151 | 0.00278 | 101 | 0 | — | 0 | 1.22 |
+| throughout:bfloat16_3x | 0.00847 | trades/american-payer/EE_B | 0.00847 | 0.00369 | 0.00741 | 36.1 | 0 | — | 0 | 1.90 |
+| throughout:tensorfloat32 | 0.801 | trades/american-payer/EPE | 0.801 | 0.276 | 0.79 | 29.4 | 0 | — | 0 | 1.45 |
+| throughout:tensorfloat32_1x | 3.55 | trades/american-payer/EPE | 3.55 | 0.266 | 3.54 | 106 | 0 | — | 0 | 1.24 |
+| throughout:float16 | 0.864 | trades/american-payer/EPE | 0.864 | 0.404 | 0.857 | 30.8 | 0 | — | 0 | 1.52 |
+| throughout:float16_1x | 3.84 | trades/american-payer/EPE | 3.84 | 0.408 | 3.81 | 79.6 | 0 | — | 0 | 1.65 |
+| throughout:bfloat16 | 6.68 | trades/american-payer/EE_B | 6.68 | 4.64 | 6.65 | 47.8 | 0 | — | 0 | 1.53 |
+| throughout:bfloat16_1x | 22.5 | trades/american-payer/EPE | 22.5 | 2.63 | 22 | 60.9 | 0 | — | 0 | 1.33 |
+| throughout:float8_e4m3fn | 643 | trades/american-payer/EPE | 643 | 17 | 642 | 72.3 | 0.00244 | — | 0 | 1.64 |
+| throughout:float8_e4m3fn_1x | 620 | trades/american-payer/EPE | 620 | 30.1 | 619 | 151 | 0 | — | 0 | 1.75 |
+| throughout:float8_e5m2 | 3.08e+03 | trades/american-payer/EPE | 3.08e+03 | 36.4 | 3.07e+03 | 144 | 0 | — | 0 | 1.60 |
+| throughout:float8_e5m2_1x | 753 | trades/american-payer/EPE | 753 | 150 | 743 | 368 | 0 | — | 0 | 1.74 |
 
 ### Exercise decisions flipped, 4096 paths
 
@@ -134,30 +134,30 @@ Per option, the share of its paths whose exercise state on a date (exercised on 
 
 | Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | Coverage, precision / total | Recompiles | Warm s |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pricing:compute:float32 | 0.0108 | trades/american-payer/EPE | 0.0108 | 0.000363 | 0.0108 | 457 | 0 | — | 0 | 3.30 |
-| pricing:compute:bfloat16_3x | 0.038 | trades/bermudan-payer-physical/NPV | 0.038 | 0.00561 | 0.0376 | 285 | 0 | — | 0 | 5.16 |
-| pricing:compute:tensorfloat32 | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 4.32 |
-| pricing:compute:tensorfloat32_1x | 6.1 | trades/bermudan-payer-physical/EE_B | 6.1 | 0.262 | 6.08 | 248 | 0 | — | 0 | 3.25 |
-| pricing:compute:float16 | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 4.44 |
-| pricing:compute:float16_1x | 6.1 | trades/bermudan-payer-physical/EE_B | 6.1 | 0.262 | 6.08 | 248 | 0 | — | 0 | 5.74 |
-| pricing:compute:bfloat16 | 44.6 | trades/american-payer/EPE | 44.6 | 1.69 | 44.5 | 148 | 0 | — | 0 | 5.63 |
-| pricing:compute:bfloat16_1x | 42 | trades/american-payer/EPE | 42 | 1.14 | 42 | 183 | 0 | — | 0 | 4.35 |
-| pricing:compute:float8_e4m3fn | 1.65e+03 | trades/american-payer/EPE | 1.65e+03 | 32.2 | 1.65e+03 | 261 | 0 | — | 0 | 6.07 |
-| pricing:compute:float8_e4m3fn_1x | 1.21e+03 | trades/american-payer/EPE | 1.21e+03 | 38.1 | 1.21e+03 | 768 | 0 | — | 0 | 6.03 |
-| pricing:compute:float8_e5m2 | 1.23e+03 | trades/american-payer/EPE | 1.23e+03 | 130 | 1.23e+03 | 597 | 0.000249 | — | 0 | 6.09 |
-| pricing:compute:float8_e5m2_1x | 2.96e+03 | trades/american-payer/EPE | 2.96e+03 | 167 | 2.96e+03 | 1.37e+03 | 0 | — | 0 | 5.92 |
-| throughout:float32 | 0.0429 | trades/bermudan-payer-physical/NPV | 0.0429 | 0.000464 | 0.013 | 179 | 0 | — | 0 | 4.27 |
-| throughout:bfloat16_3x | 0.0537 | trades/american-payer/EPE_B | 0.0537 | 0.0156 | 0.0331 | 58.3 | 0 | — | 0 | 5.70 |
-| throughout:tensorfloat32 | 6.63 | trades/american-payer/EPE | 6.63 | 0.849 | 6.61 | 92.8 | 0 | — | 0 | 5.03 |
-| throughout:tensorfloat32_1x | 11.8 | trades/american-payer/EPE | 11.8 | 0.943 | 11.8 | 246 | 0 | — | 0 | 3.74 |
-| throughout:float16 | 7.32 | trades/american-payer/EPE | 7.32 | 0.788 | 7.29 | 64.1 | 0 | — | 0 | 5.03 |
-| throughout:float16_1x | 12.5 | trades/american-payer/EPE | 12.5 | 1.58 | 12.5 | 189 | 0 | — | 0 | 5.03 |
-| throughout:bfloat16 | 43.9 | trades/american-payer/EPE | 43.9 | 12.2 | 43.8 | 87 | 0 | — | 0 | 4.72 |
-| throughout:bfloat16_1x | 76.8 | trades/american-payer/EPE | 76.8 | 6.95 | 76.3 | 93.7 | 0 | — | 0 | 3.55 |
-| throughout:float8_e4m3fn | 2.21e+03 | trades/american-payer/EPE | 2.21e+03 | 56.6 | 2.2e+03 | 137 | 0.0019 | — | 0 | 5.16 |
-| throughout:float8_e4m3fn_1x | 2.07e+03 | trades/american-payer/EPE | 2.07e+03 | 118 | 2.07e+03 | 453 | 0 | — | 0 | 5.28 |
-| throughout:float8_e5m2 | 1.02e+04 | trades/american-payer/EPE | 1.02e+04 | 111 | 1.02e+04 | 433 | 0 | — | 0 | 5.06 |
-| throughout:float8_e5m2_1x | 3.55e+03 | trades/american-payer/EPE | 3.55e+03 | 438 | 3.55e+03 | 1.8e+03 | 0 | — | 0 | 5.09 |
+| pricing:compute:float32 | 0.0108 | trades/american-payer/EE_B | 0.0108 | 0.000363 | 0.0108 | 457 | 0 | — | 0 | 3.47 |
+| pricing:compute:bfloat16_3x | 0.038 | trades/bermudan-payer-physical/NPV | 0.038 | 0.00561 | 0.0376 | 285 | 0 | — | 0 | 5.41 |
+| pricing:compute:tensorfloat32 | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 4.35 |
+| pricing:compute:tensorfloat32_1x | 6.1 | trades/bermudan-payer-physical/EE_B | 6.1 | 0.262 | 6.08 | 248 | 0 | — | 0 | 3.22 |
+| pricing:compute:float16 | 7.02 | trades/american-payer/EPE | 7.02 | 0.257 | 7.01 | 98.9 | 0 | — | 0 | 4.94 |
+| pricing:compute:float16_1x | 6.1 | trades/bermudan-payer-physical/EE_B | 6.1 | 0.262 | 6.08 | 248 | 0 | — | 0 | 4.87 |
+| pricing:compute:bfloat16 | 44.6 | trades/american-payer/EPE | 44.6 | 1.69 | 44.5 | 148 | 0 | — | 0 | 4.54 |
+| pricing:compute:bfloat16_1x | 42 | trades/american-payer/EPE | 42 | 1.14 | 42 | 183 | 0 | — | 0 | 3.39 |
+| pricing:compute:float8_e4m3fn | 1.65e+03 | trades/american-payer/EPE | 1.65e+03 | 32.2 | 1.65e+03 | 261 | 0 | — | 0 | 5.26 |
+| pricing:compute:float8_e4m3fn_1x | 1.21e+03 | trades/american-payer/EPE | 1.21e+03 | 38.1 | 1.21e+03 | 768 | 0 | — | 0 | 5.26 |
+| pricing:compute:float8_e5m2 | 1.23e+03 | trades/american-payer/EPE | 1.23e+03 | 130 | 1.23e+03 | 597 | 0.000249 | — | 0 | 5.18 |
+| pricing:compute:float8_e5m2_1x | 2.96e+03 | trades/american-payer/EPE | 2.96e+03 | 167 | 2.96e+03 | 1.37e+03 | 0 | — | 0 | 5.21 |
+| throughout:float32 | 0.0429 | trades/bermudan-payer-physical/NPV | 0.0429 | 0.000464 | 0.013 | 179 | 0 | — | 0 | 3.38 |
+| throughout:bfloat16_3x | 0.0537 | trades/american-payer/EPE_B | 0.0537 | 0.0156 | 0.0331 | 58.3 | 0 | — | 0 | 5.48 |
+| throughout:tensorfloat32 | 6.63 | trades/american-payer/EPE | 6.63 | 0.849 | 6.61 | 92.8 | 0 | — | 0 | 4.46 |
+| throughout:tensorfloat32_1x | 11.8 | trades/american-payer/EPE | 11.8 | 0.943 | 11.8 | 246 | 0 | — | 0 | 3.20 |
+| throughout:float16 | 7.32 | trades/american-payer/EPE | 7.32 | 0.788 | 7.29 | 64.1 | 0 | — | 0 | 4.90 |
+| throughout:float16_1x | 12.5 | trades/american-payer/EPE | 12.5 | 1.58 | 12.5 | 189 | 0 | — | 0 | 4.87 |
+| throughout:bfloat16 | 43.9 | trades/american-payer/EPE | 43.9 | 12.2 | 43.8 | 87 | 0 | — | 0 | 4.46 |
+| throughout:bfloat16_1x | 76.8 | trades/american-payer/EPE | 76.8 | 6.95 | 76.3 | 93.7 | 0 | — | 0 | 3.31 |
+| throughout:float8_e4m3fn | 2.21e+03 | trades/american-payer/EPE | 2.21e+03 | 56.6 | 2.2e+03 | 137 | 0.0019 | — | 0 | 5.22 |
+| throughout:float8_e4m3fn_1x | 2.07e+03 | trades/american-payer/EPE | 2.07e+03 | 118 | 2.07e+03 | 453 | 0 | — | 0 | 5.20 |
+| throughout:float8_e5m2 | 1.02e+04 | trades/american-payer/EPE | 1.02e+04 | 111 | 1.02e+04 | 433 | 0 | — | 0 | 5.13 |
+| throughout:float8_e5m2_1x | 3.55e+03 | trades/american-payer/EPE | 3.55e+03 | 438 | 3.55e+03 | 1.8e+03 | 0 | — | 0 | 5.16 |
 
 ### Exercise decisions flipped, 16384 paths
 
