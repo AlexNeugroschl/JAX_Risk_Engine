@@ -22,7 +22,9 @@ concurrency:
 jobs:
   fast:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A cold run (no compile cache) takes ~13 min on a fast 4-core desktop and about twice
+    # that on the hosted runner: 30 min left no margin as the suite grew.
+    timeout-minutes: 45
     steps:
       # No submodules: reference/ORE and reference/traderX are read by humans,
       # and the one test that reads reference/traderX skips when it is absent.
@@ -40,7 +42,9 @@ jobs:
   # stage stays float32 (docs/planning/details/precision.md §6.4).
   fast-strict-dtypes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A cold run (no compile cache) takes ~13 min on a fast 4-core desktop and about twice
+    # that on the hosted runner: 30 min left no margin as the suite grew.
+    timeout-minutes: 45
     env:
       JAX_NUMPY_DTYPE_PROMOTION: strict
     steps:

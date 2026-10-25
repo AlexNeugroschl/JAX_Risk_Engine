@@ -48,6 +48,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs",
 jax.config.update("jax_persistent_cache_min_entry_size_bytes",
                   int(os.environ["JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES"]))
 
+import ctypes
 import dataclasses
 import gc
 
@@ -89,10 +90,25 @@ def _clear_jax_caches_after_each_module():
     program for the process's lifetime, so a test process grows with each module it runs: four
     of them on CI's 4-vCPU, 16 GB runner (`-n auto`) ran out of memory, and the runner reported
     both jobs "canceled". The next module compiles what it needs again, or reads it back from
-    the persistent cache above."""
+    the persistent cache above.
+
+    On Linux that alone does not shrink the process: glibc keeps freed memory in its per-thread
+    arenas (XLA compiles on many threads), so each process held its high-water mark, the heaviest
+    module it had run, and four of them still reached ~19 GB. `malloc_trim` returns the freed
+    pages to the OS, which keeps one process near 1 GB between modules. Windows' allocator
+    returns them by itself."""
     yield
     jax.clear_caches()
     gc.collect()
+    _return_freed_memory_to_the_os()
+
+
+def _return_freed_memory_to_the_os():
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):  # not glibc (musl, ...): nothing to trim
+            pass
 
 
 @pytest.fixture(scope="module", autouse=True)
