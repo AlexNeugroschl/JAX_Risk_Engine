@@ -2,6 +2,9 @@
 venv/
 .venv/
 
+# Local presentation drafts and generated artifacts
+/artifacts/
+
 # Python / tooling caches and build artifacts
 __pycache__/
 *.pyc

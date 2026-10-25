@@ -1,4 +1,77 @@
-# Precision comparison
+# API and precision comparison
+
+## End-to-end API comparison (default)
+
+The default benchmark measures the system as a client uses it: start a wall clock
+immediately before `POST /runs`, poll for completion, retrieve the numerical result
+and every requested P&L artifact chunk, then stop. Both implementations use real
+loopback HTTP, the production routes, and the durable job queue. JAX uses the normal
+engine worker; ORE uses a benchmark-only CPU worker behind the same API. No production
+pricing implementation or API selection setting changes.
+
+From the pinned environment, with the API and development dependencies installed:
+
+```powershell
+.venv/Scripts/python.exe -m benchmarks.comparison --out .profile-out-api-comparison `
+  --backends cpu --formats float64 float32 --paths 128 512 --repeats 3
+```
+
+Add `gpu` to `--backends` on a GPU host, optionally with `--expected-gpu H100`.
+The ORE CPU baseline is included once per workload/count automatically. The existing
+single-swap and five-trade portfolio definitions are reused, including their fixed-LGM
+Bermudan and coarse pricing grid. Results do not qualify other products/settings.
+
+Each implementation/device/format/count gets a fresh API and worker, an isolated queue,
+and its own logs. Startup and device discovery finish before measurement. The **first
+job** includes request validation, queueing, lazy job initialization/compilation, pricing,
+aggregation and result serialization/retrieval. **Repeats** submit new jobs on that same
+worker: `--repeats` per seed, with no idempotency cache or extra warm-up valuation.
+The default seeds are 1/2/3. First-job time is not a process-startup measurement.
+
+`--output artifact` is the default; downloads and hash verification are timed.
+`--output inline` instead includes numerical results in the JSON response. Both sides
+use the same output mode. Saving snapshots and writing reports happen after the clock
+stops. API totals intentionally include overhead and any repeated compilation; raw
+compile counts remain available for explaining those times. Per-component profiling is
+not required to collect this benchmark.
+
+Common inputs are prepared before submission on CPU. The campaign's Sobol curve shocks
+are represented as a synthetic history whose overlapping horizon moves reproduce those
+shocks (to floating-point rounding). This lets both the public JAX API and ORE's native
+`HISTSIM_VAR` analytic consume identical factor-history inputs. These are research fixtures,
+not observed historical data. Submitted bodies are saved in each point's `requests.json`.
+
+ORE executes **one valuation per scenario**, requesting NPV and trade-level historical P&L.
+Up to 4096 scenarios fit in one OREApp; larger requests use disjoint native batches to
+avoid exhausting QuantLib's historical date range. Batch setup is timed, base NPVs are
+requested only on the first batch, and `ore_app_runs` records the number of native runs.
+Dates label only these synthetic windows; they do not change the valuation date.
+The base NPVs and trade P&Ls are reused to calculate portfolio P&L and ORE `RiskStatistics`
+VaR/ES. The correctness oracle's second, portfolio-report execution is not performed.
+The ES definition therefore matches the JAX engine's `RiskStatistics` convention.
+JAX additionally computes its normal uncertainty diagnostics; the ORE adapter does not.
+Only the common base/scenario PV, trade/portfolio P&L and VaR/ES outputs are compared.
+
+`report.md` and `comparison.json` show first-job time, median/min/max repeat times,
+hardware/library metadata, job ids, failures, and numerical checks against ORE on every
+sample. Speedup is median ORE API time divided by median candidate API time at the same
+count, and is withheld if outputs fail or cannot be compared. Low-precision failures are
+retained with their timings. These speedups are not equal-accuracy estimates or ORE GPU
+comparisons. Service logs and partial measurements survive failures.
+
+Merge API collections without rerunning them:
+
+```powershell
+.venv/Scripts/python.exe -m benchmarks.comparison --out .profile-out-api-joined `
+  --merge .profile-out-api-comparison
+```
+
+## Direct precision comparison
+
+The original direct engine timing, precision/equal-accuracy reports, and their schema
+remain available with **`--transport direct`**. API and direct collections cannot be
+mixed. Independent reference seeds and equal-accuracy interpolation belong to direct
+mode; the API report compares matched outputs with ORE instead.
 
 The comparison includes FP16. `--policies combined compute storage` separates product and
 storage errors; the default remains `combined` for bounded comparisons. Supported GPU formats
@@ -10,7 +83,7 @@ flags remain in the evidence. No format silently selects a different emitter.
 Independent reference seeds can be collected alongside matched-path references:
 
 ```bash
-python -m benchmarks.comparison --out .profile-out-h100-comparison --backends cpu gpu \
+python -m benchmarks.comparison --transport direct --out .profile-out-h100-comparison --backends cpu gpu \
   --expected-gpu H100 --formats float64 float32 float16 float8_e4m3fn float8_e5m2 \
   --policies combined compute storage --paths 16384 65536 262144 \
   --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
@@ -93,7 +166,7 @@ weekly and on manual dispatch, retaining the artifacts.
 Run from the checkout with the pinned environment in `constraints.txt`:
 
 ```powershell
-.venv/Scripts/python.exe -m benchmarks.comparison --out .profile-out-comparison
+.venv/Scripts/python.exe -m benchmarks.comparison --transport direct --out .profile-out-comparison
 ```
 
 The defaults are a smoke study: 128 and 512 scenarios, seeds 1, 2 and 3, the single swap
@@ -184,14 +257,14 @@ relative equal-accuracy estimation unavailable; its absolute matched errors rema
 For meaningful timing, use more seeds and counts from 65,536 upward as memory permits:
 
 ```bash
-python -m benchmarks.comparison --out .profile-out-research --backends cpu gpu \
+python -m benchmarks.comparison --transport direct --out .profile-out-research --backends cpu gpu \
   --paths 65536 131072 262144 --seeds 1 2 3 4 5 6 7 8
 ```
 
 Collections made on different machines can be joined without rerunning the engine:
 
 ```bash
-python -m benchmarks.comparison --merge cpu-collection gpu-collection --out joined
+python -m benchmarks.comparison --transport direct --merge cpu-collection gpu-collection --out joined
 ```
 
 Run the CPU reference in one collection (`--backends cpu`) and accelerators in another

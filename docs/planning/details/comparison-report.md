@@ -1,5 +1,13 @@
 # Reproducible precision comparison (F-07)
 
+Since 2026-10-22, `benchmarks.comparison` defaults to an end-to-end API comparison with
+an ORE CPU baseline. Each timed request executes once, from submission through numerical
+result retrieval; the first job is reported separately from repeated fresh submissions.
+Both use the production HTTP routes and queue, with a benchmark-only ORE worker. See
+[the benchmark guide](../../../benchmarks/README.md#end-to-end-api-comparison-default).
+The direct precision study and historical records described below remain available with
+`--transport direct`; their methodology and schema have not changed.
+
 ## Plain-language summary
 
 One report now shows how precision changes the results, runtime and memory of the same

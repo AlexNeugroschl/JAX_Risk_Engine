@@ -1,7 +1,8 @@
 """Collect and join the bounded precision comparison (F-07).
 
 Run from the checkout: python -m benchmarks.comparison --help.
-The command only orchestrates existing campaigns and isolated whole-job timing workers.
+By default, time jobs through the production HTTP API, including an ORE CPU baseline.
+Use --transport direct for the original in-process precision/equal-accuracy study.
 """
 import argparse
 import dataclasses
@@ -308,6 +309,12 @@ def markdown(data):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--transport", choices=("api", "direct"), default="api",
+                        help="API end-to-end timing (default), or the original direct precision study")
+    parser.add_argument("--repeats", type=int, default=3,
+                        help="fresh repeated API jobs per seed, after the first job")
+    parser.add_argument("--output", choices=("artifact", "inline"), default="artifact",
+                        help="API P&L output; artifact downloads are included in elapsed time")
     parser.add_argument("--merge", type=Path, nargs="+", help="join existing collections; no engine execution")
     parser.add_argument("--paths", type=int, nargs="+", default=[128, 512])
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
@@ -350,6 +357,13 @@ def main(argv=None):
     if args.reference_paths and (len(set(args.reference_paths)) != len(args.reference_paths)
             or any(n < 128 or n & (n - 1) for n in args.reference_paths)):
         parser.error("reference counts must be distinct powers of two >= 128")
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    if args.transport == "api":
+        if args.reference_seeds or args.reference_paths:
+            parser.error("independent precision references require --transport direct; API mode compares matched ORE outputs")
+        from benchmarks.api_comparison import run
+        return run(args)
     if not args.merge:
         collect(args.out, sorted(args.paths), args.seeds, args.backends, args.formats, args.workloads, args.timeout,
                 args.rtol, args.atol, args.policies, args.reference_seeds, args.reference_paths,

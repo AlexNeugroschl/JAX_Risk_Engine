@@ -63,6 +63,8 @@ profiling = [
     "xprof",
 ]
 benchmark = [
+    # The end-to-end benchmark submits and retrieves real HTTP API jobs.
+    "httpx",
     # Standalone PDF/PNG scaling plots for demos/demo_gpu_scaling.py.
     "matplotlib",
 ]

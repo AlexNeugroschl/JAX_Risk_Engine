@@ -157,7 +157,7 @@ def _rows(report) -> list:
 
 
 def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, tail_probabilities, pricing,
-         trade_pnl: bool) -> dict:
+         trade_pnl: bool, *, include_npv: bool = False) -> dict:
     run = portfolio_inputs(market, trades, pricing, "the market-risk oracle")
     factors = RateRiskFactors.from_market(market)
     keys = {f"discount:{CCY}": (f"DiscountCurve/{CCY}", f"IndexCurve/{DISCOUNT_INDEX}"),
@@ -187,6 +187,8 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
     parameters.setIncludeExpectedShortfall(True)
     parameters.setTradePnl(trade_pnl)
     parameters.insertAnalytic("HISTSIM_VAR")
+    if include_npv:
+        parameters.insertAnalytic("NPV")
     # The scenarios as a file ORE reads. Given the text itself, ORE keeps it as its `scenarioFile`
     # parameter, whose path the analytic then asks the filesystem about: on Linux that fails on so
     # long a name ("File name too long"). ORE holds the file open while its reader lives (on
@@ -199,7 +201,8 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
         app = None
         try:
             app = run.run("historical_PnL" if trade_pnl else "var")
-            reports = {name: report_columns(app, name) for name in ("historical_PnL",) + (() if trade_pnl else ("var",))}
+            names = ("historical_PnL",) + (() if trade_pnl else ("var",)) + (("npv",) if include_npv else ())
+            reports = {name: report_columns(app, name) for name in names}
         except BaseException as error:
             failure = error
             # A failed run's traceback owns OREApp/InputParameters too. Keep its diagnostic

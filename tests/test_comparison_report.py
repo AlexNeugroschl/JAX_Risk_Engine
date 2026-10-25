@@ -295,7 +295,7 @@ def test_worker_selects_device_and_checks_observed_placement(tmp_path, monkeypat
 @pytest.mark.parametrize("campaign", ["comparison_single", "comparison_portfolio"])
 def test_real_comparison_worker_outputs_and_compilation_reuse(tmp_path, campaign):
     """Exercise the actual CLI, process isolation, snapshot comparison and host outputs."""
-    assert main(["--out", str(tmp_path), "--paths", "128", "--backends", "cpu",
+    assert main(["--out", str(tmp_path), "--transport", "direct", "--paths", "128", "--backends", "cpu",
                  "--formats", "float64", "float32", "--workloads", campaign]) == 0
     data = json.loads((tmp_path / "comparison.json").read_text())
     assert len(data["points"]) == 2
