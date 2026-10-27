@@ -105,8 +105,8 @@ def _price_on_market(request, execution) -> "PortfolioResult":
                         for t, profile in zip(trades, trade_exposures) for k, v in profile.estimates.items()})
         realized = {**scenarios.simulation_formats, "market": realized_format(scenarios.path_arrays()),
                     **{f"values/{t.trade_id}": format_name(c) for t, c in zip(trades, valuation.columns)}}
-        computed = [run.precision.simulation.compute, run.precision.market.compute,
-                    *(run.precision.precision_for(t).compute for t in trades)]
+        computed = [run.precision.simulation.arithmetic, run.precision.market.arithmetic,
+                    *(run.precision.precision_for(t).arithmetic for t in trades)]
         report = PrecisionReport.of(run.precision, trades, realized, valuation.columns, scenarios.num_paths,
                                     paired, figures, computed, execution=execution)
         report = dataclasses.replace(report, replicates=simulation.replicates,

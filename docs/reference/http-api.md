@@ -572,8 +572,8 @@ The format names are the format table's (`float64`, `float32`, `float16`, `bfloa
 `float8_e4m3fn`, `float8_e5m2`, and the product formats `tensorfloat32`, `bfloat16_3x` and
 each format's single pass `float16_1x`, `bfloat16_1x`, `float8_e4m3fn_1x`, `float8_e5m2_1x`,
 `tensorfloat32_1x`, compute only); another name, rounding or layout is a `422`. Below float32
-a product carries the operand every path shares in two terms of the format; the single pass
-rounds it once, a bias more paths do not remove, and is there to be measured (decision A-23). `compute` is the format of a
+a basic product rounds the shared operand once. Set `product.shared_terms` to select
+residual terms explicitly; `_1x` formats require one term. `compute` is the format of a
 stage's matrix products, `accumulate` the format they accumulate in and the rest of the stage
 runs in: float32 or float64, at least as wide as `compute`, and float32 under a compute format
 below float32; `storage` no wider than `accumulate` and not a product format. Every product
@@ -590,8 +590,9 @@ POST /runs
 ```
 
 A precision report carries `products`: each compute format the run used, and whether the
-worker's device ran it natively or the engine emulated it (`"native"`, `"emulated"`; a CPU
-emulates every format below float32).
+worker's device dispatched it natively or the engine emulated it (`"native"`, `"emulated"`,
+or `"mixed"` when both strategies were used). These labels describe dispatch, not
+instruction qualification. A CPU emulates every format below float32.
 
 The 32/64 shape before 2026-10-01 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
 is a `422` whose message names the replacement (decision A-12); it is not translated.
@@ -635,6 +636,11 @@ uncertainty. `uncertainty` echoes the method and settings.
                               "seed": 1},
                 "quantiles": [0.99, 0.975]}
 ```
+
+Per-stage numerical product strategies, including residual terms, scaling, BF16
+padding, FP16 subnormal normalization and explicit FP8 algorithms, are configured
+through `config.precision.<stage>.product`. See [Selecting numerical experiments](../getting-started/numerical-experiments.md)
+for all fields, defaults, compatibility changes and worker compiler requirements.
 
 ## The result: `RunResultSchema`
 

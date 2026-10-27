@@ -17,15 +17,9 @@ A product in compute format `c`, accumulated in `a` (`matmul(x, y, arithmetic, s
     rounded onto float32's grid in float64 (exact) and multiplied in float64, where every
     product of two is exact: a GPU asked for float32 operands with a float64 result
     (`preferred_element_type`) accumulates in float32 (an RTX 5060, 2026-10-11);
-  * float16, bfloat16, FP8, tensorfloat32 and their single passes (`<name>_1x`): each row of the
-    left operand and each column of the right one is scaled by a power of two that brings its
-    largest magnitude to the format's top (but where the format has float32's range: bfloat16,
-    TensorFloat-32), rounded to the format's grid exactly (`engine.precision.grid`: XLA would
-    round float64 to FP8 twice) and cast to it; the product accumulates in float32 and the
-    scales are taken back out. The scales are exact and per row (a path), so no path's rounding
-    depends on another path's operands, whatever its batch, sample or device split (XLA may
-    still sum a product of another shape in another order, an ulp apart, as at float32). This is
-    how an FP8 matrix unit is fed (per-tensor or finer scales, float32 accumulation);
+  * float16, bfloat16, FP8, tensorfloat32 and their single passes: operands rounded to
+    the selected grid and multiplied with float32 accumulation. `Arithmetic.product`
+    explicitly selects optional row/column power-of-two scaling and reconstruction;
   * bfloat16_3x: each float32 operand split into its bfloat16 and the bfloat16 of the
     remainder, three products of the pieces (the remainders' product dropped), float32
     accumulation.
@@ -35,15 +29,11 @@ per-path operand by one that every path shares, and says which (`shared="left"`:
 bridge's matrix; `"right"`: the step moments, the market's loadings, each flow's value at the
 level). Rounded once, the shared operand's error is the same on every path, so it moves every
 figure the same way: a bias, which grows against the statistical error with the paths. A format
-below float32 carries it in `Format.shared_terms` terms of the format instead: the first its
-rounding, each next one the rounding of what the terms before leave, each scaled into the range
-by its own powers of two. The terms are stacked along the shared operand's free axis, so the
-product stays one product, that many times as wide, and the terms' products are summed in
-float32, the smallest first: the shared operand's rounding is then the last term's, far below
-the per-path operand's. Its remaining rounding error still depends on the rounding policy
-(nearest can retain a bias; stochastic rounding is described below). Two terms by
-default; the single pass (`<name>_1x`, one term) is what one native product does, kept so that
-its bias and its speed are measured (the evidence table, the timing).
+below float32 carries it in `ProductOptions.shared_terms` terms: one by default, or
+explicit residual terms stacked along its free axis and summed smallest first.
+`ProductOptions.compensated(compute)` selects the previous scaled/residual profile.
+These strategies trade extra quantization, product width and reconstruction for
+less shared-operand rounding bias. See docs/getting-started/numerical-experiments.md.
 
 `Arithmetic.rounding="stochastic"` rounds only the per-path operand between its two
 neighbours with the exact distance probability. This removes its conditional mean
@@ -64,7 +54,8 @@ format below float32 is emulated; `product_execution` says which ran, and the pr
 names it per compute format (`PrecisionReport.products`).
 
 **Native dispatch** is selected wherever the backend/device supports the format,
-independently of the GEMM emitter. E5M2 uses an E4M3 shared operand (`Format.shared_dtype`).
+independently of the GEMM emitter. E5M2 uses its own shared grid unless
+`product.shared_format="e4m3"` is explicitly selected.
 A dispatch label states the requested arithmetic; lowering/traces establish which shapes
 actually use matrix units. A compiler may fuse a matrix-vector product instead.
 Arithmetic requires native execution by default and refuses implicit emulation or
@@ -73,8 +64,8 @@ unqualified FP8 compiler paths. Numerical research explicitly opts into
 
 **Compiler controls** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
 under Triton and a bfloat16-passes GEMV fusion rounding products in BF16. The latter
-uses zero-padded native GEMM lanes in `_matmul32`, retaining the algorithm and FP32
-accumulation. cuBLAS (`TRITON_GEMM_OFF`) remains a separate diagnostic route, not a
+can explicitly use `product.bf16_padding="gemm8"` to retain native GEMM and FP32
+accumulation; it is not enabled by default. cuBLAS (`TRITON_GEMM_OFF`) remains a separate diagnostic route, not a
 native FP8 qualification: the H100 trial found arithmetic discrepancies there too.
 `JAX_RISK_EMULATE_PRODUCTS` accepts comma-separated
 compute formats; a base name includes its single-pass variant. It preserves operand rounding
@@ -86,6 +77,7 @@ pipelines and fails on any product of the engine's that does not state its preci
 """
 import math
 import os
+from dataclasses import replace
 from functools import lru_cache
 from typing import Mapping, Optional
 
@@ -109,9 +101,9 @@ _GPU_UNITS = {"float16": 7.0, "bfloat16": 8.0, "tensorfloat32": 8.0, "bfloat16_3
 TRITON_GEMM_OFF = "--xla_gpu_enable_triton_gemm=false"
 #: Optional process-level numerical control or compiler workaround, never set on import.
 EMULATE_PRODUCTS = "JAX_RISK_EMULATE_PRODUCTS"
-#: The formats below float32 a TPU's matrix units run, by base: bfloat16 and its passes on every
-#: generation, XLA's own way of running a float32 product there, to be shown right on the device
-#: as on a GPU (FP8, from Ironwood, emulated until then).
+#: Conservative native TPU routes enabled by this engine: BF16 and its passes.
+#: Other formats remain emulated pending target/compiler qualification; this is
+#: not a complete hardware specification of every TPU generation's capabilities.
 _TPU_UNITS = {"bfloat16": "", "bfloat16_3x": ""}
 #: The dtype an emulated format's operands are multiplied in, by base: one that holds every value
 #: of the format exactly and whose products are exact in float32 (every FP8 value is a float16
@@ -126,14 +118,14 @@ _FLOAT32_TOP_EXPONENT = math.frexp(float(jnp.finfo(jnp.float32).max))[1]
 SHARED = ("left", "right")
 
 
-def product_execution(name: str, device: Optional[jax.Device] = None) -> str:
+def product_execution(name: str, device: Optional[jax.Device] = None, *, options=None) -> str:
     """`"native"` if `device` (`default_device()` by default: the one a product traced now runs
     on) has matrix units for compute format `name`, else `"emulated"` (see the module docstring). float64 and
     float32 are native on a CPU and a GPU; a TPU emulates float64 and runs float32 in bfloat16
     passes, which XLA arranges itself (native). Explicit process emulation overrides capability;
     the GEMM emitter never changes this default. Actual instruction use needs lowering evidence."""
     fmt = format_of(name)
-    if _explicit_emulation(fmt):
+    if _explicit_emulation(fmt) or (options is not None and options.implementation == "emulated_fp32"):
         return "emulated"
     device = device or default_device()
     platform = device.platform
@@ -179,7 +171,7 @@ def default_device() -> jax.Device:
     return configured or jax.devices()[0]
 
 
-def product_precision(compute, device: Optional[jax.Device] = None, matrix_vector: bool = False):
+def product_precision(compute, device: Optional[jax.Device] = None, matrix_vector: bool = False, *, options=None):
     """The precision a product in compute format `compute` (a name, or the dtype of an array
     format) states in the program: its algorithm where a product format runs natively, else full
     precision on the (rounded) operands. The same algorithm is requested for matrix and
@@ -188,7 +180,9 @@ def product_precision(compute, device: Optional[jax.Device] = None, matrix_vecto
     if fmt.compute_pending is not None:
         raise ValueError(f"a matrix product in {fmt.name} is not enabled yet ({fmt.compute_pending})")
     device = device or default_device()
-    if fmt.product in _ALGORITHMS and product_execution(fmt.name, device) == "native":
+    if options is not None and options.algorithm == "fp8_full":
+        return lax.DotAlgorithmPreset.ANY_F8_ANY_F8_F32
+    if fmt.product in _ALGORITHMS and product_execution(fmt.name, device, options=options) == "native":
         return _ALGORITHMS[fmt.product]
     return lax.Precision.HIGHEST
 
@@ -215,9 +209,11 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: 
         compute, accumulate = arithmetic.compute, arithmetic.accumulate
     fmt, out = format_of(compute), format_of(accumulate).dtype
     from engine.precision.execution import validate_product
-    validate_product(compute, accumulate, arithmetic.execution if arithmetic is not None else "native")
+    from engine.precision.options import ProductOptions
+    options = arithmetic.product if arithmetic is not None else ProductOptions()
+    validate_product(compute, accumulate, arithmetic.execution if arithmetic is not None else "native", options=options)
     matrix_vector = min(a.shape[-2] if a.ndim > 1 else 1, b.shape[-1] if b.ndim > 1 else 1) == 1
-    precision = product_precision(compute, matrix_vector=matrix_vector)
+    precision = product_precision(compute, matrix_vector=matrix_vector, options=options)
     if not fmt.below_float32:
         if fmt.dtype != out:   # float32 operands, float64 accumulation: float32's values in float64
             a, b = (round_to_grid(x.astype(out), fmt.mantissa_bits, fmt.min_exponent) for x in (a, b))
@@ -226,20 +222,26 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: 
     a, b = (a[None, :] if vector_a else a), (b[:, None] if vector_b else b)
     if fmt.product == "bfloat16_3x" and precision is lax.Precision.HIGHEST:
         (a_hi, a_lo), (b_hi, b_lo) = _split_bfloat16(a), _split_bfloat16(b)
+        if options.implementation == "emulated_fp32" or _explicit_emulation(fmt):
+            a_hi, a_lo, b_hi, b_lo = (x.astype(jnp.float32) for x in (a_hi, a_lo, b_hi, b_lo))
         product = (_matmul32(a_lo, b_hi, precision) + _matmul32(a_hi, b_lo, precision)) + _matmul32(a_hi, b_hi,
                                                                                                      precision)
     elif fmt.product == "bfloat16_3x":
-        product = _matmul32(a.astype(jnp.float32), b.astype(jnp.float32), precision)
+        if (matrix_vector and default_device().platform == "gpu" and options.bf16_padding == "none"
+                and arithmetic.execution == "native"):
+            raise ValueError("unmodified GPU bfloat16_3x vectors are known inaccurate; explicitly select "
+                             "product.bf16_padding='gemm8' or allow an unqualified research run")
+        product = _matmul32(a.astype(jnp.float32), b.astype(jnp.float32), precision, padding=options.bf16_padding)
     else:
-        native = product_execution(compute) == "native"
+        native = product_execution(compute, options=options) == "native"
         product = _rounded_product(a, b, fmt, native, precision, shared, arithmetic, sample_axis)
     product = product[..., 0, :] if vector_a else product
     return (product[..., 0] if vector_b else product).astype(out)
 
 
-def _matmul32(a, b, precision):
+def _matmul32(a, b, precision, *, padding="none"):
     """`a @ b` accumulated in float32: an algorithm states its own accumulation."""
-    if (precision is lax.DotAlgorithmPreset.BF16_BF16_F32_X3
+    if (padding == "gemm8" and precision is lax.DotAlgorithmPreset.BF16_BF16_F32_X3
             and default_device().platform == "gpu"
             and (a.shape[-2] == 1 or b.shape[-1] == 1)):
         # JAX 0.10.2's GPU GEMV expansion multiplies the split pieces in BF16,
@@ -249,18 +251,19 @@ def _matmul32(a, b, precision):
         a = jnp.pad(a, [(0, 0)] * (a.ndim - 2) + [(0, max(0, 8 - m)), (0, 0)])
         b = jnp.pad(b, [(0, 0)] * (b.ndim - 2) + [(0, 0), (0, max(0, 8 - n))])
         return jnp.matmul(a, b, precision=precision)[..., :m, :n]
-    if isinstance(precision, lax.DotAlgorithmPreset):
-        return jnp.matmul(a, b, precision=precision)
     return jnp.matmul(a, b, precision=precision, preferred_element_type=jnp.float32)
 
 
 def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, arithmetic, sample_axis: int):
     """`a @ b` on operands rounded to `fmt`'s grid (below float32), each row of `a` and column of
-    `b` scaled into its range by a power of two, the `shared` operand in `fmt.shared_terms` terms
+    `b` optionally scaled into range by powers of two, the `shared` operand in configured residual terms
     on its own grid (`engine.precision.formats.shared_format`), as one product: see the module
     docstring. Natively each operand is held in its grid's dtype; emulated, both in one that holds
     them exactly (`_CARRIERS`)."""
-    terms = fmt.shared_terms
+    options = arithmetic.product
+    fmt = replace(fmt, shared_terms=options.shared_terms,
+                  shared_dtype=fmt.shared_dtype if options.shared_format == "e4m3" else None)
+    terms = options.shared_terms
     uniforms = None
     if arithmetic.rounding == "stochastic":
         if arithmetic.key is None:
@@ -268,18 +271,25 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
         operand = b if shared == "left" else a
         uniforms = _operand_uniforms(operand, arithmetic, sample_axis)
     held = shared_format(fmt)
-    qa, ka = _terms(a, held if shared == "left" else fmt, axis=-1, count=terms if shared == "left" else 1,
-                    uniforms=uniforms if shared == "right" else None)
-    qb, kb = _terms(b, held if shared == "right" else fmt, axis=-2, count=terms if shared == "right" else 1,
-                    uniforms=uniforms if shared == "left" else None)
+    carrier = None
     if not native:
-        # TPU FP16 dots use a reduced-accuracy BF16 decomposition even with
-        # HIGHEST. FP32 carriers preserve the already-quantized operands and
-        # request the backend's full FP32 product. The report stays "emulated".
-        carrier = (jnp.float32 if _explicit_emulation(fmt) or default_device().platform == "tpu"
+        # Select the carrier *before* quantization's final cast. On TPU, a
+        # float32(float16(rounded)) round trip is narrowed back to an FP16 dot
+        # by libtpu 0.0.42, losing the requested FP32 product accuracy. Keep
+        # explicitly rounded grid values in FP32 throughout emulation instead.
+        # This removes the observed narrowing pattern; actual TPU qualification
+        # is still required. Native operand types and dispatch are unchanged.
+        carrier = (jnp.float32 if _explicit_emulation(fmt) or options.implementation == "emulated_fp32"
+                   or default_device().platform == "tpu"
                    else _CARRIERS.get(fmt.base, fmt.dtype))
-        qa, qb = qa.astype(carrier), qb.astype(carrier)
-    product = _matmul32(qa, qb, precision)
+    qa, ka = _terms(a, held if shared == "left" else fmt, axis=-1, count=terms if shared == "left" else 1,
+                    uniforms=uniforms if shared == "right" else None, carrier=carrier,
+                    scaling=options.scaling == "power_of_two")
+    qb, kb = _terms(b, held if shared == "right" else fmt, axis=-2, count=terms if shared == "right" else 1,
+                    uniforms=uniforms if shared == "left" else None, carrier=carrier,
+                    scaling=options.scaling == "power_of_two")
+    product = (_normalized_fp16_product(qa, qb, precision) if options.subnormals == "normalize_fp16"
+               else _matmul32(qa, qb, precision))
     product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)
     parts = jnp.split(product, terms, axis=-2 if shared == "left" else -1)
     total = parts[-1]
@@ -288,14 +298,15 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
     return total
 
 
-def _terms(x, fmt: Format, axis: int, count: int, uniforms=None):
+def _terms(x, fmt: Format, axis: int, count: int, uniforms=None, *, carrier=None, scaling=True):
     """`x` as `count` terms of `fmt`, each rounded and scaled along `axis` by `_quantize`, the
     first `x`'s rounding and each next one the rounding of what the terms before leave, stacked
     along the other matrix axis; and their scale exponents, stacked alike. What a term leaves is
-    exact in `x`'s dtype (float32 or float64), being a rounding error onto a coarser grid."""
+    exact in `x`'s dtype (float32 or float64), being a rounding error onto a coarser grid.
+    `carrier` overrides only the final dtype, retaining `fmt`'s grid and scale rules."""
     terms, exponents, rest = [], [], x
     for i in range(count):
-        term, k = _quantize(rest, fmt, axis, uniforms)
+        term, k = _quantize(rest, fmt, axis, uniforms, carrier=carrier, scaling=scaling)
         terms.append(term)
         exponents.append(k)
         if i + 1 < count:
@@ -305,18 +316,56 @@ def _terms(x, fmt: Format, axis: int, count: int, uniforms=None):
     return jnp.concatenate(terms, axis=stack), jnp.concatenate(exponents, axis=stack)
 
 
-def _quantize(x, fmt: Format, axis: int, uniforms=None):
+def _quantize(x, fmt: Format, axis: int, uniforms=None, *, carrier=None, scaling=True):
     """`x` scaled along `axis` by the powers of two `2^k` that bring each slice's largest finite
     magnitude into (max/2, max] of `fmt`, rounded to its grid and cast to it; and `k`. A format
     with float32's range (bfloat16, TensorFloat-32) needs no scale: `k` is 0, and scaling it to
     its top would overflow the float32 accumulator."""
-    if math.frexp(fmt.max)[1] >= _FLOAT32_TOP_EXPONENT:
+    if not scaling or math.frexp(fmt.max)[1] >= _FLOAT32_TOP_EXPONENT:
         k = jnp.zeros(x.shape[:axis % x.ndim] + (1,) + x.shape[axis % x.ndim + 1:], dtype=jnp.int32)
     else:
         amax = jnp.max(jnp.where(jnp.isfinite(x), jnp.abs(x), 0), axis=axis, keepdims=True, initial=0)
         k = scale_exponent(amax, fmt.max)
     scaled = x * pow2(k, x.dtype)
-    return round_to_grid(scaled, fmt.mantissa_bits, fmt.min_exponent, uniforms).astype(fmt.dtype), k
+    # round_to_grid implements the requested operand format in the input dtype.
+    # In-range grid values fit exactly in the selected carrier. Emulation must
+    # not visit a low dtype merely to widen back to FP32 afterwards.
+    rounded = round_to_grid(scaled, fmt.mantissa_bits, fmt.min_exponent, uniforms)
+    if carrier is not None:
+        # A wider carrier must still obey the target encoding's overflow rules.
+        # E4M3FN has no infinities (also when it carries E5M2's shared terms).
+        overflow = (jnp.full_like(rounded, jnp.nan) if fmt.dtype == jnp.dtype(jnp.float8_e4m3fn)
+                    else jnp.copysign(jnp.full_like(rounded, jnp.inf), rounded))
+        rounded = jnp.where(jnp.abs(rounded) > fmt.max, overflow, rounded)
+    return rounded.astype(fmt.dtype if carrier is None else carrier), k
+
+
+def _normalized_fp16_product(a, b, precision):
+    """Opt-in: one ordinary dot when possible; four native dots for subnormals.
+
+    The two tests/reductions and conditional exist only in this selected strategy.
+    Normalization preserves the quantized operands; it never flushes them to zero.
+    Qualification remains device/compiler/shape specific.
+    """
+    def small(x):
+        x = x.astype(jnp.float32)
+        return (jnp.abs(x) < 2.**-14) & (x != 0)
+
+    def corrected(operands):
+        a, b = operands
+        def split(x):
+            x = x.astype(jnp.float32)
+            mask = small(x)
+            return (jnp.where(mask, 0, x).astype(jnp.float16),
+                    jnp.where(mask, x * 2.**24, 0).astype(jnp.float16))
+        ah, al = split(a)
+        bh, bl = split(b)
+        return (_matmul32(ah, bh, precision)
+                + (_matmul32(al, bh, precision) + _matmul32(ah, bl, precision)) * 2.**-24
+                + _matmul32(al, bl, precision) * 2.**-48)
+
+    return lax.cond(jnp.any(small(a)) | jnp.any(small(b)), corrected,
+                    lambda operands: _matmul32(*operands, precision), (a, b))
 
 
 def _operand_uniforms(x, arithmetic, sample_axis):

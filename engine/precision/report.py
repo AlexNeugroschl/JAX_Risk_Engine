@@ -9,7 +9,7 @@ run's precision was, read from what it did, and how far its figures are from flo
                                                    the arrays: "shocks", "states", "market",
                                                    "values/<trade id>" (the names `Precision.store`
                                                    gives them; one entry for the whole market)
-      products      {compute format: "native" | "emulated"}
+      products      {compute format: "native" | "emulated" | "mixed"}
                                                    every compute format whose matrix products
                                                    the run ran, and whether the device has units
                                                    for it or the engine emulated it
@@ -78,7 +78,7 @@ class PrecisionReport:
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,
            paths: int, paired_paths: int = 0, figures: Mapping[str, Estimate] = None,
-           computed: Iterable[str] = (), *, execution=None) -> "PrecisionReport":
+           computed: Iterable = (), *, execution=None) -> "PrecisionReport":
         """The report of a run of `trades` (each with `trade_id` and `product`) under `policy`,
         whose stored `arrays` (plain or `Stored`) give the devices it ran on, and whose matrix
         products ran in the compute formats `computed` (on the first of those devices)."""
@@ -87,11 +87,24 @@ class PrecisionReport:
         from engine.precision.execution import report_policy
         if execution is not None and (execution.policy != policy or execution.device.platform != device.platform):
             raise ValueError("precision report does not match the validated policy/backend")
+        resolved = execution.report_policy() if execution is not None else report_policy(policy, device)
+        products, executed = {}, []
+        for item in computed:
+            name, options = (item.compute, item.product) if hasattr(item, 'product') else (item, None)
+            dispatch = product_execution(name, device, options=options)
+            previous = products.setdefault(name, dispatch)
+            if previous != dispatch:
+                products[name] = 'mixed'
+            if options is not None:
+                descriptor = {'compute': name, 'accumulate': item.accumulate,
+                              'options': options.description(name), 'dispatch': dispatch}
+                if descriptor not in executed:
+                    executed.append(descriptor)
+        resolved['executed_products'] = executed
         return cls(policy=policy, trades={t.trade_id: policy.precision_for(t) for t in trades},
                    realized=dict(realized), devices=devices_of(arrays), backend=device.platform,
                    jax_version=jax.__version__, paths=paths, paired_paths=paired_paths, figures=dict(figures or {}),
-                   products={name: product_execution(name, device) for name in sorted(set(computed))},
-                   resolved_policy=execution.report_policy() if execution is not None else report_policy(policy, device))
+                   products=products, resolved_policy=resolved)
 
 
 def format_name(x) -> str:

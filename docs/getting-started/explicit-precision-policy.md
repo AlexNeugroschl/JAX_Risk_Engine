@@ -81,6 +81,11 @@ Only static policy-report metadata is cached, by immutable policy and concrete
 backend. Callers receive fresh copies; actual output formats, devices, path counts,
 figures and qualification observations are read anew for each result.
 
+See [Selecting numerical experiments](numerical-experiments.md) for per-stage
+product strategies, storage scaling and worker compiler requirements. Low-format
+products now default to one unscaled shared term; the historical compensated
+profile is available explicitly.
+
 ## Fixed precision is part of the contract
 
 `Precision.internal` declares the existing FP64 kernels: `calibration`, `levels`,
@@ -119,8 +124,9 @@ instructions for FP8 operand programs. Explicit research mode can run that path
 without claiming native FP8 qualification. See the
 [hardware rerun findings](hardware-correctness-rerun.md).
 
-Accepted CPU/GPU jobs keep their pricing formulas, tolerances, rounding algorithms
-and compiled numerical kernels. Checks run in Python at entry/tracing boundaries.
+The default FP64/FP32 kernels keep their pricing formulas and tolerances.
+Low-format algorithms follow the selected product options; checks run in Python
+at entry/tracing boundaries.
 Execution mode participates in JIT cache identity, so a permissive compiled
 product cannot satisfy a later strict request by cache reuse. The policy does not
 resolve the measured H100 FP16/BF16 pipeline differences or qualify broad TPU correctness.

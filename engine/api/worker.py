@@ -134,7 +134,7 @@ def main(argv=None) -> None:
                         help="one worker of a set on every host of a pod slice (engine.api.hosts): process 0 "
                              "serves the queue and every host runs each job")
     parser.add_argument("--gpu-gemm", choices=("default", "cublas"), default=None,
-                        help="GPU matrix-product route, set before JAX starts; cublas enables the native FP8 route")
+                        help="GPU compiler route, set before JAX starts; this does not qualify native FP8")
     parser.add_argument("--poll-seconds", type=float, default=None,
                         help=f"idle wait between looks at the queue (default {POLL_SECONDS} s, "
                              f"{DISTRIBUTED_POLL_SECONDS} s with --distributed)")
@@ -210,6 +210,8 @@ def serve(queue_path, *, lock_path=None, price: Optional[Pricer] = None, parent_
         return EXIT_HOST_OWNED
     compiles = queue = None
     try:
+        from engine.precision.runtime import capture_compiler_runtime
+        capture_compiler_runtime(os.environ if environ is None else environ)
         hosts = distributed_hosts(environ) if distributed else LOCAL
         if hosts.primary:
             queue = JobQueue(queue_path)

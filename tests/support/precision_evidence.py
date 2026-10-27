@@ -41,11 +41,12 @@ import argparse
 import json
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from engine.api.requests import PrecisionSchema
+from engine.precision import ProductOptions
 from engine.precision.evidence import EVIDENCE_FILE, TABLE, RunFigures, combination, evidence_json
 from engine.risk.market.run import run_figures as market_risk_figures
 from engine.run.pipeline import run_figures as portfolio_figures
@@ -135,13 +136,33 @@ class EvidenceRow:
         return ceiling
 
 
+def recorded_precision(policy):
+    """Decode measured policies using the semantics in effect when recorded.
+
+    Records predating ProductOptions used the compensated profile implicitly.
+    This compatibility rule applies only to archived measurements, never requests.
+    Preserve their bytes and measured numbers; new records contain explicit options.
+    """
+    precision = PrecisionSchema(**policy).to_dataclass()
+    stages = {}
+    for name in ("simulation", "market", "pricing"):
+        stage = getattr(precision, name)
+        stages[name] = (stage if "product" in policy.get(name, {}) else
+                        replace(stage, product=ProductOptions.compensated(stage.compute)))
+    for name in ("by_product", "by_trade"):
+        stages[name] = {key: (stage if "product" in policy[name][key] else
+                             replace(stage, product=ProductOptions.compensated(stage.compute)))
+                        for key, stage in getattr(precision, name).items()}
+    return replace(precision, **stages)
+
+
 def rows_of(m: Measurements, standard: Standard) -> List[EvidenceRow]:
     """The evidence rows of one campaign's measurements, in case order, then scope and figure
     in the order measured; a case at float64 everywhere is the reference and gives none."""
     figures = FIGURES[m.kind]
     rows = []
     for label, policy in m.cases.items():
-        precision = PrecisionSchema(**policy).to_dataclass()
+        precision = recorded_precision(policy)
         if precision.by_product or precision.by_trade:
             raise ValueError(f"{m.campaign}/{label}: a case with overrides has a combination per product; the "
                              f"evidence table reads uniform cases only")

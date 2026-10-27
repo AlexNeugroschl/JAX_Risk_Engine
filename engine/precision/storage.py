@@ -132,11 +132,12 @@ def rounding_key(seed: int, stream: str) -> jax.Array:
 
 
 def store(x, name: str, rounding: str = "nearest", key: Optional[jax.Array] = None,
-          axis: int = 0, offset: str = "block") -> Union[jax.Array, Stored]:
+          axis: int = 0, offset: str = "block", *, scaling: str = "power_of_two") -> Union[jax.Array, Stored]:
     """`x` kept in format `name`: a plain array at float64 and float32 (rounded to nearest;
     `rounding` and `offset` are for the scaled formats), else a `Stored` with block scales
     along `axis`, the scenario axis, and with `offset="block"` an offset beside each, rounded
-    by `rounding` (`stochastic` needs `key`)."""
+    by `rounding` (`stochastic` needs `key`). With `scaling="none"` and
+    `offset="none"`, low formats are plain quantized arrays without block metadata."""
     fmt = format_of(name)
     from engine.precision.execution import validate_format
     from engine.precision.products import default_device
@@ -144,18 +145,31 @@ def store(x, name: str, rounding: str = "nearest", key: Optional[jax.Array] = No
     x = jnp.asarray(x)
     if not fmt.scaled:
         return x.astype(fmt.dtype)
+    if scaling not in ("power_of_two", "none"):
+        raise ValueError("storage scaling must be 'power_of_two' or 'none'")
     if rounding not in ROUNDINGS:
         raise ValueError(f"rounding {rounding!r}: the roundings are {list(ROUNDINGS)}")
     if offset not in OFFSETS:
         raise ValueError(f"offset {offset!r}: the block layouts are {list(OFFSETS)}")
     if rounding == "stochastic" and key is None:
         raise ValueError("stochastic rounding needs a key (`rounding_key`)")
+    if scaling == "none":
+        if offset != "none":
+            raise ValueError("plain storage requires offset='none'")
+        return _plain_quantize(x, key if rounding == "stochastic" else None, name=name)
     if x.ndim == 0:
         raise ValueError(f"storing in {name} needs a scenario axis for its block scales; got a scalar")
     axis = axis % x.ndim
     values, scales, offsets = _quantize(x, key if rounding == "stochastic" else None, name=name, axis=axis,
                                         offset=offset == "block")
     return Stored(values, scales, offsets, name, axis)
+
+
+@functools.partial(jax.jit, static_argnames=("name",))
+def _plain_quantize(x, key, *, name):
+    fmt = FORMATS[name]
+    uniforms = None if key is None else jax.random.uniform(key, x.shape, x.dtype)
+    return _round_to_grid(x, fmt.mantissa_bits, fmt.min_exponent, uniforms).astype(fmt.dtype)
 
 
 def load(x, dtype) -> jax.Array:

@@ -852,10 +852,13 @@ it. A cash-settled option whose exercise a format flips on a path moves by its w
 `PortfolioResult.exercised` holds each option's exercise state on every path and date, and the
 precision harness measures the share each format flips.
 Each product multiplies a per-path operand by one every path shares (a flow's value at the
-level, a market loading); below float32 the shared one is carried in two terms of the format
-(2026-10-11, decision A-23), since rounded once its error would move every path alike, a bias
-more paths do not remove. The single pass is a format of its own, `<format>_1x`
-(`"bfloat16_1x"`, `"float8_e4m3fn_1x"`, ...), for measuring what one native product does. FP8
+level, a market loading). The basic product now uses one shared term without scaling.
+Select `StagePrecision.product=ProductOptions(shared_terms=2, ...)` to carry residual
+terms explicitly, or use `StagePrecision.compensated(...)` to reproduce the historical
+scaled/residual profile. The `_1x` names remain accepted and require one shared term.
+Padding, FP16 subnormal normalization, mixed FP8 representation and software products
+are also explicit options; see [Selecting numerical experiments](numerical-experiments.md).
+FP8
 compute still leaves a bias of its own rounding ([I-98](../planning/known-issues.md#i-98)): pair
 such a run with float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects
 the means. How

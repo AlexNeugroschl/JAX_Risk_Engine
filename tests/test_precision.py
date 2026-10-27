@@ -1008,7 +1008,7 @@ class TestPerTradePortfolio:
     ])
     def test_a_misspelt_override_is_refused_before_any_work(self, policy, message, monkeypatch):
         import engine.run.pipeline as pipeline
-        monkeypatch.setattr(pipeline, "build_cross_asset_model", lambda *a: pytest.fail("work was done"))
+        monkeypatch.setattr(pipeline, "_build_cross_asset_model", lambda *a: pytest.fail("work was done"))
         request = PortfolioRequest(market=shared.market(), trades=[shared.trades()["swap-payer"]],
                                    config=RunConfig(simulation=_simulation(), precision=policy))
         with pytest.raises(ValueError, match=message):

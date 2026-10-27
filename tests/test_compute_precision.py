@@ -66,11 +66,11 @@ LINEAR = ("swap-payer", "swap-receiver-seasoned-icma", "european-payer", "europe
 
 
 def _arithmetic(name: str) -> Arithmetic:
-    return Arithmetic(name, "float32" if FORMATS[name].below_float32 else name, execution="allow_emulation")
+    return Arithmetic.compensated(name, "float32" if FORMATS[name].below_float32 else name, execution="allow_emulation")
 
 
 def _stage(name: str, storage: str = "float32") -> StagePrecision:
-    return StagePrecision(storage if FORMATS[name].below_float32 else name, name, _arithmetic(name).accumulate)
+    return StagePrecision.compensated(storage if FORMATS[name].below_float32 else name, name, _arithmetic(name).accumulate)
 
 
 def _simulation(samples=64, seed=3) -> CamConfig:
@@ -149,10 +149,25 @@ class TestProducts:
         a_terms = _reference_terms(self.A, fmt.base, -1, fmt.shared_terms if side == "left" else 1, side == "left")
         b_terms = _reference_terms(self.B, fmt.base, -2, fmt.shared_terms if side == "right" else 1, side == "right")
         a, b = sum(a_terms), sum(b_terms)
-        result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32", execution="allow_emulation"), side), dtype=np.float64)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic.compensated(name, "float32", execution="allow_emulation"), side), dtype=np.float64)
         bound = sum(self._bound(np.abs(x), np.abs(y)) for x in a_terms for y in b_terms) \
             + 2.0 ** -23 * (np.abs(a) @ np.abs(b))
         assert np.all(np.abs(result - a @ b) <= bound)
+
+    @pytest.mark.parametrize("side", ["left", "right"])
+    @pytest.mark.parametrize("name", LOW_ARRAYS)
+    def test_fp32_carrier_emulation_keeps_the_requested_operand_grid(self, name, side, monkeypatch):
+        """Wider carriers must preserve quantization and both shared terms.
+
+        The oracle uses NumPy/ml_dtypes conversions, independently of the engine's
+        integer-grid arithmetic. Explicit emulation exercises the same carrier
+        route as the TPU candidate without claiming TPU compiler validation.
+        """
+        from engine.precision.products import EMULATE_PRODUCTS
+        monkeypatch.setenv(EMULATE_PRODUCTS, name)
+        jax.clear_caches()  # emulation controls are consumed when tracing
+        self.test_a_format_multiplies_its_rounded_operands_the_shared_one_in_its_terms(name, side)
+        jax.clear_caches()
 
     @pytest.mark.parametrize("side", ["left", "right"])
     def test_the_shared_operands_rounding_biases_a_single_pass_not_two_terms(self, side):
@@ -170,7 +185,7 @@ class TestProducts:
         for base in ("float16", "tensorfloat32", "bfloat16", "float8_e4m3fn", "float8_e5m2"):
             significance = {}
             for name in (base, f"{base}_1x"):
-                arithmetic = Arithmetic(name, "float32", execution="allow_emulation")
+                arithmetic = Arithmetic.compensated(name, "float32", execution="allow_emulation")
                 if side == "right":
                     result = matmul(jnp.asarray(paths, jnp.float32), weights, arithmetic, side)
                 else:
@@ -186,7 +201,7 @@ class TestProducts:
         for side in (None, "both"):
             with pytest.raises(ValueError, match=r"names the operand every path shares, shared='left' or 'right' "
                                                  r"\(decision A-23\)"):
-                matmul(self.A, self.B, Arithmetic("float64", "float64"), side)
+                matmul(self.A, self.B, Arithmetic.compensated("float64", "float64"), side)
 
     def test_bfloat16_3x_is_three_products_of_the_bfloat16_pieces(self):
         def pieces(x):
@@ -197,7 +212,7 @@ class TestProducts:
 
         (a_hi, a_lo), (b_hi, b_lo) = pieces(self.A), pieces(self.B)
         exact = a_hi @ b_hi + a_hi @ b_lo + a_lo @ b_hi
-        result = np.asarray(matmul(self.A, self.B, Arithmetic("bfloat16_3x", "float32", execution="allow_emulation"), "right"), dtype=np.float64)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic.compensated("bfloat16_3x", "float32", execution="allow_emulation"), "right"), dtype=np.float64)
         assert np.all(np.abs(result - exact) <= 3 * self._bound(np.abs(a_hi), np.abs(b_hi)))
         # ~16 bits: far closer than one bfloat16 pass, as far as TensorFloat-32 or better
         relative = np.max(np.abs(result - self.A @ self.B) / (np.abs(self.A) @ np.abs(self.B)))
@@ -220,7 +235,7 @@ class TestProducts:
         rescaling every other path a millionfold leaves a path's product as it was, bit for bit (in
         a batch of the same shape; XLA may sum a product of another shape in another order, an ulp
         apart, as it does at float32)."""
-        arithmetic = Arithmetic(name, "float32", execution="allow_emulation")
+        arithmetic = Arithmetic.compensated(name, "float32", execution="allow_emulation")
 
         def product(paths):
             """`paths @ B` `[paths, N]`, the paths on the side that is not shared."""
@@ -234,7 +249,7 @@ class TestProducts:
             np.testing.assert_array_equal(product(others)[i], full[i])
 
     def test_vectors_batches_zeros_and_an_empty_contraction(self):
-        arithmetic = Arithmetic("float8_e4m3fn", "float32", execution="allow_emulation")
+        arithmetic = Arithmetic.compensated("float8_e4m3fn", "float32", execution="allow_emulation")
         for side in ("left", "right"):
             assert matmul(self.A[0], self.B, arithmetic, side).shape == (5,)
             assert matmul(self.A, self.B[:, 0], arithmetic, side).shape == (6,)
@@ -250,7 +265,7 @@ class TestProducts:
     def test_the_program_is_one_product_of_operands_of_the_format_into_float32(self, name, side):
         """Native, each operand's own dtype; CPU-emulated FP8 uses float16 carriers. The shared operand's terms are one
         product with it, as wide as its terms (twice the work for two terms, A-23)."""
-        program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32", execution="allow_emulation"), side))
+        program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic.compensated(name, "float32", execution="allow_emulation"), side))
         (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
         base = FORMATS[name].base
         if product_execution(name) == "native":
@@ -271,7 +286,7 @@ class TestProducts:
         float32's roundoff. Red first on an RTX 5060 (2026-10-11), with the product asked of
         the device as float32 operands with a float64 result: 7.6e-7 off, float32's sums."""
         a32, b32 = self.A.astype(np.float32).astype(np.float64), self.B.astype(np.float32).astype(np.float64)
-        result = matmul(self.A, self.B, Arithmetic("float32", "float64"), "right")
+        result = matmul(self.A, self.B, Arithmetic.compensated("float32", "float64"), "right")
         assert result.dtype == jnp.float64
         expected, scale = a32 @ b32, np.abs(a32) @ np.abs(b32)
         assert np.max(np.abs(np.asarray(result) - expected) / scale) <= 64 * 2.0 ** -53
@@ -316,13 +331,13 @@ class TestProducts:
         from engine.precision import products
 
         with jax.default_device(jax.devices("cpu")[0]):
-            emulated = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
-            monkeypatch.setattr(products, "product_execution", lambda name, device=None: "native")
-            program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
+            emulated = np.asarray(matmul(self.A, self.B, Arithmetic.compensated("float8_e5m2", "float32", execution="allow_emulation"), side))
+            monkeypatch.setattr(products, "product_execution", lambda name, device=None, **kwargs: "native")
+            program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic.compensated("float8_e5m2", "float32", execution="allow_emulation"), side))
             (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
             e4m3, e5m2 = jnp.dtype(jnp.float8_e4m3fn), jnp.dtype(jnp.float8_e5m2)
             assert [v.aval.dtype for v in dot.invars] == ([e4m3, e5m2] if side == "left" else [e5m2, e4m3])
-            native = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
+            native = np.asarray(matmul(self.A, self.B, Arithmetic.compensated("float8_e5m2", "float32", execution="allow_emulation"), side))
         np.testing.assert_allclose(native, emulated, rtol=0, atol=2.0 ** -22 * float(np.max(np.abs(emulated))))
 
     def test_a_native_product_format_states_its_algorithm(self, monkeypatch):
@@ -664,7 +679,7 @@ class TestPipeline:
         exact = np.asarray(price_portfolio(_request(samples=2048)).npv_cube)
 
         def significance(compute):
-            stage = StagePrecision("float32", compute, "float32")
+            stage = StagePrecision.compensated("float32", compute, "float32")
             policy = Precision.research(simulation=stage, market=stage, pricing=stage)
             return _bias_significance(np.asarray(price_portfolio(_request(samples=2048, precision=policy)).npv_cube,
                                                  np.float64) - exact)

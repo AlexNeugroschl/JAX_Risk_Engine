@@ -113,7 +113,7 @@ def test_reports_resolve_default_and_preserve_every_contract_field():
     report = PrecisionReport.of(policy, (), {}, (), paths=0)
     wire = PrecisionReportSchema.from_dataclass(report).model_dump(mode="json")
     resolved = wire["resolved_policy"]
-    assert resolved["execution"] == {"backend": report.backend, "mode": "allow_emulation"}
+    assert resolved["execution"] == {"backend": report.backend, "mode": "allow_emulation", "gpu_gemm": "inherit"}
     assert resolved["internal"] == dataclasses.asdict(InternalPrecision())
     assert resolved["pricing"]["compute"] == "float16"
     assert resolved["host_preprocessing"] == {"dtype": "float64", "backend": "cpu"}

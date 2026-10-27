@@ -199,7 +199,7 @@ def _run_market_risk(request, execution):
 
     report = dataclasses.replace(PrecisionReport.of(precision, request.trades, realized, stored,
                                  scenarios.num_scenarios, paired, figures,
-                                 [precision.precision_for(cfg).compute for cfg in request.trades], execution=execution),
+                                 [precision.precision_for(cfg).arithmetic for cfg in request.trades], execution=execution),
                                  replicates=scenarios.replicates, uncertainty_method=(
                                      "moving_block_bootstrap" if scenarios.source == SOURCE_HISTORICAL else
                                      "replicate_jackknife" if scenarios.replicates > 1 else "unavailable"))

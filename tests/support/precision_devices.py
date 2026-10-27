@@ -20,8 +20,8 @@ override in separate processes:
     python -m tests.support.precision_devices --platform gpu --gemm default
     python -m tests.support.precision_devices --platform gpu --gemm cublas
 
-The engine pads GPU bfloat16-three-pass GEMV shapes into native GEMMs to retain FP32
-products. `--gemm cublas` and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` remain explicit
+The explicit compensated profile pads GPU bfloat16-three-pass GEMV shapes into native GEMMs
+to retain FP32 products; the basic profile leaves the compiler route unmodified. `--gemm cublas` and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` remain explicit
 diagnostic settings; neither establishes native FP8 qualification. A default compiler
 failure remains a failed qualification, never an automatic passing emulation.
 TensorFloat-32 is within 4.5e-4 of emulation on this card (the device rounds operands within
@@ -71,13 +71,13 @@ def fp8_lowering(hlo):
     return None
 
 
-def fp8_instructions(paths, name):
+def fp8_instructions(paths, name, shared_format="e4m3"):
     """Inspect PTX emitted by this compilation, not an unrelated module or HLO label.
 
     Opaque library kernels remain unverified. A typed HLO or cuBLAS custom call
     is useful provenance but cannot establish what instructions actually ran.
     """
-    expected = ["e4m3", "e5m2"] if name.startswith("float8_e5m2") else ["e4m3", "e4m3"]
+    expected = (["e4m3", "e5m2"] if shared_format == "e4m3" else ["e5m2", "e5m2"]) if name.startswith("float8_e5m2") else ["e4m3", "e4m3"]
     matches, other = [], []
     for path in sorted(paths):
         data = path.read_bytes()
@@ -113,19 +113,22 @@ def normalized_error(actual, expected, scale):
 
 
 def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic"),
-            patterns=("wide", "zero", "cancellation"), shapes=SHAPES, instruction_directory=None):
+            patterns=("wide", "zero", "cancellation"), shapes=SHAPES, instruction_directory=None, profile="basic"):
     """Per-operation numerical and optimized-lowering evidence; never infer a hardware pass
     from device capability alone. Artifacts describe this runtime and device only."""
     import dataclasses
     import jax
     import numpy as np
-    from engine.precision import FORMAT_NAMES, FORMATS, SHARED, Arithmetic, matmul, product_execution
+    from engine.precision import FORMAT_NAMES, FORMATS, SHARED, Arithmetic, ProductOptions, matmul, product_execution
     from engine.precision.arithmetic import arithmetic_refusal
     from engine.precision.execution import validate_product
     from tests.support.precision_timing import execution_environment
 
     formats = FORMAT_NAMES if formats is None else formats
-    arithmetics = [Arithmetic(name, accumulate, execution="allow_emulation") for name in formats for accumulate in ("float32", "float64")
+    if profile not in ("basic", "compensated"):
+        raise ValueError("profile must be basic or compensated")
+    arithmetics = [Arithmetic(name, accumulate, execution="allow_emulation",
+                   product=ProductOptions.compensated(name) if profile == "compensated" else ProductOptions()) for name in formats for accumulate in ("float32", "float64")
                    if arithmetic_refusal(FORMATS[name], FORMATS[accumulate]) is None]
     cpu = jax.devices("cpu")[0]
     rows = []
@@ -136,12 +139,12 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
                     "passes": False, "device": device.device_kind, "environment": metadata, "operations": rows})
     for arithmetic in arithmetics:
         try:
-            validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution, device=device)
+            validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution, device=device, options=arithmetic.product)
         except ValueError as error:
             rows.append({"format": arithmetic.compute, "accumulate": arithmetic.accumulate,
                          "passes": False, "status": "unsupported", "error": str(error)})
             continue
-        fmt, execution = FORMATS[arithmetic.compute], product_execution(arithmetic.compute, device)
+        fmt, execution = FORMATS[arithmetic.compute], product_execution(arithmetic.compute, device, options=arithmetic.product)
         policies = roundings if fmt.below_float32 and fmt.product != "bfloat16_3x" else ("nearest",)
         for shape, shared, rounding, pattern in itertools.product(shapes, SHARED, policies, patterns):
             rng = np.random.default_rng(7)
@@ -178,7 +181,7 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
             if out is not None:
                 Path(out, artifact).write_text(hlo, encoding="utf-8")
             rows.append({"format": fmt.name, "accumulate": arithmetic.accumulate, "rounding": rounding,
-                         "shape": list(shape), "shared": shared, "pattern": pattern, "dispatch": execution,
+                         "product_options": dataclasses.asdict(arithmetic.product), "shape": list(shape), "shared": shared, "pattern": pattern, "dispatch": execution,
                          "observed_fp8_gemm": lowering is not None, "fp8_lowering": lowering,
                          "hlo": artifact if out is not None else None,
                          "device_emulation_error": error if np.isfinite(error) else None,
@@ -187,14 +190,14 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
                          "tolerance": float(tolerance), "passes": bool(np.isfinite(error) and error <= tolerance)})
             if instruction_directory is not None and fmt.name.startswith("float8"):
                 current = set(instruction_directory.rglob("*.ptx"))
-                rows[-1]["native_fp8_instructions"] = fp8_instructions(current - previous, fmt.name)
+                rows[-1]["native_fp8_instructions"] = fp8_instructions(current - previous, fmt.name, arithmetic.product.shared_format)
         print(f"checked {arithmetic.compute}/{arithmetic.accumulate}", flush=True)
         if out is not None:
             atomic_json(Path(out) / "qualification.json", {"schema_version": 1, "complete": False,
                         "passes": False, "device": device.device_kind, "environment": metadata, "operations": rows})
     return {"schema_version": 1, "device": device.device_kind, "platform": device.platform,
             "compute_capability": getattr(device, "compute_capability", None),
-            "environment": metadata, "operations": rows, "complete": True,
+            "environment": metadata, "profile": profile, "operations": rows, "complete": True,
             "passes": all(r["passes"] for r in rows),
             "native_scope": "optimized FP8 cuBLAS calls or Triton FP8 dots observed per operation; matrix instructions require device traces"}
 
@@ -209,6 +212,7 @@ def main(argv=None) -> int:
     parser.add_argument("--platform", default=None, help="gpu, tpu or cpu (default: JAX's default backend)")
     parser.add_argument("--formats", nargs="+", help="compute formats to check (default: every accepted format)")
     parser.add_argument("--out", type=Path, help="new output directory for JSON, optimized HLO and engine traces")
+    parser.add_argument("--profile", choices=("basic", "compensated"), default="basic")
     parser.add_argument("--gemm", choices=("default", "cublas"),
                         help="explicit emitter override; omitted keeps the runtime/inherited settings")
     parser.add_argument("--expected-device", help="required device-kind substring, e.g. H100")
@@ -240,8 +244,8 @@ def main(argv=None) -> int:
         parser.error("qualification requires JIT execution")
     if args.expected_device and args.expected_device.lower() not in device.device_kind.lower():
         parser.error(f"expected {args.expected_device}, got {device.device_kind}")
-    result = (qualify(device, args.formats, args.out, instruction_directory=args.out.resolve() / 'compiler')
-              if args.require_native_fp8 else qualify(device, args.formats, args.out))
+    result = (qualify(device, args.formats, args.out, instruction_directory=args.out.resolve() / 'compiler', profile=args.profile)
+              if args.require_native_fp8 else qualify(device, args.formats, args.out, profile=args.profile))
     if args.require_native_fp8:
         result["native_requirement_passes"] = native_fp8_requirement(result["operations"])
         result["native_requirement_scope"] = "Every FP8 operation: numerical pass, native dispatch and matching emitted PTX. Opaque/missing/cached compiler output is unverified, not proof of emulation."

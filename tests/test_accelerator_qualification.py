@@ -51,23 +51,55 @@ def test_native_bfloat16_three_pass_vectors_keep_fp32_products(shape):
     rng=np.random.default_rng(7);m,k,n=shape
     a=rng.normal(size=(m,k))*np.logspace(-3,3,m)[:,None]
     b=rng.normal(size=(k,n))*np.logspace(3,-2,n)[None,:]
-    policy=Arithmetic('bfloat16_3x','float32', execution="allow_emulation")
+    policy=Arithmetic.compensated('bfloat16_3x','float32', execution="allow_emulation")
     with jax.default_device(jax.devices('cpu')[0]):
         expected=np.asarray(jax.jit(lambda a,b:matmul(a,b,policy,'right'))(a,b))
     actual=np.asarray(jax.jit(lambda a,b:matmul(a,b,policy,'right'))(a,b))
     assert normalized_error(actual,expected,np.abs(a)@np.abs(b)) <= 4*2.**-17
 
 
-@pytest.mark.parametrize('name',['float16','float8_e4m3fn','float8_e5m2'])
-def test_tpu_emulation_requests_float32_products_after_operand_quantization(name,monkeypatch):
+@pytest.mark.parametrize('name',['float16','float16_1x','float8_e4m3fn','float8_e5m2',
+                                'float8_e4m3fn_1x','float8_e5m2_1x'])
+@pytest.mark.parametrize('rounding',['nearest','stochastic'])
+def test_tpu_emulation_requests_float32_products_after_operand_quantization(name,rounding,monkeypatch):
     from types import SimpleNamespace
     from engine.precision import products,Arithmetic
     monkeypatch.setattr(products,'default_device',lambda:SimpleNamespace(platform='tpu',device_kind='TPU v6 lite'))
     assert products.product_execution(name)=='emulated'
-    program=jax.make_jaxpr(lambda a,b:products.matmul(a,b,Arithmetic(name,'float32', execution="allow_emulation"),'right'))(
+    arithmetic=Arithmetic(name,'float32',rounding=rounding,
+        key=jax.random.PRNGKey(7) if rounding=='stochastic' else None,execution="allow_emulation")
+    program=jax.make_jaxpr(lambda a,b:products.matmul(a,b,arithmetic,'right'))(
         np.arange(12,dtype='float32').reshape(3,4),np.ones((4,2),dtype='float32'))
     dots=[eqn for eqn in program.eqns if eqn.primitive.name=='dot_general']
     assert dots and all(v.aval.dtype==np.dtype('float32') for dot in dots for v in dot.invars)
+    # FP32 dot operands alone missed the real TPU failure: the compiler could
+    # remove an earlier FP16 -> FP32 conversion. No low-dtype carrier may be
+    # introduced anywhere in this emulated program, even before the dot.
+    assert all(eqn.params['new_dtype']==np.dtype('float32')
+               for eqn in program.eqns if eqn.primitive.name=='convert_element_type'
+               and jax.numpy.issubdtype(eqn.params['new_dtype'],jax.numpy.floating))
+
+
+@pytest.mark.parametrize('name',['float16','bfloat16','float8_e4m3fn','float8_e5m2','e5m2-shared'])
+@pytest.mark.parametrize('stochastic',[False,True])
+def test_wider_emulation_carriers_preserve_format_overflow_and_nonfinite_values(name,stochastic):
+    from engine.precision.formats import format_of,shared_format
+    from engine.precision.products import _quantize
+    fmt=shared_format(format_of('float8_e5m2')) if name=='e5m2-shared' else format_of(name)
+    with jax.default_device(jax.devices('cpu')[0]):
+        # Scaling is deliberately saturated: these values cannot fit the target
+        # even after its largest allowed downscale. E4M3FN must produce NaN,
+        # while formats with infinities preserve the overflow's sign.
+        x=jax.numpy.asarray([[np.inf,-np.inf,2.**160,-2.**160,np.nan,0.,-0.]],dtype=np.float64)
+        uniforms=jax.numpy.full(x.shape,.25) if stochastic else None
+        actual,_=jax.jit(lambda a:_quantize(a,fmt,-1,uniforms,carrier=jax.numpy.float32))(x)
+        actual=np.asarray(actual)
+    if fmt.dtype==jax.numpy.dtype(jax.numpy.float8_e4m3fn):
+        assert np.all(np.isnan(actual[0,:4]))
+    else:
+        np.testing.assert_array_equal(actual[0,:4],[np.inf,-np.inf,np.inf,-np.inf])
+    assert np.isnan(actual[0,4]) and actual[0,5]==actual[0,6]==0
+    assert np.signbit(actual[0,6])
 
 
 @pytest.mark.parametrize("hlo", [TRITON_FP8.replace("f8e5m2", "f16"),
@@ -96,7 +128,7 @@ def test_zero_and_nonfinite_products_cannot_silently_pass():
 
 
 def test_fp8_cpu_emulation_has_numerical_evidence_without_native_claims(tmp_path):
-    result = qualify(jax.devices("cpu")[0], ("float8_e4m3fn",), tmp_path,
+    result = qualify(jax.devices("cpu")[0], ("float8_e4m3fn",), tmp_path, profile="compensated",
                      shapes=((3, 4, 2),), patterns=("wide", "zero", "cancellation"))
     assert result["passes"]
     assert {r["rounding"] for r in result["operations"]} == {"nearest", "stochastic"}

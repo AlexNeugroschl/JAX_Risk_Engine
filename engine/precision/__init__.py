@@ -33,6 +33,7 @@ Depends on JAX and NumPy only: the pipeline imports it, it imports nothing from 
 """
 from engine.precision.arithmetic import FLOAT64, Arithmetic, add_level, deviation_from, level_terms
 from engine.precision.execution import ExecutionPolicy, InternalPrecision
+from engine.precision.options import ProductOptions
 from engine.precision.estimate import MeanEstimate, QuantileEstimate, paired_paths, paired_quantile, two_level_mean
 from engine.precision.evidence import RunFigures, evidence_warnings, paired_error_warning
 from engine.precision.formats import FORMAT_NAMES, FORMATS, Format, dtype_of, format_of, name_of
@@ -59,6 +60,7 @@ __all__ = [
     "OVERRIDES",
     "Overrides",
     "Precision",
+    "ProductOptions",
     "PrecisionReport",
     "QuantileEstimate",
     "RETIRED_SHAPE",

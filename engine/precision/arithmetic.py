@@ -3,7 +3,7 @@ The arithmetic of a stage (F-07; docs/planning/details/precision.md §3.1, §8):
 formats its kernels compute with, one implementation for every precision (decision A-16).
 
     compute     the format of its matrix products: their operands are rounded to it, the one
-                every path shares in two terms of it below float32 (decision A-23), and the
+                every path shares in the explicitly configured residual terms, and the
                 product runs as the format runs (`engine.precision.products`)
     accumulate  the format the products accumulate in and every other operation of the stage
                 is evaluated in: sums, the scan's carry, a path-independent level plus a path's
@@ -22,9 +22,9 @@ emulated) and meets each path's deviation in two terms of the accumulate format
 level is shared by every path, which would be a bias more paths do not remove (measured: a
 float32 bond's mean moved 0.04 with the level rounded once, 2026-10-10) (§8.2).
 
-Kernels take `Arithmetic` as a pytree: compute, accumulate and rounding are static
+Kernels take `Arithmetic` as a pytree: formats, product options, execution and rounding are static
 metadata; the random key and global sample ids are traced data. Programs compile once
-per format, rounding policy and shape, never per seed, date or trade.
+per numerical strategy, rounding policy and shape, never per seed, date or trade.
 `Precision.arithmetic_for` binds a stage or trade rounding stream.
 
 Refused, naming the field, by `arithmetic_refusal` (shared with `StagePrecision`):
@@ -45,6 +45,7 @@ import jax.numpy as jnp
 from engine.precision.formats import Format, format_of, name_of
 from engine.precision.grid import round_to_grid
 from engine.precision.products import matmul
+from engine.precision.options import ProductOptions
 
 
 def arithmetic_refusal(compute: Format, accumulate: Format) -> Optional[Tuple[str, str]]:
@@ -79,8 +80,11 @@ class Arithmetic:
     key: object = None
     sample_ids: object = None
     execution: str = "native"
+    product: ProductOptions = ProductOptions()
 
     def __post_init__(self):
+        if not isinstance(self.product, ProductOptions):
+            raise TypeError("Arithmetic.product must be ProductOptions")
         from engine.precision.execution import EXECUTION_MODES
         if self.execution not in EXECUTION_MODES:
             raise ValueError(f"Arithmetic.execution must be one of {EXECUTION_MODES}; got {self.execution!r}")
@@ -94,6 +98,7 @@ class Arithmetic:
         if refusal is not None:
             field, reason = refusal
             raise ValueError(f"Arithmetic.{field}={getattr(self, field)!r}: {reason}")
+        self.product.validate(self.compute)
         if self.rounding not in ("nearest", "stochastic"):
             raise ValueError("Arithmetic.rounding must be 'nearest' or 'stochastic'")
         if self.rounding == "stochastic" and (not rows["compute"].below_float32
@@ -101,16 +106,21 @@ class Arithmetic:
             raise ValueError("Arithmetic.rounding='stochastic' needs a single-grid compute format below float32")
 
     def tree_flatten(self):
-        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution)
+        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution, self.product)
 
     @classmethod
     def tree_unflatten(cls, meta, data):
-        compute, accumulate, rounding, execution = meta
-        return cls(compute, accumulate, rounding, *data, execution=execution)
+        compute, accumulate, rounding, execution, product = meta
+        return cls(compute, accumulate, rounding, *data, execution=execution, product=product)
 
     def fold_in(self, data):
         """Derive a date/step/product stream; the key remains traced data."""
         return self if self.key is None else replace(self, key=jax.random.fold_in(self.key, data))
+
+    @classmethod
+    def compensated(cls, compute="float64", accumulate="float64", rounding="nearest", **kwargs):
+        """Explicit historical scaled/residual profile; execution permission is separate."""
+        return cls(compute, accumulate, rounding, product=ProductOptions.compensated(compute), **kwargs)
 
     @classmethod
     def of(cls, dtype) -> "Arithmetic":

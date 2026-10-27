@@ -19,7 +19,7 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
 Each stage also has `compute_rounding`: nearest (the default research baseline) or
 stochastic for single-grid compute below float32. Stochastic products round each per-path
 operand with an independent keyed draw; the shared operand retains its configured
-representation (two terms normally, one for a single-pass research baseline).
+representation (`product.shared_terms`, one by default).
 `rounding_seed` seeds both storage and compute rounding in separate named streams.
 
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
@@ -78,6 +78,7 @@ from engine.precision.execution import ExecutionPolicy, InternalPrecision, valid
 from engine.precision.storage import OFFSETS, ROUNDINGS, rounding_key, store
 from engine.precision.estimate import validate_replicates
 from engine.precision.storage import BLOCK
+from engine.precision.options import ProductOptions
 
 #: The adjustable stages, in pipeline order.
 STAGES = ("simulation", "market", "pricing")
@@ -106,11 +107,12 @@ class StagePrecision:
     compute: str = "float64"
     accumulate: str = "float64"
     compute_rounding: str = "nearest"
+    product: ProductOptions = field(default_factory=ProductOptions)
 
     def __post_init__(self):
         rows = {}
         for f in fields(self):
-            if f.name == "compute_rounding":
+            if f.name in ("compute_rounding", "product"):
                 continue
             value = getattr(self, f.name)
             if not isinstance(value, str):
@@ -134,9 +136,9 @@ class StagePrecision:
                                              f"stage computes adds no precision")
         # The arithmetic owns the validation shared by direct and configured kernels.
         try:
-            Arithmetic(self.compute, self.accumulate, self.compute_rounding)
+            Arithmetic(self.compute, self.accumulate, self.compute_rounding, product=self.product)
         except ValueError as exc:
-            raise ValueError(f"StagePrecision.compute_rounding={self.compute_rounding!r}: {exc}") from None
+            raise ValueError(f"StagePrecision arithmetic: {exc}") from None
 
     @property
     def storage_dtype(self):
@@ -145,7 +147,11 @@ class StagePrecision:
     @property
     def arithmetic(self) -> Arithmetic:
         """The stage's compute and accumulate formats, as its kernels take them."""
-        return Arithmetic(self.compute, self.accumulate, self.compute_rounding)
+        return Arithmetic(self.compute, self.accumulate, self.compute_rounding, product=self.product)
+
+    @classmethod
+    def compensated(cls, storage="float64", compute="float64", accumulate="float64", compute_rounding="nearest"):
+        return cls(storage, compute, accumulate, compute_rounding, ProductOptions.compensated(compute))
 
     @property
     def scaled_storage(self) -> bool:
@@ -194,10 +200,13 @@ class Precision:
     rounding_seed: int = 0
     offset: str = "block"
     paired_fraction: float = 0.0
+    storage_scaling: str = "power_of_two"
     internal: InternalPrecision = field(default_factory=InternalPrecision)
     execution: ExecutionPolicy = field(default_factory=ExecutionPolicy)
 
     def __post_init__(self):
+        if self.storage_scaling not in ("power_of_two", "none"):
+            raise ValueError("Precision.storage_scaling must be 'power_of_two' or 'none'")
         for name, expected in (("internal", InternalPrecision), ("execution", ExecutionPolicy)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"Precision.{name} must be an {expected.__name__}")
@@ -222,6 +231,8 @@ class Precision:
         if self.offset not in OFFSETS:
             raise ValueError(f"Precision.offset={self.offset!r}: the block layouts are {list(OFFSETS)}")
         scaled = any(s.scaled_storage for s in self._stages())
+        if scaled and self.storage_scaling == "none" and self.offset != "none":
+            raise ValueError("plain low-precision storage requires offset='none'")
         if self.rounding == "stochastic" and not scaled:
             raise ValueError("Precision.rounding='stochastic' rounds values into a scaled storage format (float16, "
                              "bfloat16, FP8), and no stage or override stores in one")
@@ -245,14 +256,15 @@ class Precision:
             yield from getattr(self, name).values()
 
     @classmethod
-    def throughout(cls, name: str, *, execution: ExecutionPolicy = ExecutionPolicy()) -> "Precision":
+    def throughout(cls, name: str, *, execution: ExecutionPolicy = ExecutionPolicy(),
+                   product: ProductOptions = ProductOptions()) -> "Precision":
         """Every adjustable stage computed in format `name`, stored and accumulated where it can be.
         Fixed internal kernels remain explicitly FP64; this is NOT an all-FP32 engine profile.
         A format below float32 accumulates in float32, a single pass (`<name>_1x`) is stored in
         the format it is of, and `tensorfloat32` and `bfloat16_3x` in float32."""
         fmt = format_of(name)
         storage = fmt.base if format_of(fmt.base).array else "float32"
-        stage = StagePrecision(storage, name, "float32" if fmt.below_float32 else name)
+        stage = StagePrecision(storage, name, "float32" if fmt.below_float32 else name, product=product)
         return cls(**{s: stage for s in STAGES}, execution=execution)
 
     @classmethod
@@ -287,8 +299,8 @@ class Precision:
                     for role in ("storage", "compute", "accumulate")]
         device = self.execution.validate(formats, device=device)
         validate_arrays(arrays, device)
-        for compute, accumulate in sorted({(stage.compute, stage.accumulate) for _, stage in selected}):
-            validate_product(compute, accumulate, self.execution.mode, device=device)
+        for stage in set(stage for _, stage in selected):
+            validate_product(stage.compute, stage.accumulate, self.execution.mode, device=device, options=stage.product)
         return device
 
     def resolved(self, device=None):
@@ -304,6 +316,7 @@ class Precision:
         result.update(internal=asdict(self.internal), execution={**asdict(self.execution),
                       "backend": device.platform}, rounding=self.rounding, rounding_seed=self.rounding_seed,
                       offset=self.offset, paired_fraction=self.paired_fraction,
+                      storage_scaling=self.storage_scaling,
                       host_preprocessing={"dtype": "float64", "backend": "cpu"},
                       paired_reference={"dtype": "float64", "backend": device.platform,
                                         "enabled": self.paired_fraction > 0})
@@ -312,14 +325,18 @@ class Precision:
             "float32_compute_float64_accumulate": "FP32 grid represented in FP64; FP64 dot at HIGHEST",
             "tensorfloat32": "TF32_TF32_F32",
             "bfloat16_3x": "BF16_BF16_F32_X3",
-            "other_low_products": "scaled operands; shared_terms from format table; FP32 accumulation",
+            "other_low_products": "explicit stage product options; FP32 accumulation",
             "scalar_operations": "stage accumulate format (fixed kernels use internal precision)",
         }
         result["product_formats"] = {
-            name: {"product": format_of(name).product, "shared_terms": format_of(name).shared_terms,
-                   "shared_dtype": format_of(name).shared_dtype,
+            name: {"product": format_of(name).product,
                    "instruction_qualification": "not_established_by_dispatch"}
             for name in sorted({stage.compute for stage in self._stages()})}
+        result['product_strategies'] = {name: stage.product.description(stage.compute)
+                                       for name, stage in ((s, getattr(self, s)) for s in STAGES)}
+        result['product_overrides'] = {name: {key: stage.product.description(stage.compute)
+                                            for key, stage in getattr(self, name).items()} for name in OVERRIDES}
+        result['storage_encoding'] = 'plain' if self.storage_scaling == 'none' else 'block_scaled_where_applicable'
         return result
 
     def precision_for(self, trade) -> StagePrecision:
@@ -334,8 +351,9 @@ class Precision:
         (`engine.precision.store`), its block scales along `axis`, the scenario axis. `stream`
         names the array in the run (see the module docstring): it seeds a stochastic rounding."""
         if self.rounding == "stochastic" and format_of(storage).scaled:
-            return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis, self.offset)
-        return store(x, storage, axis=axis, offset=self.offset)
+            return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis, self.offset,
+                         scaling=self.storage_scaling)
+        return store(x, storage, axis=axis, offset=self.offset, scaling=self.storage_scaling)
 
     def arithmetic_for(self, stage: StagePrecision, stream: str) -> Arithmetic:
         """The stage's arithmetic with its own traced rounding stream (stage or trade)."""
@@ -346,7 +364,8 @@ class Precision:
     def validate_sampling(self, paths: int, replicates: int, owner: str) -> None:
         """Replicate boundaries coincide with stored/paired block boundaries."""
         validate_replicates(paths, replicates, f"{owner}.replicates")
-        if replicates > 1 and (self.paired_fraction or any(s.scaled_storage for s in self._stages())):
+        if replicates > 1 and (self.paired_fraction or (self.storage_scaling != "none" and
+                                                       any(s.scaled_storage for s in self._stages()))):
             if (paths // replicates) % BLOCK:
                 raise ValueError(f"{owner}: sample count / replicates must be a multiple of storage block {BLOCK} "
                                  "for paired or scaled-storage runs")

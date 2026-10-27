@@ -185,7 +185,8 @@ def test_replicated_portfolio_pairs_all_scrambles_and_reuses_programs():
     import ORE
     simulation = CamConfig(dates=(shared.ASOF + ORE.Period("1Y"),), base_currency="USD",
                            ir={"USD": LgmConfig(.03)}, samples=256, replicates=4, seed=13)
-    precision = Precision.research(pricing=StagePrecision("float32", "float8_e4m3fn", "float32", "stochastic"),
+    # Retain the measured scaled/residual profile while testing uncertainty and reuse.
+    precision = Precision.research(pricing=StagePrecision.compensated("float32", "float8_e4m3fn", "float32", "stochastic"),
                           paired_fraction=.25)
     request = PortfolioRequest(shared.market(), [shared.trades()["swap-payer"]],
                                RunConfig(simulation=simulation, precision=precision))
@@ -272,7 +273,8 @@ def test_stochastic_option_rollback_runs_in_blocks_without_changing_rounding(mon
     from engine.pricing import lgm_grid
     campaign = campaigns.options()
     simulation = dataclasses.replace(campaign.simulation, samples=64)
-    policy = Precision.research(pricing=StagePrecision("float32", "float16", "float32", "stochastic"))
+    # This checks batching of the historical stochastic rollback profile.
+    policy = Precision.research(pricing=StagePrecision.compensated("float32", "float16", "float32", "stochastic"))
     request = PortfolioRequest(campaign.market, list(campaign.trades[:1]),
                                RunConfig(simulation=simulation, precision=policy, pricing=campaign.pricing))
     full = price_portfolio(request)

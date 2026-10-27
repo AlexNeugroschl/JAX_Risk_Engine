@@ -113,6 +113,12 @@ def combination(precision: Precision, stages: Sequence[str], pricing: StagePreci
     parts = [f"{s}={stage.storage}/{stage.compute}/{stage.accumulate}" for s, stage in chosen]
     parts += [f"{s}.compute_rounding={stage.compute_rounding}" for s, stage in chosen
                if stage.compute_rounding != "nearest"]
+    from dataclasses import asdict
+    from engine.precision.options import ProductOptions
+    parts += [f"{s}.product={json.dumps(asdict(stage.product), sort_keys=True, separators=(',', ':'))}"
+              for s, stage in chosen if stage.product != ProductOptions.compensated(stage.compute)]
+    if precision.storage_scaling == 'none' and any(stage.scaled_storage for _, stage in chosen):
+        parts.append('storage_scaling=none')
     if any(stage.scaled_storage for _, stage in chosen):
         parts += [f"rounding={precision.rounding}", f"offset={precision.offset}"]
     if replicates != 1:

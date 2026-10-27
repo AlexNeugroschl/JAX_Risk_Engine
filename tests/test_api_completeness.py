@@ -41,7 +41,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.precision import ExecutionPolicy, InternalPrecision, Precision, StagePrecision
+from engine.precision import ExecutionPolicy, InternalPrecision, Precision, StagePrecision, ProductOptions
 from engine.risk.market import MonteCarloScenarios, RateRiskFactors, ShockScenarios, historical_scenarios
 from engine.run import (
     CamConfig, ExposureConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig,
@@ -86,6 +86,7 @@ MIRRORS = {
     ExecutionPolicy: (wire.ExecutionPolicySchema, {}),
     InternalPrecision: (wire.InternalPrecisionSchema, {}),
     StagePrecision: (wire.StagePrecisionSchema, {}),
+    ProductOptions: (wire.ProductOptionsSchema, {}),
     Market: (wire.MarketSchema, {}),
     CurrencyMarket: (wire.CurrencyMarketSchema, {}),
     EquityMarket: (wire.EquityMarketSchema, {}),
@@ -234,6 +235,7 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
     wire.SensitivitySchema: ({}, lambda s: s.to_dataclass()),
     wire.ExposureSchema: ({}, lambda s: s.to_dataclass()),
     wire.StagePrecisionSchema: ({}, lambda s: s.to_dataclass()),
+    wire.ProductOptionsSchema: ({}, lambda s: s.to_dataclass()),
     wire.PrecisionSchema: ({}, lambda s: s.to_dataclass()),
     wire.ExecutionPolicySchema: ({}, lambda s: s.to_dataclass()),
     wire.InternalPrecisionSchema: ({}, lambda s: s.to_dataclass()),
@@ -257,6 +259,8 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
 
 #: (schema, field) -> a value other than the default, where the field's type does not give one.
 NON_DEFAULT = {
+    (wire.StagePrecisionSchema, "product"): With({"shared_terms": 2},
+        compute="float16", accumulate="float32", storage="float32"),
     (wire.PrecisionSchema, "execution"): {"mode": "allow_emulation"},
     (wire.ZeroCurveConfigSchema, "times"): [0.0, 2.0, 5.0],
     (wire.ZeroCurveConfigSchema, "rates"): [0.01, 0.02, 0.04],

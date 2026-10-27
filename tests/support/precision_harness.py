@@ -88,7 +88,7 @@ from scipy import stats
 from engine.api.requests import PrecisionSchema
 from engine.market_data.market import Market
 from engine.market_simulation.config import CamConfig
-from engine.precision import FORMATS, OFFSETS, ROUNDINGS, STAGES, MeanEstimate, Precision, StagePrecision
+from engine.precision import FORMATS, OFFSETS, ROUNDINGS, STAGES, MeanEstimate, Precision, StagePrecision, ProductOptions
 from engine.pricing.config import PricingConfig
 from engine.risk.counterparty.exposure import BASEL_FIGURES, PROFILE_FIGURES
 from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
@@ -145,7 +145,7 @@ def throughout_case(name: str, paired_fraction: float = 0.0) -> Case:
     (`Precision.throughout`: a format below float32 accumulates in float32, a product format is
     stored in float32)."""
     return Case(f"throughout:{name}" + (":paired" if paired_fraction else ""),
-                dataclasses.replace(Precision.throughout(name), paired_fraction=paired_fraction,
+                dataclasses.replace(Precision.throughout(name, product=ProductOptions.compensated(name)), paired_fraction=paired_fraction,
                                     execution=Precision.research().execution if FORMATS[name].below_float32
                                     else Precision().execution))
 
@@ -163,7 +163,7 @@ def compute_cases(stages: Sequence[str] = STAGES, formats: Sequence[str] = COMPU
     accumulated and stored in float32, every other stage float64, so the products and the
     float32 accumulator are the only differences from the reference (the `float32` case is the
     accumulator's share). Labels: `"<stage>:compute:<format>"`."""
-    return tuple(Case(f"{stage}:compute:{name}", Precision.research(**{stage: StagePrecision("float32", name, "float32")}))
+    return tuple(Case(f"{stage}:compute:{name}", Precision.research(**{stage: StagePrecision.compensated("float32", name, "float32")}))
                  for stage in stages for name in formats)
 
 

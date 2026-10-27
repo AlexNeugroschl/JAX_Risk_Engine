@@ -28,7 +28,7 @@ class ValidatedExecution:
 
     def report_policy(self):
         """A fresh JSON-ready copy; runtime device/array observations are never cached."""
-        return _plain(_resolved_metadata(self.policy, self.device.platform))
+        return report_policy(self.policy, self.device)
 
 
 def prepare_execution(policy, *, stages=(), trades=None, arrays=()):
@@ -39,7 +39,11 @@ def prepare_execution(policy, *, stages=(), trades=None, arrays=()):
 
 def report_policy(policy, device):
     """Static metadata only: this cache cannot authorize work or bypass hardware checks."""
-    return _plain(_resolved_metadata(policy, device.platform))
+    from dataclasses import asdict
+    from engine.precision.runtime import capture_compiler_runtime
+    result = _plain(_resolved_metadata(policy, device.platform))
+    result['compiler_runtime'] = asdict(capture_compiler_runtime())
+    return result
 
 
 @lru_cache(maxsize=128)
@@ -101,8 +105,11 @@ class ExecutionPolicy:
     """
     backend: str = "default"
     mode: str = "native"
+    gpu_gemm: str = "inherit"
 
     def __post_init__(self):
+        if self.gpu_gemm not in ("inherit", "default", "cublas"):
+            raise ValueError("ExecutionPolicy.gpu_gemm must be 'inherit', 'default' or 'cublas'")
         if self.backend not in BACKENDS:
             raise ValueError(f"ExecutionPolicy.backend must be one of {BACKENDS}; got {self.backend!r}")
         if self.mode not in EXECUTION_MODES:
@@ -112,6 +119,8 @@ class ExecutionPolicy:
         from engine.precision.products import default_device
 
         device = device or default_device()
+        from engine.precision.runtime import validate_compiler_route
+        validate_compiler_route(self.gpu_gemm, device.platform)
         if self.backend != "default" and self.backend != device.platform:
             raise ValueError(f"execution.backend={self.backend!r} requires that backend, but the active "
                              f"device is {device.platform}; select the backend before running (no automatic fallback)")
@@ -129,7 +138,7 @@ def validate_format(name, role, device):
                              "helpers are incompatible with TPU software FP64; no FP32 downgrade or CPU fallback")
 
 
-def validate_product(compute, accumulate, mode="native", *, device=None):
+def validate_product(compute, accumulate, mode="native", *, device=None, options=None):
     """Check the requested arithmetic before tracing a dot, including its accumulator."""
     from engine.precision.formats import format_of
     from engine.precision.products import default_device, product_execution
@@ -137,10 +146,17 @@ def validate_product(compute, accumulate, mode="native", *, device=None):
     if mode not in EXECUTION_MODES:
         raise ValueError(f"execution mode must be one of {EXECUTION_MODES}; got {mode!r}")
     device = device or default_device()
+    from engine.precision.options import ProductOptions
+    options = options or ProductOptions()
+    options.validate(compute)
     validate_format(compute, "compute", device)
     validate_format(accumulate, "accumulate", device)
+    dispatch = product_execution(compute, device, options=options)
+    if options.subnormals != "native" or options.algorithm != "format":
+        if device.platform != "gpu" or dispatch != "native":
+            raise ValueError("native FP16 normalization and explicit FP8 algorithms require a capable GPU; no fallback")
     if mode == "native":
-        if product_execution(compute, device) != "native":
+        if dispatch != "native":
             raise ValueError(f"compute={compute!r} requires native execution on {device.platform}; "
                              "this path is emulated. Explicitly use mode='allow_emulation' for research")
         if format_of(compute).base.startswith("float8"):

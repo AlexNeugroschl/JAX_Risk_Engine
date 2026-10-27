@@ -4,6 +4,11 @@ maps a name to a dtype, a bit count, a range or a kind of matrix product
 (docs/planning/details/precision.md §6.1); validation, the HTTP schema, storage, the matrix
 products and the report read it.
 
+The table's `shared_terms` and `shared_dtype` describe the historical compensated
+profile, selected explicitly by `ProductOptions.compensated`. They are not the
+current product defaults: `Arithmetic.product` selects the representation, with
+one unscaled shared term in its own format by default.
+
 | Name | Bits | Mantissa bits | Min normal exponent | Max | Array | Scaled when stored | Product | Shared terms | Shared operand held in | Storage | Compute |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | float64 | 64 | 52 | -1022 | 1.8e308 | yes | no | its dtype | 1 | its dtype | yes | yes |

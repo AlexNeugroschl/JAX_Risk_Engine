@@ -80,7 +80,7 @@ class PrecisionReportSchema(BaseModel):
     policy: PrecisionSchema
     trades: Dict[str, StagePrecisionSchema]
     realized: Dict[str, str]
-    products: Dict[str, Literal["native", "emulated"]] = Field(default_factory=dict)
+    products: Dict[str, Literal["native", "emulated", "mixed"]] = Field(default_factory=dict)
     resolved_policy: Dict[str, Any] = Field(default_factory=dict)
     devices: List[str]
     backend: str

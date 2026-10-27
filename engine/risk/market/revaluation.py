@@ -92,7 +92,7 @@ def _prepare_revaluation(moves, arithmetic):
     execution = prepare_execution(Precision.reference(), arrays=moves)
     if arithmetic is not None:
         from engine.precision.execution import validate_product
-        validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution)
+        validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution, options=arithmetic.product)
     return execution
 
 

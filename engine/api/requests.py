@@ -52,7 +52,7 @@ from engine.market_simulation.config import DEFAULT_CURVE_TENORS, HullWhiteConfi
 from engine.models.lgm import Sigma
 from engine.precision import (
     FORMAT_NAMES, OFFSETS, OVERRIDES, RETIRED_SHAPE as RETIRED_PRECISION_SHAPE, ROUNDINGS, STAGES, Precision,
-    StagePrecision, ExecutionPolicy, InternalPrecision,
+    StagePrecision, ExecutionPolicy, InternalPrecision, ProductOptions,
 )
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, PRODUCTS
@@ -148,24 +148,40 @@ ArrayOutputName = Literal[ARRAY_OUTPUTS]
 AnalyticName = Literal[ANALYTICS]
 
 
+class ProductOptionsSchema(_Strict):
+    algorithm: Literal["format", "fp8_full"] = "format"
+    shared_terms: int = Field(default=1, ge=1, le=4, strict=True)
+    scaling: Literal["none", "power_of_two"] = "none"
+    shared_format: Literal["same", "e4m3"] = "same"
+    bf16_padding: Literal["none", "gemm8"] = "none"
+    subnormals: Literal["native", "normalize_fp16"] = "native"
+    implementation: Literal["auto", "emulated_fp32"] = "auto"
+
+    def to_dataclass(self) -> ProductOptions:
+        return ProductOptions(**self.model_dump())
+
+
 class StagePrecisionSchema(_Strict):
     """`engine.precision.StagePrecision`; validated by the dataclass."""
     storage: FormatName = "float64"
     compute: FormatName = "float64"
     accumulate: FormatName = "float64"
     compute_rounding: RoundingName = "nearest"
+    product: ProductOptionsSchema = Field(default_factory=ProductOptionsSchema)
 
     @classmethod
     def from_dataclass(cls, stage: StagePrecision) -> "StagePrecisionSchema":
         return cls(**dataclasses.asdict(stage))
 
     def to_dataclass(self, where: str = "precision stage") -> StagePrecision:
-        return _named(where, lambda: StagePrecision(**self.model_dump()))
+        return _named(where, lambda: StagePrecision(**self.model_dump(exclude={'product'}),
+                                                   product=self.product.to_dataclass()))
 
 
 class ExecutionPolicySchema(_Strict):
     backend: Literal["default", "cpu", "gpu", "tpu"] = "default"
     mode: Literal["native", "allow_emulation"] = "native"
+    gpu_gemm: Literal["inherit", "default", "cublas"] = "inherit"
 
     def to_dataclass(self) -> ExecutionPolicy:
         return ExecutionPolicy(**self.model_dump())
@@ -201,6 +217,7 @@ class PrecisionSchema(_Strict):
     rounding_seed: int = Field(default=0, ge=0)
     offset: OffsetName = "block"
     paired_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+    storage_scaling: Literal["power_of_two", "none"] = "power_of_two"
     internal: InternalPrecisionSchema = Field(default_factory=InternalPrecisionSchema)
     execution: ExecutionPolicySchema = Field(default_factory=ExecutionPolicySchema)
 
@@ -220,6 +237,7 @@ class PrecisionSchema(_Strict):
         return _named(where, lambda: Precision(**stages, **overrides, rounding=self.rounding,
                                                rounding_seed=self.rounding_seed, offset=self.offset,
                                                paired_fraction=self.paired_fraction,
+                                               storage_scaling=self.storage_scaling,
                                                internal=self.internal.to_dataclass(),
                                                execution=self.execution.to_dataclass()))
 
@@ -230,6 +248,7 @@ class PrecisionSchema(_Strict):
                    **{name: {k: stage(v) for k, v in getattr(precision, name).items()} for name in OVERRIDES},
                    rounding=precision.rounding, rounding_seed=precision.rounding_seed, offset=precision.offset,
                    paired_fraction=precision.paired_fraction,
+                   storage_scaling=precision.storage_scaling,
                    internal=InternalPrecisionSchema(**dataclasses.asdict(precision.internal)),
                    execution=ExecutionPolicySchema(**dataclasses.asdict(precision.execution)))
 
