@@ -20,9 +20,10 @@ override in separate processes:
     python -m tests.support.precision_devices --platform gpu --gemm default
     python -m tests.support.precision_devices --platform gpu --gemm cublas
 
-The local FP8 workaround is `--gemm cublas`; the local bfloat16-passes fusion workaround is
-`JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x`. Both are explicit test/process settings. A default
-compiler failure remains a failed qualification, never an automatic passing emulation.
+The engine pads GPU bfloat16-three-pass GEMV shapes into native GEMMs to retain FP32
+products. `--gemm cublas` and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` remain explicit
+diagnostic settings; neither establishes native FP8 qualification. A default compiler
+failure remains a failed qualification, never an automatic passing emulation.
 TensorFloat-32 is within 4.5e-4 of emulation on this card (the device rounds operands within
 its unit roundoff). The same card summed float32
 operands asked for a float64 result in float32 (7.6e-7 off, 2026-10-11): the engine now
@@ -32,6 +33,7 @@ Exit status 1 when a format fails.
 """
 import argparse
 import itertools
+import hashlib
 import os
 import re
 import sys
@@ -69,6 +71,35 @@ def fp8_lowering(hlo):
     return None
 
 
+def fp8_instructions(paths, name):
+    """Inspect PTX emitted by this compilation, not an unrelated module or HLO label.
+
+    Opaque library kernels remain unverified. A typed HLO or cuBLAS custom call
+    is useful provenance but cannot establish what instructions actually ran.
+    """
+    expected = ["e4m3", "e5m2"] if name.startswith("float8_e5m2") else ["e4m3", "e4m3"]
+    matches, other = [], []
+    for path in sorted(paths):
+        data = path.read_bytes()
+        for instruction in re.findall(r"(?:wgmma|mma)\.[^;]*;", data.decode(errors="replace")):
+            types = re.findall(r"\.(e4m3|e5m2|f16|bf16)(?=\.)", instruction)
+            if sorted(types) == expected:
+                matches.append({"file": str(path), "sha256": hashlib.sha256(data).hexdigest(),
+                                "instruction": " ".join(instruction.split())})
+            else:
+                other.append(" ".join(instruction.split()))
+    return {"verified": bool(matches) and not other, "instructions": matches,
+            "other_matrix_instructions": other,
+            "scope": "PTX emitted for this operation; opaque library kernels require separate device evidence"}
+
+
+def native_fp8_requirement(operations):
+    """Every FP8 operation must pass numerically and have matching instruction evidence."""
+    selected = [r for r in operations if r["format"].startswith("float8")]
+    return bool(selected) and all(r["passes"] and r["dispatch"] == "native" and r["observed_fp8_gemm"]
+        and r.get("native_fp8_instructions", {}).get("verified", False) for r in selected)
+
+
 def normalized_error(actual, expected, scale):
     """Absolute-product normalization, including exact zero products and non-finite failures."""
     import numpy as np
@@ -82,7 +113,7 @@ def normalized_error(actual, expected, scale):
 
 
 def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic"),
-            patterns=("wide", "zero", "cancellation"), shapes=SHAPES):
+            patterns=("wide", "zero", "cancellation"), shapes=SHAPES, instruction_directory=None):
     """Per-operation numerical and optimized-lowering evidence; never infer a hardware pass
     from device capability alone. Artifacts describe this runtime and device only."""
     import dataclasses
@@ -118,6 +149,7 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
             key = jax.random.PRNGKey(7) if rounding == "stochastic" else None
             policy = dataclasses.replace(arithmetic, rounding=rounding, key=key)
             program = jax.jit(lambda x, y, p: matmul(x, y, p, shared))
+            previous = set(instruction_directory.rglob("*.ptx")) if instruction_directory else set()
             with jax.default_device(device):
                 args = (jax.device_put(a, device), jax.device_put(b, device), policy)
                 compiled = program.lower(*args).compile()
@@ -142,6 +174,9 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
                          "device_exact_error": (lambda e: e if np.isfinite(e) else None)(
                              normalized_error(actual, a @ b, scale)),
                          "tolerance": float(tolerance), "passes": bool(np.isfinite(error) and error <= tolerance)})
+            if instruction_directory is not None and fmt.name.startswith("float8"):
+                current = set(instruction_directory.rglob("*.ptx"))
+                rows[-1]["native_fp8_instructions"] = fp8_instructions(current - previous, fmt.name)
         print(f"checked {arithmetic.compute}/{arithmetic.accumulate}", flush=True)
         if out is not None:
             atomic_json(Path(out) / "qualification.json", {"schema_version": 1, "complete": False,
@@ -166,7 +201,8 @@ def main(argv=None) -> int:
     parser.add_argument("--gemm", choices=("default", "cublas"),
                         help="explicit emitter override; omitted keeps the runtime/inherited settings")
     parser.add_argument("--expected-device", help="required device-kind substring, e.g. H100")
-    parser.add_argument("--require-native-fp8", action="store_true", help="fail unless each selected FP8 format has an observed FP8 GEMM")
+    parser.add_argument("--require-native-fp8", action="store_true",
+                        help="require matching emitted FP8 instructions for every FP8 operation; HLO alone is insufficient")
     parser.add_argument("--engine-workloads", nargs="*", choices=("comparison_single", "comparison_portfolio"), default=[])
     args = parser.parse_args(argv)
     if args.out is not None:
@@ -174,11 +210,13 @@ def main(argv=None) -> int:
         if any(args.out.iterdir()):
             parser.error("output directory must be empty")
         # Read before JAX opens the device; optimized engine HLO is retained beside traces.
-        if args.engine_workloads:
+        if args.engine_workloads or args.require_native_fp8:
+            folder = 'compiler' if args.require_native_fp8 else 'engine-hlo'
             os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "")
-                + f" --xla_dump_to={args.out.resolve() / 'engine-hlo'} --xla_dump_hlo_as_text=true").strip()
-    elif args.engine_workloads:
-        parser.error("--engine-workloads requires --out")
+                + f" --xla_dump_to={args.out.resolve() / folder} --xla_dump_hlo_as_text=true"
+                + (' --xla_gpu_dump_llvmir=true' if args.require_native_fp8 else '')).strip()
+    elif args.engine_workloads or args.require_native_fp8:
+        parser.error("--engine-workloads and --require-native-fp8 require --out")
     from engine.api.worker import gemm_environment
     os.environ.update(gemm_environment(args.gemm, os.environ))
     import jax
@@ -191,11 +229,11 @@ def main(argv=None) -> int:
         parser.error("qualification requires JIT execution")
     if args.expected_device and args.expected_device.lower() not in device.device_kind.lower():
         parser.error(f"expected {args.expected_device}, got {device.device_kind}")
-    result = qualify(device, args.formats, args.out)
+    result = (qualify(device, args.formats, args.out, instruction_directory=args.out.resolve() / 'compiler')
+              if args.require_native_fp8 else qualify(device, args.formats, args.out))
     if args.require_native_fp8:
-        requested = {r["format"] for r in result["operations"] if r["format"].startswith("float8")}
-        observed = {r["format"] for r in result["operations"] if r["observed_fp8_gemm"]}
-        result["native_requirement_passes"] = bool(requested) and requested <= observed
+        result["native_requirement_passes"] = native_fp8_requirement(result["operations"])
+        result["native_requirement_scope"] = "Every FP8 operation: numerical pass, native dispatch and matching emitted PTX. Opaque/missing/cached compiler output is unverified, not proof of emulation."
         result["passes"] &= result["native_requirement_passes"]
     if args.engine_workloads:
         from tests.support.precision_timing import _child

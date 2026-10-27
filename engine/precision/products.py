@@ -57,7 +57,9 @@ where the program hands XLA the format itself (the format's dtype, or its algori
 `lax.DotAlgorithmPreset`), and **emulated** elsewhere: the engine rounds the operands itself and
 multiplies them in float32, which gives the format's numbers (a product of two values of a
 format below float32 is exact in float32) up to the order of the float32 sums; an emulated FP8
-product runs its rounded operands as float16 values, which hold them exactly. On a CPU every
+product uses float16 carriers where their products support FP32 precision, and float32
+carriers on TPU. Both hold FP8 operands exactly; TPU's FP16 product loses precision.
+On a CPU every
 format below float32 is emulated; `product_execution` says which ran, and the precision report
 names it per compute format (`PrecisionReport.products`).
 
@@ -66,10 +68,12 @@ independently of the GEMM emitter. E5M2 uses an E4M3 shared operand (`Format.sha
 A dispatch label states the requested arithmetic; lowering/traces establish which shapes
 actually use matrix units. A compiler may fuse a matrix-vector product instead.
 
-**Explicit compiler workarounds** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
-under Triton and a bfloat16-passes GEMV fusion ignoring its algorithm. Configure that test
-process with cuBLAS (`TRITON_GEMM_OFF`) and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x`.
-These are not defaults for other GPUs. `JAX_RISK_EMULATE_PRODUCTS` accepts comma-separated
+**Compiler controls** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
+under Triton and a bfloat16-passes GEMV fusion rounding products in BF16. The latter
+uses zero-padded native GEMM lanes in `_matmul32`, retaining the algorithm and FP32
+accumulation. cuBLAS (`TRITON_GEMM_OFF`) remains a separate diagnostic route, not a
+native FP8 qualification: the H100 trial found arithmetic discrepancies there too.
+`JAX_RISK_EMULATE_PRODUCTS` accepts comma-separated
 compute formats; a base name includes its single-pass variant. It preserves operand rounding
 but uses float32 carriers/products, and the report calls the format emulated. Set it before
 tracing, in a fresh process, as with XLA flags; changing it cannot alter cached executables.
@@ -230,6 +234,16 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: 
 
 def _matmul32(a, b, precision):
     """`a @ b` accumulated in float32: an algorithm states its own accumulation."""
+    if (precision is lax.DotAlgorithmPreset.BF16_BF16_F32_X3
+            and default_device().platform == "gpu"
+            and (a.shape[-2] == 1 or b.shape[-1] == 1)):
+        # JAX 0.10.2's GPU GEMV expansion multiplies the split pieces in BF16,
+        # rounding each product before FP32 reduction. Keep this a native GEMM,
+        # then discard zero-padded output lanes; never replace it with emulation.
+        m, n = a.shape[-2], b.shape[-1]
+        a = jnp.pad(a, [(0, 0)] * (a.ndim - 2) + [(0, max(0, 8 - m)), (0, 0)])
+        b = jnp.pad(b, [(0, 0)] * (b.ndim - 2) + [(0, 0), (0, max(0, 8 - n))])
+        return jnp.matmul(a, b, precision=precision)[..., :m, :n]
     if isinstance(precision, lax.DotAlgorithmPreset):
         return jnp.matmul(a, b, precision=precision)
     return jnp.matmul(a, b, precision=precision, preferred_element_type=jnp.float32)
@@ -254,7 +268,11 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
     qb, kb = _terms(b, held if shared == "right" else fmt, axis=-2, count=terms if shared == "right" else 1,
                     uniforms=uniforms if shared == "left" else None)
     if not native:
-        carrier = jnp.float32 if _explicit_emulation(fmt) else _CARRIERS.get(fmt.base, fmt.dtype)
+        # TPU FP16 dots use a reduced-accuracy BF16 decomposition even with
+        # HIGHEST. FP32 carriers preserve the already-quantized operands and
+        # request the backend's full FP32 product. The report stays "emulated".
+        carrier = (jnp.float32 if _explicit_emulation(fmt) or default_device().platform == "tpu"
+                   else _CARRIERS.get(fmt.base, fmt.dtype))
         qa, qb = qa.astype(carrier), qb.astype(carrier)
     product = _matmul32(qa, qb, precision)
     product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)

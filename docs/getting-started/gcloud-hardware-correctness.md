@@ -1,9 +1,38 @@
 # Google Cloud correctness testing: CPU, H100 and TPU
 
-Prepared October 21, 2026. Commands checked against engine revision
-`ce008ee44c0528c1441588c7fbd69f7b749fdc07` and current vendor documentation.
-Cloud commands below are instructions to run; no cloud resources were created while
-preparing this guide, and no H100 or TPU result has been established here.
+Prepared October 21, 2026; command compatibility reviewed October 25, 2026 against
+engine revision `f9cc4c16fa843859729a9fb0956dd8cdfd2fa09b`.
+Cloud commands below are reproduction instructions. A bounded H100 trial completed
+on October 26, 2026; its FP64/FP32 checks passed and its VM/disks were deleted. See the
+[local trial results](../../artifacts/h100-trial-2026-10-26/RESULTS.md) for the exact
+coverage, evidence and cleanup checks.
+
+A second October 26 H100 trial exercised all 13 compute formats and **failed full
+native-precision qualification**. BF16 three-pass arithmetic failed, default FP8
+programs emitted FP16 matrix instructions, and the explicit cuBLAS FP8 route failed
+the engine's arithmetic tolerance. See the
+[expanded local results](../../artifacts/accelerator-native-2026-10-26/RESULTS.md).
+The subsequent v6e TPU trial also failed qualification: FP64 precision-scaling
+operations hit compiler type errors, FP16 raw products missed tolerance, and explicit
+TF32 was unsupported. All 13 modes were attempted in raw/arithmetic checks and a
+separately labeled one-swap engine workload. Calibrated TPU portfolio attempts timed
+out and remain unqualified. The H100 and created TPU VMs/disks were deleted, with
+resource absence and temporary SSH-key removal verified. The earlier FP64/FP32
+pass is not a pass for all formats. The optional broader project inventory comparison
+was blocked by automatic approval review's account usage limit.
+
+The subsequent [failure analysis and fixes](hardware-correctness-findings.md)
+separates confirmed compiler errors, unsupported operations and unresolved pipeline
+differences. An [actual-hardware rerun](hardware-correctness-rerun.md) confirmed the
+H100 BF16 three-pass fix, but rejected the proposed TPU FP64-grid and FP16-emulation
+fixes. Native FP8 and full TPU qualification remain failed; use the rerun report
+for the latest evidence, coverage limits and cleanup record.
+
+The October 25 comparison CLI defaults to API transport. This guide explicitly uses
+`--transport direct` for its saved CPU/accelerator scenario comparisons and JSON checks.
+The local access audit and CPU baseline are recorded separately in
+`artifacts/cloud-preflight-2026-10-25/`. The completed trial covers bounded workloads;
+it does not establish full-suite or other precision-profile qualification.
 
 The objective is numerical correctness and repeatability. Use the existing research
 tools for their saved inputs, outputs and comparisons. Their timing and speedup columns
@@ -101,7 +130,7 @@ gcloud config set project project-compsci-484414
 gcloud config list
 
 export PROJECT_ID=project-compsci-484414
-export ENGINE_REV=ce008ee44c0528c1441588c7fbd69f7b749fdc07
+export ENGINE_REV=f9cc4c16fa843859729a9fb0956dd8cdfd2fa09b
 export H100_VM=alex-h100-correctness
 export TPU_VM=alex-tpu-correctness
 # Replace these with the actual provisioned locations.
@@ -124,7 +153,7 @@ gcloud compute instances create "$H100_VM" \
   --machine-type=a3-highgpu-1g --provisioning-model=SPOT \
   --maintenance-policy=TERMINATE \
   --image-project=debian-cloud --image-family=debian-12 \
-  --boot-disk-size=200GB \
+  --boot-disk-size=200GB --boot-disk-type=pd-balanced \
   --service-account="risk-engine-alex-dev@${PROJECT_ID}.iam.gserviceaccount.com" \
   --scopes=https://www.googleapis.com/auth/cloud-platform
 
@@ -134,7 +163,7 @@ gcloud compute instances create "$TPU_VM" \
   --machine-type=ct6e-standard-1t --maintenance-policy=TERMINATE \
   --image-project=ubuntu-os-accelerator-images \
   --image-family=ubuntu-accel-2204-amd64-tpu-v5e-v5p-v6e \
-  --boot-disk-size=200GB \
+  --boot-disk-size=200GB --boot-disk-type=hyperdisk-balanced \
   --service-account="risk-engine-alex-dev@${PROJECT_ID}.iam.gserviceaccount.com" \
   --scopes=https://www.googleapis.com/auth/cloud-platform
 ```
@@ -199,7 +228,7 @@ sudo apt-get update
 sudo apt-get install -y git python3-venv ca-certificates
 git clone https://github.com/AlexNeugroschl/JAX_Risk_Engine.git
 cd JAX_Risk_Engine
-git checkout --detach ce008ee44c0528c1441588c7fbd69f7b749fdc07
+git checkout --detach f9cc4c16fa843859729a9fb0956dd8cdfd2fa09b
 git rev-parse HEAD
 git status --short
 ```
@@ -314,7 +343,7 @@ not a financial acceptance certificate: absolute floor `1e-8`, relative limit `1
 of each named output's CPU maximum absolute value. ORE tests retain their own rules.
 
 ```bash
-.venv/bin/python -m benchmarks.comparison \
+.venv/bin/python -m benchmarks.comparison --transport direct \
   --out "$EVIDENCE/h100-fp64" --backends cpu gpu --expected-gpu H100 \
   --formats float64 --paths 512 4096 --seeds 1 2 3 4 5 6 7 8 \
   --atol 1e-8 --rtol 1e-10 \
@@ -328,7 +357,7 @@ all financial conventions correct. That is why the independent ORE checks also m
 If you intend to use the existing float32 pricing profile, test it separately:
 
 ```bash
-.venv/bin/python -m benchmarks.comparison \
+.venv/bin/python -m benchmarks.comparison --transport direct \
   --out "$EVIDENCE/h100-fp32" --backends cpu gpu --expected-gpu H100 \
   --formats float64 float32 --paths 1024 4096 --seeds 1 2 3 4 5 6 7 8 \
   --atol 1e-8 --rtol 1e-4 \
@@ -344,7 +373,7 @@ For repeatability, rerun the FP64 command into a new directory, keeping source, 
 seeds and counts identical:
 
 ```bash
-.venv/bin/python -m benchmarks.comparison \
+.venv/bin/python -m benchmarks.comparison --transport direct \
   --out "$EVIDENCE/h100-fp64-repeat" --backends cpu gpu --expected-gpu H100 \
   --formats float64 --paths 512 4096 --seeds 1 2 3 4 5 6 7 8 \
   --atol 1e-8 --rtol 1e-10 \
@@ -473,7 +502,7 @@ be qualified just because a float32 matrix multiply works.
 Only if these gates pass, collect a bounded TPU comparison:
 
 ```bash
-.venv/bin/python -m benchmarks.comparison \
+.venv/bin/python -m benchmarks.comparison --transport direct \
   --out "$EVIDENCE/tpu-fp64" --backends tpu \
   --formats float64 --paths 512 4096 --seeds 1 2 3 4 5 6 7 8 \
   --atol 1e-8 --rtol 1e-10 \
@@ -513,6 +542,14 @@ fails, retain that result. A separate `--gemm cublas` run into a new directory c
 diagnose it, but any pass then qualifies that explicit configuration. Actual native
 instruction claims require trace inspection and are unnecessary for the initial
 FP64/FP32 correctness exercise.
+
+The October 26 expanded trial exposed a false positive in the old `--require-native-fp8`
+check: typed FP8 HLO could emit FP16 instructions. The corrected check retains GPU PTX
+and requires matching FP8 matrix instructions for every FP8 operation, alongside
+native dispatch, typed lowering and numerical checks. Missing compiler output, including
+cached executables, fails this strict gate. An opaque cuBLAS kernel remains unverified
+when its instructions cannot be extracted; that does not establish emulation. Retain
+actual GPU traces too and keep compiler routes in separate result directories.
 
 To add exposure simulation and other fixtures beyond the bounded market-risk workload:
 
@@ -654,7 +691,7 @@ extract them into separate directories:
 mkdir -p results/h100 results/tpu
 tar -xzf h100.tar.gz -C results/h100
 tar -xzf tpu.tar.gz -C results/tpu
-.venv/bin/python -m benchmarks.comparison --merge \
+.venv/bin/python -m benchmarks.comparison --transport direct --merge \
   results/h100/risk-correctness-evidence/h100-fp64 \
   results/tpu/risk-correctness-evidence/tpu-fp64 \
   --out results/joined-fp64 --atol 1e-8 --rtol 1e-10
