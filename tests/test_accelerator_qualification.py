@@ -51,7 +51,7 @@ def test_native_bfloat16_three_pass_vectors_keep_fp32_products(shape):
     rng=np.random.default_rng(7);m,k,n=shape
     a=rng.normal(size=(m,k))*np.logspace(-3,3,m)[:,None]
     b=rng.normal(size=(k,n))*np.logspace(3,-2,n)[None,:]
-    policy=Arithmetic('bfloat16_3x','float32')
+    policy=Arithmetic('bfloat16_3x','float32', execution="allow_emulation")
     with jax.default_device(jax.devices('cpu')[0]):
         expected=np.asarray(jax.jit(lambda a,b:matmul(a,b,policy,'right'))(a,b))
     actual=np.asarray(jax.jit(lambda a,b:matmul(a,b,policy,'right'))(a,b))
@@ -64,8 +64,8 @@ def test_tpu_emulation_requests_float32_products_after_operand_quantization(name
     from engine.precision import products,Arithmetic
     monkeypatch.setattr(products,'default_device',lambda:SimpleNamespace(platform='tpu',device_kind='TPU v6 lite'))
     assert products.product_execution(name)=='emulated'
-    program=jax.make_jaxpr(lambda a,b:products.matmul(a,b,Arithmetic(name,'float32'),'right'))(
-        np.arange(12,dtype='float64').reshape(3,4),np.ones((4,2)))
+    program=jax.make_jaxpr(lambda a,b:products.matmul(a,b,Arithmetic(name,'float32', execution="allow_emulation"),'right'))(
+        np.arange(12,dtype='float32').reshape(3,4),np.ones((4,2),dtype='float32'))
     dots=[eqn for eqn in program.eqns if eqn.primitive.name=='dot_general']
     assert dots and all(v.aval.dtype==np.dtype('float32') for dot in dots for v in dot.invars)
 

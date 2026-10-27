@@ -19,7 +19,7 @@ in ORE syntax (`"5Y"`, `"18M"`), fixings as `{"YYYY-MM-DD": rate}`.
 """
 import dataclasses
 import datetime
-from typing import Annotated, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Annotated, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -81,6 +81,7 @@ class PrecisionReportSchema(BaseModel):
     trades: Dict[str, StagePrecisionSchema]
     realized: Dict[str, str]
     products: Dict[str, Literal["native", "emulated"]] = Field(default_factory=dict)
+    resolved_policy: Dict[str, Any] = Field(default_factory=dict)
     devices: List[str]
     backend: str
     jax_version: str
@@ -97,6 +98,7 @@ class PrecisionReportSchema(BaseModel):
         return cls(policy=PrecisionSchema.from_dataclass(report.policy),
                    trades={k: StagePrecisionSchema.from_dataclass(v) for k, v in report.trades.items()},
                    realized=dict(report.realized), products=dict(report.products), devices=list(report.devices),
+                   resolved_policy=dict(report.resolved_policy),
                    backend=report.backend, jax_version=report.jax_version, paths=report.paths,
                    paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()},
                    replicates=report.replicates, uncertainty_method=report.uncertainty_method,

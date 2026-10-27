@@ -140,9 +140,16 @@ def greeks_by_trade(trade_greeks: TradeGreeks, trades: Sequence[Trade], market: 
     the base currency, each trade in its own profiler phase: the portfolio loop of both
     methods."""
     # Not at module scope: importing engine.run runs its __init__, which imports engine.risk.
+    from engine.precision import Precision
+    from engine.precision.execution import prepare_execution
+    validate_trades(trades, market, pricing)
+    execution = prepare_execution(Precision.reference())
+    return _greeks_by_trade(trade_greeks, trades, market, base_currency, pricing, config, execution)
+
+
+def _greeks_by_trade(trade_greeks, trades, market, base_currency, pricing, config, execution):
     from engine.run.trace import trade_greeks_phase
 
-    validate_trades(trades, market, pricing)
     base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
     result: Dict[int, Dict[str, np.ndarray]] = {}
     for i, cfg in enumerate(trades):

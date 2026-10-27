@@ -66,7 +66,7 @@ LINEAR = ("swap-payer", "swap-receiver-seasoned-icma", "european-payer", "europe
 
 
 def _arithmetic(name: str) -> Arithmetic:
-    return Arithmetic(name, "float32" if FORMATS[name].below_float32 else name)
+    return Arithmetic(name, "float32" if FORMATS[name].below_float32 else name, execution="allow_emulation")
 
 
 def _stage(name: str, storage: str = "float32") -> StagePrecision:
@@ -149,7 +149,7 @@ class TestProducts:
         a_terms = _reference_terms(self.A, fmt.base, -1, fmt.shared_terms if side == "left" else 1, side == "left")
         b_terms = _reference_terms(self.B, fmt.base, -2, fmt.shared_terms if side == "right" else 1, side == "right")
         a, b = sum(a_terms), sum(b_terms)
-        result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32"), side), dtype=np.float64)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32", execution="allow_emulation"), side), dtype=np.float64)
         bound = sum(self._bound(np.abs(x), np.abs(y)) for x in a_terms for y in b_terms) \
             + 2.0 ** -23 * (np.abs(a) @ np.abs(b))
         assert np.all(np.abs(result - a @ b) <= bound)
@@ -170,7 +170,7 @@ class TestProducts:
         for base in ("float16", "tensorfloat32", "bfloat16", "float8_e4m3fn", "float8_e5m2"):
             significance = {}
             for name in (base, f"{base}_1x"):
-                arithmetic = Arithmetic(name, "float32")
+                arithmetic = Arithmetic(name, "float32", execution="allow_emulation")
                 if side == "right":
                     result = matmul(jnp.asarray(paths, jnp.float32), weights, arithmetic, side)
                 else:
@@ -197,7 +197,7 @@ class TestProducts:
 
         (a_hi, a_lo), (b_hi, b_lo) = pieces(self.A), pieces(self.B)
         exact = a_hi @ b_hi + a_hi @ b_lo + a_lo @ b_hi
-        result = np.asarray(matmul(self.A, self.B, Arithmetic("bfloat16_3x", "float32"), "right"), dtype=np.float64)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic("bfloat16_3x", "float32", execution="allow_emulation"), "right"), dtype=np.float64)
         assert np.all(np.abs(result - exact) <= 3 * self._bound(np.abs(a_hi), np.abs(b_hi)))
         # ~16 bits: far closer than one bfloat16 pass, as far as TensorFloat-32 or better
         relative = np.max(np.abs(result - self.A @ self.B) / (np.abs(self.A) @ np.abs(self.B)))
@@ -220,7 +220,7 @@ class TestProducts:
         rescaling every other path a millionfold leaves a path's product as it was, bit for bit (in
         a batch of the same shape; XLA may sum a product of another shape in another order, an ulp
         apart, as it does at float32)."""
-        arithmetic = Arithmetic(name, "float32")
+        arithmetic = Arithmetic(name, "float32", execution="allow_emulation")
 
         def product(paths):
             """`paths @ B` `[paths, N]`, the paths on the side that is not shared."""
@@ -234,7 +234,7 @@ class TestProducts:
             np.testing.assert_array_equal(product(others)[i], full[i])
 
     def test_vectors_batches_zeros_and_an_empty_contraction(self):
-        arithmetic = Arithmetic("float8_e4m3fn", "float32")
+        arithmetic = Arithmetic("float8_e4m3fn", "float32", execution="allow_emulation")
         for side in ("left", "right"):
             assert matmul(self.A[0], self.B, arithmetic, side).shape == (5,)
             assert matmul(self.A, self.B[:, 0], arithmetic, side).shape == (6,)
@@ -250,7 +250,7 @@ class TestProducts:
     def test_the_program_is_one_product_of_operands_of_the_format_into_float32(self, name, side):
         """Native, each operand's own dtype; CPU-emulated FP8 uses float16 carriers. The shared operand's terms are one
         product with it, as wide as its terms (twice the work for two terms, A-23)."""
-        program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32"), side))
+        program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32", execution="allow_emulation"), side))
         (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
         base = FORMATS[name].base
         if product_execution(name) == "native":
@@ -316,13 +316,13 @@ class TestProducts:
         from engine.precision import products
 
         with jax.default_device(jax.devices("cpu")[0]):
-            emulated = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32"), side))
+            emulated = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
             monkeypatch.setattr(products, "product_execution", lambda name, device=None: "native")
-            program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic("float8_e5m2", "float32"), side))
+            program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
             (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
             e4m3, e5m2 = jnp.dtype(jnp.float8_e4m3fn), jnp.dtype(jnp.float8_e5m2)
             assert [v.aval.dtype for v in dot.invars] == ([e4m3, e5m2] if side == "left" else [e5m2, e4m3])
-            native = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32"), side))
+            native = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32", execution="allow_emulation"), side))
         np.testing.assert_allclose(native, emulated, rtol=0, atol=2.0 ** -22 * float(np.max(np.abs(emulated))))
 
     def test_a_native_product_format_states_its_algorithm(self, monkeypatch):
@@ -345,7 +345,7 @@ class TestProducts:
 class TestArithmetic:
     def test_the_default_is_float64_and_hashable(self):
         assert Arithmetic() == FLOAT64 == Arithmetic.of(jnp.float64) == Arithmetic("float64", "float64")
-        assert hash(Arithmetic("bfloat16", "float32")) == hash(Arithmetic("bfloat16", "float32"))
+        assert hash(Arithmetic("bfloat16", "float32", execution="allow_emulation")) == hash(Arithmetic("bfloat16", "float32", execution="allow_emulation"))
         assert Arithmetic.of(jnp.float32) == Arithmetic("float32", "float32")
 
     @pytest.mark.parametrize("compute, accumulate, message", [
@@ -357,7 +357,7 @@ class TestArithmetic:
     ])
     def test_refusals_name_the_field(self, compute, accumulate, message):
         with pytest.raises(ValueError, match=message):
-            Arithmetic(compute, accumulate)
+            Arithmetic(compute, accumulate, execution="allow_emulation")
 
 
 class TestLevels:
@@ -622,7 +622,7 @@ class TestLegs:
 # ---------------------------------------------------------------------------
 # The pipeline
 # ---------------------------------------------------------------------------
-def _request(names=LINEAR, precision=Precision(), samples=64, **pricing) -> PortfolioRequest:
+def _request(names=LINEAR, precision=Precision.research(), samples=64, **pricing) -> PortfolioRequest:
     return PortfolioRequest(market=shared.market(), trades=[shared.trades()[n] for n in names],
                             config=RunConfig(simulation=_simulation(samples), pricing=PricingConfig(**pricing),
                                              precision=precision))
@@ -643,7 +643,7 @@ class TestPipeline:
         the accumulator holds it."""
         stage = _stage(name)
         with jax.numpy_dtype_promotion("strict"):
-            result = price_portfolio(_request(precision=Precision(simulation=stage, market=stage, pricing=stage)))
+            result = price_portfolio(_request(precision=Precision.research(simulation=stage, market=stage, pricing=stage)))
         assert result.precision.products == {name: product_execution(name)}
         cube, exact = np.asarray(result.npv_cube), np.asarray(float64_run.npv_cube)
         assert np.all(np.isfinite(cube))
@@ -665,7 +665,7 @@ class TestPipeline:
 
         def significance(compute):
             stage = StagePrecision("float32", compute, "float32")
-            policy = Precision(simulation=stage, market=stage, pricing=stage)
+            policy = Precision.research(simulation=stage, market=stage, pricing=stage)
             return _bias_significance(np.asarray(price_portfolio(_request(samples=2048, precision=policy)).npv_cube,
                                                  np.float64) - exact)
 
@@ -674,20 +674,20 @@ class TestPipeline:
 
     def test_float32_products_accumulating_in_float64(self, float64_run):
         stage = StagePrecision("float32", "float32", "float64")
-        result = price_portfolio(_request(precision=Precision(simulation=stage, market=stage, pricing=stage)))
+        result = price_portfolio(_request(precision=Precision.research(simulation=stage, market=stage, pricing=stage)))
         exact = np.asarray(float64_run.npv_cube)
         np.testing.assert_allclose(np.asarray(result.npv_cube), exact, rtol=0, atol=1e-5 * np.max(np.abs(exact)))
         assert result.precision.products == {"float32": "native"}
 
     def test_the_report_names_every_compute_format_of_the_run(self):
-        policy = Precision(simulation=_stage("bfloat16"), by_trade={"bond": _stage("float8_e4m3fn")},
+        policy = Precision.research(simulation=_stage("bfloat16"), by_trade={"bond": _stage("float8_e4m3fn")},
                            by_product={"european_swaption": _stage("tensorfloat32")})
         result = price_portfolio(_request(precision=policy))
         assert set(result.precision.products) == {"bfloat16", "float64", "float8_e4m3fn", "tensorfloat32"}
 
     def test_a_second_run_compiles_nothing(self):
         stage = _stage("float8_e4m3fn")
-        request = _request(precision=Precision(simulation=stage, market=stage, pricing=stage))
+        request = _request(precision=Precision.research(simulation=stage, market=stage, pricing=stage))
         price_portfolio(request)
         with count_compiles() as compiled:
             price_portfolio(request)
@@ -702,17 +702,17 @@ class TestPipeline:
         grid = LgmSwaptionEngineConfig(n_per_std=8, std_devs=3.0)
         exact = np.asarray(price_portfolio(_request(names=(name,), bermudan=grid, american=grid)).npv_cube)
         with jax.numpy_dtype_promotion("strict"):
-            low = price_portfolio(_request(names=(name,), precision=Precision(pricing=_stage("bfloat16")),
+            low = price_portfolio(_request(names=(name,), precision=Precision.research(pricing=_stage("bfloat16")),
                                            bermudan=grid, american=grid))
         assert np.all(np.isfinite(np.asarray(low.npv_cube)))
         assert set(low.precision.products) == {"bfloat16", "float64"}
-        wide = price_portfolio(_request(names=(name,), precision=Precision(pricing=StagePrecision("float32", "float32",
+        wide = price_portfolio(_request(names=(name,), precision=Precision.research(pricing=StagePrecision("float32", "float32",
                                                                                                 "float64")),
                                         bermudan=grid, american=grid))
         np.testing.assert_allclose(np.asarray(wide.npv_cube), exact, rtol=0, atol=1e-6 * np.max(np.abs(exact)))
 
     def test_a_bermudan_kept_wide_beside_low_precision_trades(self):
-        policy = Precision(pricing=_stage("float8_e4m3fn"),
+        policy = Precision.research(pricing=_stage("float8_e4m3fn"),
                            by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")})
         names = ("swap-payer", "bermudan-payer-physical")
         result = price_portfolio(_request(names=names, precision=policy, samples=32,
@@ -724,7 +724,7 @@ class TestPipeline:
     def test_the_paired_sample_corrects_a_low_precision_run(self, float64_run):
         """Every path paired: the two-level EPE is the float64 run's own, the uncorrected one not."""
         stage = _stage("float8_e4m3fn")
-        policy = Precision(simulation=stage, market=stage, pricing=stage, paired_fraction=1.0)
+        policy = Precision.research(simulation=stage, market=stage, pricing=stage, paired_fraction=1.0)
         result = price_portfolio(_request(precision=policy))
         estimate = result.precision.figures["netting_set/EPE"]
         exact = np.asarray(float64_run.exposure.epe)[1:]
@@ -778,7 +778,7 @@ class TestMarketRisk:
         scenarios = monte_carlo_scenarios(mr.factors(), mr.covariance(), 10, 256, seed=5)
         exact = run_market_risk(MarketRiskRequest(trades, mr.market(), scenarios, mr.PRICING))
         low = run_market_risk(MarketRiskRequest(trades, mr.market(), scenarios, mr.PRICING,
-                                                precision=Precision(pricing=_stage(name))))
+                                                precision=Precision.research(pricing=_stage(name))))
         pnl, reference = np.asarray(low.pnl), np.asarray(exact.pnl)
         assert np.all(np.abs(pnl - reference) <= 4 * EPS[name] * np.max(np.abs(reference), axis=0))
         assert low.precision.products == {name: product_execution(name)}

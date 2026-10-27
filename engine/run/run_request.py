@@ -36,8 +36,9 @@ with a `400` and queues nothing):
     section; `calibration`: models with a calibration basket);
   - nothing accepted and then ignored (I-59's rule): a section, a portfolio or a setting that
     differs from its default where no requested analytic reads it is refused, naming it. The
-    precision is read by `exposure` and `market_risk` alone (today's values, Greeks and
-    calibration are float64, decision A-10), and each of them refuses a precision setting it
+    adjustable precision stages are read by `exposure` and `market_risk` (today's values, Greeks and
+    calibration retain declared FP64 requirements); execution requirements apply to every analytic.
+    Each analytic refuses a precision setting it
     does not read (I-95): market risk has no scenario market (`precision.market`) and its
     shifts no products (`precision.simulation.compute` other than its accumulate format);
   - then each analytic's own validation (`engine.run.pipeline.validate_request`,
@@ -46,10 +47,10 @@ with a `400` and queues nothing):
 
 Every refusal is a `ValueError`, `KeyError` or `TypeError` naming the section, field or trade.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from engine.calibration.cam import CamCalibration, calibrate_cam
+from engine.calibration.cam import CamCalibration, _calibrate_cam
 from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, check_tolerance
 from engine.market_data.market import Market, index_name
 from engine.market_simulation.config import (
@@ -59,13 +60,13 @@ from engine.market_simulation.sharding import whole_on_every_host
 from engine.precision import Precision, StagePrecision, require_precision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, require_unique_ids
-from engine.risk.market import MarketRiskRequest, MarketRiskResult, run_market_risk
-from engine.risk.market.run import validate_portfolio, validate_scenarios
+from engine.risk.market import MarketRiskRequest, MarketRiskResult
+from engine.risk.market.run import validate_portfolio, validate_scenarios, _run_market_risk
 from engine.risk.market.scenarios import MonteCarloScenarios, ShockScenarios, shock_scenarios
 from engine.risk.market.var_es import validate_quantiles
 from engine.run.config import GreeksConfig, RunConfig
 from engine.run.identity import EngineIdentity, engine_identity
-from engine.run.request import PortfolioRequest, PortfolioResult, TradeConfig, price_portfolio
+from engine.run.request import PortfolioRequest, PortfolioResult, TradeConfig, _price_portfolio
 from engine.run.trace import phase
 
 #: The analytics a run request names, as ORE's `ore.xml` lists its analytics.
@@ -245,18 +246,18 @@ def run(request: RunRequest) -> RunResult:
     """Run every analytic of `request` (see the module docstring), each by the engine's entry
     point, after `validate_run`; on several hosts (a pod slice) every array of the result whole on
     each (`engine.market_simulation.sharding.whole_on_every_host`)."""
-    validate_run(request)
+    execution = validate_run(request, execution=True)
     result = RunResult(request=request, engine=engine_identity())
     if request.wants(*PORTFOLIO_ANALYTICS):
-        result.portfolio = price_portfolio(portfolio_request(request))
+        result.portfolio = _price_portfolio(portfolio_request(request), execution)
     if request.wants("market_risk"):
         with phase("scenarios"):
             scenarios = shock_scenarios(request.config.market_risk.scenarios)
-        result.market_risk = run_market_risk(market_risk_request(request, scenarios))
+        result.market_risk = _run_market_risk(market_risk_request(request, scenarios), execution)
     if request.wants("calibration"):
         models = request.config.models
         with phase("calibration"):
-            result.calibration = calibrate_cam(request.market, models.ir, models.bootstrap_tolerance)
+            result.calibration = _calibrate_cam(request.market, models.ir, models.bootstrap_tolerance, execution)
     return whole_on_every_host(result)
 
 
@@ -290,12 +291,16 @@ _READERS = {
     "sensitivity": ("sensitivities",),
     "exposure": ("exposure",),
     "market_risk": ("market_risk",),
-    "precision": ("exposure", "market_risk"),
+    "precision": ANALYTICS,
 }
 
 
-def validate_run(request: RunRequest) -> None:
-    """Refuse, before any work, a request `run` cannot run as given (see the module docstring)."""
+def validate_run(request: RunRequest, *, execution: bool = False):
+    """Validate a complete job. With `execution=True`, return its runtime context.
+
+    HTTP admission uses structural validation only; the worker includes execution
+    validation on its own backend before starting any analytic.
+    """
     _check_analytics(request.analytics)
     _check_sections(request)
     config = request.config
@@ -310,6 +315,15 @@ def validate_run(request: RunRequest) -> None:
         validate_scenarios(list(request.portfolio), request.market, config.precision, risk.scenarios)
     if request.wants("calibration"):
         _check_calibration(request)
+    if execution:
+        from engine.precision.execution import prepare_execution
+        # API submission calls structural validation only. At execution, validate
+        # the union of every requested analytic before any of them starts work.
+        stages = (("simulation", "market", "pricing") if request.wants("exposure") else
+                  ("pricing",) if request.wants("market_risk") else ())
+        risk = config.market_risk.scenarios if request.wants("market_risk") else None
+        return prepare_execution(config.precision, stages=stages, trades=request.portfolio,
+                                 arrays=getattr(risk, "shifts", ()))
 
 
 def _check_analytics(analytics: Sequence[str]) -> None:
@@ -327,6 +341,14 @@ def _check_sections(request: RunRequest) -> None:
     """Every section an analytic needs is given, and nothing is given that no requested analytic
     reads (see the module docstring)."""
     config, defaults = request.config, RunRequestConfig()
+    if not request.wants("exposure", "market_risk"):
+        # Execution/internal requirements apply to every analytic, but adjustable
+        # scenario stages still cannot be supplied to an analytic that ignores them.
+        adjustable = replace(config.precision, internal=defaults.precision.internal,
+                             execution=defaults.precision.execution)
+        if adjustable != defaults.precision:
+            raise ValueError(_unread("config.precision", ("exposure", "market_risk"),
+                                     request.analytics))
     needs = {"models": ("exposure", "calibration"), "simulation": ("exposure",), "market_risk": ("market_risk",)}
     for section, analytics in needs.items():
         for analytic in analytics:

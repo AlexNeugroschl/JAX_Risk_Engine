@@ -120,7 +120,13 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     the configuration and trades before any JAX work, calibrate and simulate the cross-asset
     model, value every trade today and on every path, build the exposure profiles, and
     optionally the Greeks. The result carries the trades' ids."""
-    from engine.run.pipeline import price_on_market
-    result = price_on_market(request)
+    from engine.run.pipeline import validate_request
+    execution = validate_request(request, execution=True)
+    return _price_portfolio(request, execution)
+
+
+def _price_portfolio(request, execution):
+    from engine.run.pipeline import _price_on_market
+    result = _price_on_market(request, execution)
     result.trade_ids = [cfg.trade_id for cfg in request.trades]
     return result

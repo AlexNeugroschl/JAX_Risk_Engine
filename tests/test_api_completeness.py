@@ -41,7 +41,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.precision import Precision, StagePrecision
+from engine.precision import ExecutionPolicy, InternalPrecision, Precision, StagePrecision
 from engine.risk.market import MonteCarloScenarios, RateRiskFactors, ShockScenarios, historical_scenarios
 from engine.run import (
     CamConfig, ExposureConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig,
@@ -83,6 +83,8 @@ MIRRORS = {
         "windows": Rename("dates"),
         "replicates": "independent scrambles are Monte Carlo scenarios' (MonteCarloScenarios); a history has none"}),
     Precision: (wire.PrecisionSchema, {}),
+    ExecutionPolicy: (wire.ExecutionPolicySchema, {}),
+    InternalPrecision: (wire.InternalPrecisionSchema, {}),
     StagePrecision: (wire.StagePrecisionSchema, {}),
     Market: (wire.MarketSchema, {}),
     CurrencyMarket: (wire.CurrencyMarketSchema, {}),
@@ -233,6 +235,8 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
     wire.ExposureSchema: ({}, lambda s: s.to_dataclass()),
     wire.StagePrecisionSchema: ({}, lambda s: s.to_dataclass()),
     wire.PrecisionSchema: ({}, lambda s: s.to_dataclass()),
+    wire.ExecutionPolicySchema: ({}, lambda s: s.to_dataclass()),
+    wire.InternalPrecisionSchema: ({}, lambda s: s.to_dataclass()),
     wire.SwapTradeSchema: (SWAP, _trade(wire.SwapTradeSchema)),
     wire.EuropeanTradeSchema: ({"notional": 1e6, "fixed_rate": 0.03, "payer": True, "swap_tenor": "2Y",
                                 "forward_start": "1Y"}, _trade(wire.EuropeanTradeSchema)),
@@ -253,6 +257,7 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
 
 #: (schema, field) -> a value other than the default, where the field's type does not give one.
 NON_DEFAULT = {
+    (wire.PrecisionSchema, "execution"): {"mode": "allow_emulation"},
     (wire.ZeroCurveConfigSchema, "times"): [0.0, 2.0, 5.0],
     (wire.ZeroCurveConfigSchema, "rates"): [0.01, 0.02, 0.04],
     (wire.SwaptionVolSurfaceSchema, "option_tenors"): ["1Y", "3Y"],
@@ -406,6 +411,9 @@ EFFECTS = {
 }
 #: Fields with no engine setting of their own, with the reason.
 NOT_SETTINGS = {
+    (wire.PrecisionSchema, "internal"): "fixed FP64 kernel requirements; alternatives are refused",
+    **{(wire.InternalPrecisionSchema, f.name): "fixed FP64 requirement; alternatives are refused"
+       for f in dataclasses.fields(InternalPrecision)},
     (wire.LgmConfigSchema, "model"): "selects the schema: LgmConfig, or HullWhiteConfig for `HullWhite`",
     (wire.HullWhiteConfigSchema, "model"): "selects the schema",
     (wire.MonteCarloScenariosSchema, "source"): "selects the schema",

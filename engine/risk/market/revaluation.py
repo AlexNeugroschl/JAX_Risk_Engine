@@ -68,7 +68,8 @@ def revalue(
     batch_size: the most scenarios to revalue at once; the grid engine may use fewer to stay
         within `induction_memory_budget()` per device.
     """
-    values = [revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic) for cfg in trades]
+    execution = _prepare_revaluation(moves, arithmetic)
+    values = [_revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution) for cfg in trades]
     return (np.asarray([base for base, _ in values]),
             jnp.stack([jnp.asarray(base, dtype=pnl.dtype) + pnl for base, pnl in values], axis=-1))
 
@@ -81,6 +82,22 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
     An option recalibrated under each scenario (`TradePriceFunction.calibration`) is calibrated
     first, in float64; a scenario whose calibration misses ORE's acceptance is refused
     (`CalibrationError`, naming the trade and the scenarios)."""
+    execution = _prepare_revaluation(moves, arithmetic)
+    return _revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution)
+
+
+def _prepare_revaluation(moves, arithmetic):
+    from engine.precision import Precision
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(Precision.reference(), arrays=moves)
+    if arithmetic is not None:
+        from engine.precision.execution import validate_product
+        validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution)
+    return execution
+
+
+def _revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution):
+    """Internal single-trade revaluation; the job has validated all pricing overrides."""
     moves = jnp.asarray(moves)
     arithmetic = arithmetic or Arithmetic.of(moves.dtype)
     moves = arithmetic.cast(moves)

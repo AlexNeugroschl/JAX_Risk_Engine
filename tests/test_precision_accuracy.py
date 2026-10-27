@@ -29,7 +29,7 @@ def test_market_risk_cannot_revalue_a_long_option_below_zero():
     from tests import market_risk_support as mr
     moves = np.linspace(-.15, .15, 128)[:, None] * np.ones((1, mr.factors().size))
     base, pnl = revalue_trade(mr.bermudan(), mr.market(), mr.factors(), moves, mr.PRICING, 128,
-                              Arithmetic("bfloat16", "float32"))
+                              Arithmetic("bfloat16", "float32", execution="allow_emulation"))
     assert np.min(base + np.asarray(pnl)) >= 0.
 
 
@@ -44,7 +44,7 @@ def test_option_bound_survives_pnl_storage_and_position():
     for position, sign in (("Long", 1.), ("Short", -1.)):
         trade = dataclasses.replace(long, long_short=position)
         result = run_market_risk(MarketRiskRequest([trade], mr.market(), scenarios, mr.PRICING,
-                                 precision=Precision(pricing=StagePrecision("float8_e4m3fn"))))
+                                 precision=Precision.research(pricing=StagePrecision("float8_e4m3fn"))))
         assert np.min(sign * (result.base_npv + np.asarray(result.portfolio_pnl))) >= 0.
 
 
@@ -52,7 +52,7 @@ def test_option_bound_survives_pnl_storage_and_position():
 def test_stochastic_product_has_no_binade_rounding_bias(name):
     rng = np.random.default_rng(147)
     values = jnp.asarray(rng.normal(1., .3, (65536, 3)), dtype=jnp.float32)
-    arithmetic = Arithmetic(name, "float32", rounding="stochastic", key=jax.random.key(719))
+    arithmetic = Arithmetic(name, "float32", rounding="stochastic", key=jax.random.key(719), execution="allow_emulation")
     got = jax.jit(lambda x, a: a.matmul(x, jnp.ones((3, 1)), shared="right"))(values, arithmetic)[:, 0]
     errors = np.asarray(got) - np.asarray(values).sum(axis=1)
     assert abs(errors.mean()) < 4 * errors.std(ddof=1) / np.sqrt(len(errors)) + 1e-6
@@ -60,7 +60,7 @@ def test_stochastic_product_has_no_binade_rounding_bias(name):
 
 def test_stochastic_keys_are_data_and_sample_prefixes_reproduce():
     stage = StagePrecision("float32", "float8_e4m3fn", "float32", compute_rounding="stochastic")
-    arithmetic = dataclasses.replace(stage.arithmetic, key=jax.random.key(9))
+    arithmetic = dataclasses.replace(stage.arithmetic, key=jax.random.key(9), execution="allow_emulation")
     product = jax.jit(lambda x, a: a.matmul(x, jnp.asarray([[.17], [.43]]), shared="right"))
     values = jnp.asarray(np.random.default_rng(13).normal(size=(128, 2)), dtype=jnp.float32)
     full = product(values, arithmetic)
@@ -90,7 +90,7 @@ def test_adjacent_calendar_dates_have_distinct_rounding_streams(monkeypatch, ker
     curve = ZeroCurve.flat(.03, [0., 1., 5., 10.])
     moved = jnp.zeros((2, 4), dtype=jnp.float32)
     deviations = Deviations(moved, moved, jnp.zeros((2, len(terms.legs.float_pay)), dtype=jnp.float32))
-    arithmetic = Arithmetic("float16", "float32", "stochastic", jax.random.key(71))
+    arithmetic = Arithmetic("float16", "float32", "stochastic", jax.random.key(71), execution="allow_emulation")
     fold_in, dates = Arithmetic.fold_in, []
 
     def record(self, data):
@@ -185,7 +185,7 @@ def test_replicated_portfolio_pairs_all_scrambles_and_reuses_programs():
     import ORE
     simulation = CamConfig(dates=(shared.ASOF + ORE.Period("1Y"),), base_currency="USD",
                            ir={"USD": LgmConfig(.03)}, samples=256, replicates=4, seed=13)
-    precision = Precision(pricing=StagePrecision("float32", "float8_e4m3fn", "float32", "stochastic"),
+    precision = Precision.research(pricing=StagePrecision("float32", "float8_e4m3fn", "float32", "stochastic"),
                           paired_fraction=.25)
     request = PortfolioRequest(shared.market(), [shared.trades()["swap-payer"]],
                                RunConfig(simulation=simulation, precision=precision))
@@ -272,7 +272,7 @@ def test_stochastic_option_rollback_runs_in_blocks_without_changing_rounding(mon
     from engine.pricing import lgm_grid
     campaign = campaigns.options()
     simulation = dataclasses.replace(campaign.simulation, samples=64)
-    policy = Precision(pricing=StagePrecision("float32", "float16", "float32", "stochastic"))
+    policy = Precision.research(pricing=StagePrecision("float32", "float16", "float32", "stochastic"))
     request = PortfolioRequest(campaign.market, list(campaign.trades[:1]),
                                RunConfig(simulation=simulation, precision=policy, pricing=campaign.pricing))
     full = price_portfolio(request)

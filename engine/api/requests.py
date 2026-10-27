@@ -52,7 +52,7 @@ from engine.market_simulation.config import DEFAULT_CURVE_TENORS, HullWhiteConfi
 from engine.models.lgm import Sigma
 from engine.precision import (
     FORMAT_NAMES, OFFSETS, OVERRIDES, RETIRED_SHAPE as RETIRED_PRECISION_SHAPE, ROUNDINGS, STAGES, Precision,
-    StagePrecision,
+    StagePrecision, ExecutionPolicy, InternalPrecision,
 )
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, PRODUCTS
@@ -163,6 +163,27 @@ class StagePrecisionSchema(_Strict):
         return _named(where, lambda: StagePrecision(**self.model_dump()))
 
 
+class ExecutionPolicySchema(_Strict):
+    backend: Literal["default", "cpu", "gpu", "tpu"] = "default"
+    mode: Literal["native", "allow_emulation"] = "native"
+
+    def to_dataclass(self) -> ExecutionPolicy:
+        return ExecutionPolicy(**self.model_dump())
+
+
+class InternalPrecisionSchema(_Strict):
+    """Requirements of existing kernels; FP32 implementations are not available yet."""
+    calibration: Literal["float64"] = "float64"
+    levels: Literal["float64"] = "float64"
+    initial_values: Literal["float64"] = "float64"
+    reductions: Literal["float64"] = "float64"
+    greeks: Literal["float64"] = "float64"
+    output: Literal["float64"] = "float64"
+
+    def to_dataclass(self) -> InternalPrecision:
+        return InternalPrecision(**self.model_dump())
+
+
 class PrecisionSchema(_Strict):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
@@ -180,6 +201,8 @@ class PrecisionSchema(_Strict):
     rounding_seed: int = Field(default=0, ge=0)
     offset: OffsetName = "block"
     paired_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+    internal: InternalPrecisionSchema = Field(default_factory=InternalPrecisionSchema)
+    execution: ExecutionPolicySchema = Field(default_factory=ExecutionPolicySchema)
 
     @model_validator(mode="before")
     @classmethod
@@ -196,7 +219,9 @@ class PrecisionSchema(_Strict):
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
         return _named(where, lambda: Precision(**stages, **overrides, rounding=self.rounding,
                                                rounding_seed=self.rounding_seed, offset=self.offset,
-                                               paired_fraction=self.paired_fraction))
+                                               paired_fraction=self.paired_fraction,
+                                               internal=self.internal.to_dataclass(),
+                                               execution=self.execution.to_dataclass()))
 
     @classmethod
     def from_dataclass(cls, precision: Precision) -> "PrecisionSchema":
@@ -204,7 +229,9 @@ class PrecisionSchema(_Strict):
         return cls(**{s: stage(getattr(precision, s)) for s in STAGES},
                    **{name: {k: stage(v) for k, v in getattr(precision, name).items()} for name in OVERRIDES},
                    rounding=precision.rounding, rounding_seed=precision.rounding_seed, offset=precision.offset,
-                   paired_fraction=precision.paired_fraction)
+                   paired_fraction=precision.paired_fraction,
+                   internal=InternalPrecisionSchema(**dataclasses.asdict(precision.internal)),
+                   execution=ExecutionPolicySchema(**dataclasses.asdict(precision.execution)))
 
 
 # --- today's market -----------------------------------------------------------------------------

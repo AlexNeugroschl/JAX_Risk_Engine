@@ -33,6 +33,7 @@ from typing import Optional
 import jax
 import numpy as np
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from engine.precision.products import default_device
 
 #: Caps the devices a run's scenario axis is split across (default: every device).
 SCENARIO_DEVICES_ENV = "JAX_RISK_SCENARIO_DEVICES"
@@ -43,7 +44,7 @@ SCENARIO_AXIS = "scenarios"
 def _device_limit() -> int:
     """The devices a run may split its scenarios across: every device of every host, capped by
     `JAX_RISK_SCENARIO_DEVICES`."""
-    limit = jax.process_count() * len(jax.local_devices())
+    limit = jax.process_count() * len(_local_devices())
     configured = os.environ.get(SCENARIO_DEVICES_ENV)
     if configured:
         requested = int(configured)
@@ -85,7 +86,7 @@ def shard_scenarios(array: jax.Array, axis: int) -> jax.Array:
         return array
     spec = [None] * array.ndim
     spec[axis] = SCENARIO_AXIS
-    return jax.device_put(array, NamedSharding(_mesh(count), PartitionSpec(*spec)))
+    return jax.device_put(array, NamedSharding(_mesh(count, default_device().platform), PartitionSpec(*spec)))
 
 
 def host_array(array) -> np.ndarray:
@@ -99,12 +100,21 @@ def host_array(array) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=None)
-def _mesh(count: int) -> Mesh:
+def _mesh(count: int, backend: str) -> Mesh:
     """A one-axis mesh of `count` devices, the first `count / hosts` of each host's, host by host;
     built once per count."""
     per_host = count // jax.process_count()
-    devices = [d for host in range(jax.process_count()) for d in jax.local_devices(process_index=host)[:per_host]]
+    devices = [d for host in range(jax.process_count())
+               for d in jax.local_devices(process_index=host, backend=backend)[:per_host]]
     return Mesh(np.array(devices), (SCENARIO_AXIS,))
+
+
+def _local_devices():
+    """Respect a caller's selected backend when forming a scenario mesh."""
+    backend = default_device().platform
+    if backend == jax.default_backend():
+        return jax.local_devices()
+    return jax.local_devices(backend=backend)
 
 
 def whole_on_every_host(value):

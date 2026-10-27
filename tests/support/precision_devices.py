@@ -121,10 +121,11 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
     import numpy as np
     from engine.precision import FORMAT_NAMES, FORMATS, SHARED, Arithmetic, matmul, product_execution
     from engine.precision.arithmetic import arithmetic_refusal
+    from engine.precision.execution import validate_product
     from tests.support.precision_timing import execution_environment
 
     formats = FORMAT_NAMES if formats is None else formats
-    arithmetics = [Arithmetic(name, accumulate) for name in formats for accumulate in ("float32", "float64")
+    arithmetics = [Arithmetic(name, accumulate, execution="allow_emulation") for name in formats for accumulate in ("float32", "float64")
                    if arithmetic_refusal(FORMATS[name], FORMATS[accumulate]) is None]
     cpu = jax.devices("cpu")[0]
     rows = []
@@ -134,6 +135,12 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
         atomic_json(Path(out) / "qualification.json", {"schema_version": 1, "complete": False,
                     "passes": False, "device": device.device_kind, "environment": metadata, "operations": rows})
     for arithmetic in arithmetics:
+        try:
+            validate_product(arithmetic.compute, arithmetic.accumulate, arithmetic.execution, device=device)
+        except ValueError as error:
+            rows.append({"format": arithmetic.compute, "accumulate": arithmetic.accumulate,
+                         "passes": False, "status": "unsupported", "error": str(error)})
+            continue
         fmt, execution = FORMATS[arithmetic.compute], product_execution(arithmetic.compute, device)
         policies = roundings if fmt.below_float32 and fmt.product != "bfloat16_3x" else ("nearest",)
         for shape, shared, rounding, pattern in itertools.product(shapes, SHARED, policies, patterns):
@@ -146,6 +153,10 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
             elif pattern == "cancellation":
                 a[..., 1::2] = a[..., :2 * (k // 2):2]
                 b[..., 1::2, :] = -b[..., :2 * (k // 2):2, :]
+            if device.platform == "tpu":
+                # TPU experiments must not invoke the rejected software FP64 grid.
+                # Both the CPU reference and TPU see exactly these FP32 inputs.
+                a, b = a.astype(np.float32), b.astype(np.float32)
             key = jax.random.PRNGKey(7) if rounding == "stochastic" else None
             policy = dataclasses.replace(arithmetic, rounding=rounding, key=key)
             program = jax.jit(lambda x, y, p: matmul(x, y, p, shared))

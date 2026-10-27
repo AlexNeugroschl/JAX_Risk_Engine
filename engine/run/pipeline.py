@@ -38,7 +38,7 @@ import numpy as np
 
 from engine.market_data.curves import ZeroCurve, discount
 from engine.market_data.market import Market
-from engine.market_simulation.config import build_cross_asset_model, simulate
+from engine.market_simulation.config import _build_cross_asset_model, _simulate
 from engine.market_simulation.sharding import unused_devices_warning
 from engine.precision import (
     STAGES, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_error_warning,
@@ -48,7 +48,7 @@ from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import simulation_market_today
 from engine.pricing.cube import (
-    reporting_fx_spots, trade_maturity, validate_trades, value_paths, value_portfolio, value_today,
+    reporting_fx_spots, trade_maturity, validate_trades, _today, _value_paths, _value_portfolio,
 )
 from engine.risk.counterparty.exposure import (
     CORRECTED_FIGURES, ExposureProfile, PairedColumns, column_profiles, figure_names,
@@ -62,9 +62,13 @@ if TYPE_CHECKING:
 
 def price_on_market(request) -> "PortfolioResult":
     """`price_portfolio`'s work (see the module docstring)."""
-    from engine.run.request import PortfolioResult
+    execution = validate_request(request, execution=True)
+    return _price_on_market(request, execution)
 
-    validate_request(request)
+
+def _price_on_market(request, execution) -> "PortfolioResult":
+    """Internal portfolio pipeline; the entry point has validated the entire request."""
+    from engine.run.request import PortfolioResult
     market: Market = request.market
     run = request.config
     trades = list(request.trades)
@@ -74,20 +78,20 @@ def price_on_market(request) -> "PortfolioResult":
     if request.scenario_risk:
         simulation = run.simulation
         with phase("calibration"):
-            model = build_cross_asset_model(market, simulation)
+            model = _build_cross_asset_model(market, simulation, None, execution)
         with phase("simulation"):
-            scenarios = simulate(market, simulation, model, run.precision)
+            scenarios = _simulate(market, simulation, model, run.precision, execution)
         with phase("pricing"):
-            valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay,
-                                        run.precision)
+            valuation = _value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay,
+                                         run.precision, execution)
         paired = paired_count(scenarios.num_paths, run.precision.paired_fraction, simulation.replicates)
         sample = None
         if paired:
             with phase("paired_sample"):
-                sample = _paired_sample(trades, market, model, run, paired)
+                sample = _paired_sample(trades, market, model, run, paired, execution)
         today, exercised = valuation.today, valuation.exercised
         with phase("exposure"):
-            start = value_today(trades, market, base, run.pricing,
+            start = _today(trades, market, base, run.pricing,
                                 simulation_market_today(market, simulation.curve_tenors))
             exposure, trade_exposures = _exposures(trades, start, valuation.columns, scenarios, market, base,
                                                    request.pfe_quantiles,
@@ -104,7 +108,7 @@ def price_on_market(request) -> "PortfolioResult":
         computed = [run.precision.simulation.compute, run.precision.market.compute,
                     *(run.precision.precision_for(t).compute for t in trades)]
         report = PrecisionReport.of(run.precision, trades, realized, valuation.columns, scenarios.num_paths,
-                                    paired, figures, computed)
+                                    paired, figures, computed, execution=execution)
         report = dataclasses.replace(report, replicates=simulation.replicates,
                                      uncertainty_method="independent_scrambles" if simulation.replicates > 1 else "unavailable")
         warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles,
@@ -112,13 +116,13 @@ def price_on_market(request) -> "PortfolioResult":
         warnings += [w for w in [unused_devices_warning(scenarios.num_paths, "paths")] if w]
     else:
         with phase("base_npv"):
-            today = value_today(trades, market, base, run.pricing)
+            today = _today(trades, market, base, run.pricing)
         cube = jnp.zeros((0, 0, 0))
-        report = PrecisionReport.of(run.precision, trades, {}, (), paths=0)
+        report = PrecisionReport.of(run.precision, trades, {}, (), paths=0, execution=execution)
         warnings = []
     if request.compute_greeks:
         with phase("greeks"):
-            greeks = _greeks(run.greeks.method)(trades, market, base, run.pricing, run.greeks.sensitivity)
+            greeks = _greeks(run.greeks.method, execution)(trades, market, base, run.pricing, run.greeks.sensitivity)
         if run.greeks.method == "AD":
             from engine.risk.greeks.ad import ad_warnings
             warnings = warnings + ad_warnings(trades)
@@ -163,35 +167,39 @@ def precision_warnings(precision: Precision, trades: Sequence, paths: int, quant
     return warnings
 
 
-def _paired_sample(trades: Sequence, market: Market, model, run, paths: int) -> PairedColumns:
+def _paired_sample(trades: Sequence, market: Market, model, run, paths: int, execution) -> PairedColumns:
     """The paired float64 sample (decision A-13): the first `paths` paths simulated and priced
     again at float64 throughout, on the same calibrated model, as columns `[n, D]` and the
     numeraire `[n, D]`. A Sobol sequence's first points do not depend on the sample size, and
     every kernel is per path, so these are exactly the paths a float64 run would give."""
     simulation = run.simulation
-    scenarios = simulate(market, dataclasses.replace(simulation, samples=paths), model)
-    columns = value_paths(trades, market, scenarios, run.reporting_currency, run.pricing,
-                          simulation.swaption_vol_decay)
+    reference = Precision.reference()
+    scenarios = _simulate(market, dataclasses.replace(simulation, samples=paths), model, reference, execution)
+    columns = _value_paths(trades, market, scenarios, run.reporting_currency, run.pricing,
+                           simulation.swaption_vol_decay, reference, execution)
     return columns, scenarios.numeraire
 
 
-def _greeks(method: str):
+def _greeks(method: str, execution):
     """The Greeks function of a method: ORE's bump-and-revalue or AD, same signature."""
+    from functools import partial
+    from engine.risk.greeks.bump import _greeks_by_trade, trade_sensitivities
     if method == "AD":
-        from engine.risk.greeks.ad import portfolio_greeks
-        return portfolio_greeks
-    from engine.risk.greeks.bump import portfolio_sensitivities
-    return portfolio_sensitivities
+        from engine.risk.greeks.ad import trade_greeks
+    else:
+        trade_greeks = trade_sensitivities
+    return partial(_greeks_by_trade, trade_greeks, execution=execution)
 
 
-def validate_request(request) -> None:
+def validate_request(request, *, execution: bool = False):
     """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
     not implement: scenario risk without a simulation, a PFE quantile outside (0, 1) or given twice,
     or a trade in a currency the simulation does not model; a trade the market cannot value or its engine refuses, a
     precision override naming no trade or product (`validate_trades`); a reporting currency the
     market lacks, or a trade with no FX spot into it (`reporting_fx_spots`). The configuration
     itself is validated when it is built. The HTTP route runs it synchronously so such a request
-    is a 400, not a failed job."""
+    is a 400, not a failed job. With `execution=True`, also check the executing
+    worker's backend/precision and return the context for internal calls."""
     run = request.config
     if request.scenario_risk and run.simulation is None:
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
@@ -206,6 +214,10 @@ def validate_request(request) -> None:
                 raise ValueError(f"trade {cfg.trade_id!r} is in {cfg.currency}, which the simulation does not model; "
                                  f"give config.simulation.ir[{cfg.currency!r}] a model (and its FX volatility)")
     reporting_fx_spots(request.trades, request.market, run.reporting_currency, "base_currency")
+    if execution:
+        from engine.precision.execution import prepare_execution
+        return prepare_execution(run.precision, stages=STAGES if request.scenario_risk else (),
+                                 trades=request.trades)
 
 
 def _exposures(trades: Sequence, start: List[float], columns, scenarios, market: Market, base: str, quantiles,

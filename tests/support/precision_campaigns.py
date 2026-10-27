@@ -220,7 +220,7 @@ def comparison(single=False) -> MarketRiskCampaign:
                     + " on the market-risk campaign's curves and shocks, fixed-LGM coarse grid; "
                     "FP64 inputs, pricing compute/storage varied together; arithmetic-consistent P&L anchor.",
         trades=base.trades[:1] if single else base.trades,
-        cases=(tuple(Case(f"pricing:{name}", Precision(pricing=Precision.throughout(name).pricing))
+        cases=(tuple(Case(f"pricing:{name}", Precision.research(pricing=Precision.throughout(name).pricing))
                      for name in formats)
                + compute_cases(stages=("pricing",))
                + tuple(Case(f"pricing:storage:{name}", Precision(pricing=StagePrecision(name))) for name in formats)))
@@ -229,7 +229,7 @@ def comparison(single=False) -> MarketRiskCampaign:
 def rounding_cases(stages, formats, roundings=("nearest", "stochastic")):
     """Matched product policies in each of `roundings`. Storage stays float32."""
     return tuple(Case(f"{stage}:compute:{name}:{rounding}",
-                      Precision(**{stage: StagePrecision("float32", name, "float32", rounding)}))
+                      Precision.research(**{stage: StagePrecision("float32", name, "float32", rounding)}))
                  for stage in stages for name in formats for rounding in roundings)
 
 

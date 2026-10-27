@@ -66,7 +66,7 @@ from engine.pricing.cube import (
 )
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.greeks.scenario_pnl import scenario_batch_size
-from engine.risk.market.revaluation import factor_indices, revalue_trade
+from engine.risk.market.revaluation import factor_indices, _revalue_trade
 from engine.risk.market.scenarios import ShockScenarios
 from engine.risk.market.scenarios import SOURCE_HISTORICAL
 from engine.risk.market.var_es import (
@@ -148,7 +148,12 @@ class MarketRiskResult:
 def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     """Revalue `request.trades` under every scenario and take VaR/ES of the
     portfolio P&L. See the module docstring for the pipeline."""
-    validate_request(request)
+    execution = validate_request(request, execution=True)
+    return _run_market_risk(request, execution)
+
+
+def _run_market_risk(request, execution):
+    """Internal market-risk pipeline under the job's validated execution context."""
     scenarios = request.scenarios
     precision = request.precision
     spots = reporting_fx_spots(request.trades, request.market, request.base_currency, "base_currency")
@@ -164,7 +169,7 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
             with trade_pricing_phase(i, cfg):
                 stage = precision.precision_for(cfg)
                 arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
-                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic)
+                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution)
                 base.append(value * spot)
                 stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
                 column = load(stored[-1], jnp.float64)
@@ -188,13 +193,13 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     figures = {}
     if paired:
         with phase("paired_sample"):
-            figures = _paired_figures(request, spots, portfolio_pnl, paired)
+            figures = _paired_figures(request, spots, portfolio_pnl, paired, execution)
     realized = {"shocks": format_name(shifts),
                 **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
 
     report = dataclasses.replace(PrecisionReport.of(precision, request.trades, realized, stored,
                                  scenarios.num_scenarios, paired, figures,
-                                 [precision.precision_for(cfg).compute for cfg in request.trades]),
+                                 [precision.precision_for(cfg).compute for cfg in request.trades], execution=execution),
                                  replicates=scenarios.replicates, uncertainty_method=(
                                      "moving_block_bootstrap" if scenarios.source == SOURCE_HISTORICAL else
                                      "replicate_jackknife" if scenarios.replicates > 1 else "unavailable"))
@@ -222,11 +227,11 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     )
 
 
-def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic: Optional[Arithmetic] = None):
+def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution):
     """One trade's base value and P&L `[S]` under `moves`, in `arithmetic` (the moves' own
     format by default; `revalue_trade`)."""
-    return revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing, request.batch_size,
-                         arithmetic)
+    return _revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing, request.batch_size,
+                          arithmetic, execution)
 
 
 @jax.jit
@@ -238,7 +243,7 @@ def _in_reporting_currency(columns, spots):
     return pnl, jnp.sum(pnl, axis=-1)
 
 
-def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfolio_pnl, paired: int) -> Dict:
+def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfolio_pnl, paired: int, execution) -> Dict:
     """The paired sample (decision A-13): the first `paired` scenarios revalued at float64,
     converted at the run's FX `spots`, and each VaR and ES at the run's precision and at float64
     on them.
@@ -256,7 +261,7 @@ def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfoli
     def float64_pnl(cfg):
         batch = scenario_batch_size(cfg, request.pricing, request.batch_size, moves.dtype.itemsize)
         size = min(per_rep, -(-paired_rep // batch) * batch)
-        return jnp.concatenate([_trade_pnl(cfg, request, moves[i:i + size])[1][:paired_rep]
+        return jnp.concatenate([_trade_pnl(cfg, request, moves[i:i + size], None, execution)[1][:paired_rep]
                                 for i in range(0, total, per_rep)])
 
     _, paired_pnl = _in_reporting_currency(tuple(float64_pnl(cfg) for cfg in request.trades),
@@ -274,11 +279,15 @@ def _scalar(value) -> float:
     return float(np.asarray(value).reshape(()))
 
 
-def validate_request(request: MarketRiskRequest) -> None:
-    """Refuse a request `run_market_risk` cannot run, naming the field, before any work."""
+def validate_request(request: MarketRiskRequest, *, execution: bool = False):
+    """Validate the request; execution=True adds runtime checks and returns its context."""
     validate_portfolio(request.trades, request.market, request.pricing, request.precision, request.quantiles,
                        request.batch_size, request.base_currency)
     validate_scenarios(request.trades, request.market, request.precision, request.scenarios)
+    if execution:
+        from engine.precision.execution import prepare_execution
+        return prepare_execution(request.precision, stages=("pricing",), trades=request.trades,
+                                 arrays=request.scenarios.shifts)
 
 
 def validate_scenarios(trades, market: Market, precision: Precision, scenarios) -> None:

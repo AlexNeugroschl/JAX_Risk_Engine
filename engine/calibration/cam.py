@@ -49,6 +49,14 @@ def calibrate_currency(market: Market, currency: str, lgm, tolerance: float = BO
     """Bootstrap `lgm` (an `engine.market_simulation.config.LgmConfig` or `HullWhiteConfig` with a
     basket) on today's market, refused if its error is not below `tolerance` (ORE's
     `BootstrapTolerance`)."""
+    from engine.precision import Precision
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(Precision.reference())
+    return _calibrate_currency(market, currency, lgm, tolerance, execution)
+
+
+def _calibrate_currency(market, currency, lgm, tolerance, execution):
+    """Internal calibration, under the caller's validated FP64 requirements."""
     conventions = lgm.swap_index
     basket = build_basket(market.asof, list(lgm.calibration_expiries), list(lgm.calibration_terms), conventions)
     disc = ZeroCurve.from_config(market.currency(currency).discount_curve)
@@ -67,6 +75,14 @@ def calibrate_cam(market: Market, lgm_configs: Mapping,
     """Every currency in `lgm_configs` (currency -> `LgmConfig` or `HullWhiteConfig`) with a
     calibration basket, each refused if its error is not below `tolerance` (ORE's
     `BootstrapTolerance`, one for the model, `CamConfig.bootstrap_tolerance`)."""
+    from engine.precision import Precision
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(Precision.reference())
+    return _calibrate_cam(market, lgm_configs, tolerance, execution)
+
+
+def _calibrate_cam(market, lgm_configs, tolerance, execution):
+    """Internal multi-currency calibration; no per-currency policy validation."""
     check_tolerance(tolerance, "bootstrap_tolerance")
-    return {currency: calibrate_currency(market, currency, lgm, tolerance)
+    return {currency: _calibrate_currency(market, currency, lgm, tolerance, execution)
             for currency, lgm in lgm_configs.items() if lgm.calibrated}

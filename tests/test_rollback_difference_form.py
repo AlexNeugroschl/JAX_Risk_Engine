@@ -154,7 +154,7 @@ class TestDifferenceForm:
         swap = _today(name)
         k = swap.curve.pillar_rates.shape[0]
         zeros = Deviations(jnp.zeros((3, k)), jnp.zeros((3, k)), jnp.zeros((3, len(swap.float_pay_times))))
-        for arithmetic in (Arithmetic(), Arithmetic("float8_e4m3fn", "float32")):
+        for arithmetic in (Arithmetic(), Arithmetic("float8_e4m3fn", "float32", execution="allow_emulation")):
             deviations = jax.tree_util.tree_map(lambda a: a.astype(arithmetic.dtype), zeros)
             _, moved = option_values(swap, None, deviations, arithmetic)
             np.testing.assert_array_equal(np.asarray(moved), 0.0)
@@ -260,7 +260,7 @@ class TestMemory:
         which sizes market risk's batches."""
         swap = _today(name, DEMO_GRID)
         rows = induction_rows(swap)
-        arithmetic = Arithmetic(compute, "float64" if compute == "float64" else "float32")
+        arithmetic = Arithmetic(compute, "float64" if compute == "float64" else "float32", execution="allow_emulation")
         run = jax.jit(partial(option_values, arithmetic=arithmetic))
         k = swap.curve.pillar_rates.shape[0]
 
@@ -300,7 +300,7 @@ def test_every_compute_format_prices_the_options(compute):
     exact = value_portfolio(trades, market, scenarios, "USD", pricing)
     with jax.numpy_dtype_promotion("strict"):
         run = value_portfolio(trades, market, scenarios, "USD", pricing,
-                              precision=Precision(pricing=StagePrecision("float32", compute, "float32")))
+                              precision=Precision.research(pricing=StagePrecision("float32", compute, "float32")))
     assert run.today == exact.today
     error, bias = _COMPUTE_BOUNDS[compute]
     for column, reference in zip(run.columns, exact.columns):

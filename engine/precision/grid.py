@@ -26,10 +26,11 @@ def _frexp_exponent(x):
     These operations also preserve the exponent of subnormal inputs without floating
     point normalization (which may flush them to zero) on CPU/CUDA. The October 26
     hardware rerun found that TPU software FP64 bitcasts expose different words;
-    this IEEE-64 branch is incorrect on that backend and remains unqualified.
+    this IEEE-64 branch is incompatible with that backend and is now refused.
     See docs/getting-started/hardware-correctness-rerun.md. TPU has no native FP64.
     """
     if x.dtype == jnp.float64:
+        _require_ieee_float64()
         words = lax.bitcast_convert_type(x, jnp.uint32)
         low, high = words[..., 0], words[..., 1] & jnp.uint32(0x7fffffff)
         field = high >> jnp.uint32(20)
@@ -82,6 +83,13 @@ def pow2(exponent, dtype):
     info = jnp.finfo(dtype)
     biased = (exponent.astype(jnp.int32) - (info.minexp - 1)).astype(jnp.uint32)
     if info.bits == 64:
+        _require_ieee_float64()
         high = biased << jnp.uint32(20)
         return lax.bitcast_convert_type(jnp.stack((jnp.zeros_like(high), high), axis=-1), dtype)
     return lax.bitcast_convert_type(biased << jnp.uint32(info.nmant), dtype)
+
+
+def _require_ieee_float64():
+    from engine.precision.execution import validate_format
+    from engine.precision.products import default_device
+    validate_format("float64", "precision grid", default_device())

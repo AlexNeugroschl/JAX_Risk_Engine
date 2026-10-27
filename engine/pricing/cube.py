@@ -211,6 +211,12 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
     and `value_paths` in one."""
     require_precision("value_portfolio's precision", precision)
     validate_trades(trades, market, pricing, precision)
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays())
+    return _value_portfolio(trades, market, scenarios, base_currency, pricing, decay, precision, execution)
+
+
+def _value_portfolio(trades, market, scenarios, base_currency, pricing, decay, precision, execution):
     columns, exercised = _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
     return PortfolioValuation(today=_today(trades, market, base_currency, pricing), columns=columns,
                               num_paths=scenarios.num_paths, num_dates=len(scenarios.dates), exercised=exercised)
@@ -222,6 +228,8 @@ def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
     market, or on another market of the as-of date, `context` (the simulation market's,
     `engine.pricing.context.simulation_market_today`, where an exposure profile starts)."""
     validate_trades(trades, market, pricing)
+    from engine.precision.execution import prepare_execution
+    prepare_execution(Precision.reference())
     return _today(trades, market, base_currency, pricing, context)
 
 
@@ -233,6 +241,12 @@ def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMark
     (`engine.run.pipeline`)."""
     require_precision("value_paths' precision", precision)
     validate_trades(trades, market, pricing, precision)
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays())
+    return _value_paths(trades, market, scenarios, base_currency, pricing, decay, precision, execution)
+
+
+def _value_paths(trades, market, scenarios, base_currency, pricing, decay, precision, execution):
     return _columns(trades, market, scenarios, base_currency, pricing, decay, precision)[0]
 
 

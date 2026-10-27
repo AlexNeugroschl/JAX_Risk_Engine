@@ -38,7 +38,7 @@ def test_default_gpu_program_contains_native_fp8_operands(monkeypatch, name, sid
 
     monkeypatch.setattr(products, "default_device", lambda: H100)
     monkeypatch.setenv("XLA_FLAGS", "")
-    program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32"), side))(
+    program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32", execution="allow_emulation"), side))(
         np.ones((3, 4)), np.ones((4, 2)))
     dot, = (e for e in program.eqns if e.primitive.name == "dot_general")
     base = FORMATS[name].base
@@ -65,15 +65,15 @@ def test_explicit_emulation_uses_float32_carriers_and_preserves_rounded_values(m
 
     a = np.arange(12, dtype=float).reshape(3, 4) / 7
     b = np.arange(8, dtype=float).reshape(4, 2) / 9
-    expected = np.asarray(matmul(a, b, Arithmetic(name, "float32"), side))
+    expected = np.asarray(matmul(a, b, Arithmetic(name, "float32", execution="allow_emulation"), side))
     monkeypatch.setenv(EMULATION, "float16, float8_e4m3fn")
     monkeypatch.setattr(products, "default_device", lambda: H100)
     assert product_execution(name) == "emulated"
     assert product_execution("bfloat16", H100) == "native"
-    program = jax.make_jaxpr(lambda x, y: matmul(x, y, Arithmetic(name, "float32"), side))(a, b)
+    program = jax.make_jaxpr(lambda x, y: matmul(x, y, Arithmetic(name, "float32", execution="allow_emulation"), side))(a, b)
     dot, = (e for e in program.eqns if e.primitive.name == "dot_general")
     assert all(v.aval.dtype == jnp.float32 for v in dot.invars)
-    np.testing.assert_allclose(matmul(a, b, Arithmetic(name, "float32"), side), expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(matmul(a, b, Arithmetic(name, "float32", execution="allow_emulation"), side), expected, rtol=1e-6, atol=1e-7)
 
 
 def test_explicit_bfloat16_workaround_is_reported_as_emulated(monkeypatch):

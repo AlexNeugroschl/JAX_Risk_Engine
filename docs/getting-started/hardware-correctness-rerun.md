@@ -2,6 +2,11 @@
 
 October 26, 2026. Correctness testing; no performance conclusion.
 
+Subsequent implementation: the [explicit execution policy](explicit-precision-policy.md)
+now refuses full TPU jobs with their fixed FP64 requirements, implicit product
+emulation, and native-only FP8 on the unqualified compiler path. It does not change
+the numerical findings below or establish new hardware correctness.
+
 **The H100 BF16 three-pass fix worked. The proposed TPU fixes did not establish correct TPU execution. Do not use this source revision for TPU precision research requiring the FP64 grid or FP16 emulation.**
 
 The actual TPU rerun found incorrect FP64 exponent/rounding values and a compiler rewrite that defeats FP32 carriers for FP16. Passing local CPU/GPU tests had not exposed either issue. No numerical tolerance or production arithmetic was changed during this rerun. Post-test documentation and code comments now flag the TPU incompatibility.

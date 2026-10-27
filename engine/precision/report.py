@@ -36,14 +36,14 @@ pricing settings (`engine.precision.evidence`, I-55, I-114).
 Depends on JAX and NumPy only.
 """
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Tuple, Union
+from typing import Any, Iterable, Mapping, Tuple, Union
 
 import jax
 
 from engine.precision.estimate import MeanEstimate, QuantileEstimate
 from engine.precision.formats import name_of
 from engine.precision.policy import Precision, StagePrecision
-from engine.precision.products import product_execution
+from engine.precision.products import default_device, product_execution
 from engine.precision.storage import Stored
 from engine.precision.uncertainty import IntervalAvailability
 
@@ -63,6 +63,7 @@ class PrecisionReport:
     paired_paths: int = 0
     figures: Mapping[str, Estimate] = field(default_factory=dict)
     products: Mapping[str, str] = field(default_factory=dict)
+    resolved_policy: Mapping[str, Any] = field(default_factory=dict)
     replicates: int = 1
     uncertainty_method: str = "unavailable"
     #: Applies to every figure/entry, including zero empirical SEs and unpaired runs.
@@ -77,16 +78,20 @@ class PrecisionReport:
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,
            paths: int, paired_paths: int = 0, figures: Mapping[str, Estimate] = None,
-           computed: Iterable[str] = ()) -> "PrecisionReport":
+           computed: Iterable[str] = (), *, execution=None) -> "PrecisionReport":
         """The report of a run of `trades` (each with `trade_id` and `product`) under `policy`,
         whose stored `arrays` (plain or `Stored`) give the devices it ran on, and whose matrix
         products ran in the compute formats `computed` (on the first of those devices)."""
         arrays = list(arrays)
         device = _devices(arrays)[0]
+        from engine.precision.execution import report_policy
+        if execution is not None and (execution.policy != policy or execution.device.platform != device.platform):
+            raise ValueError("precision report does not match the validated policy/backend")
         return cls(policy=policy, trades={t.trade_id: policy.precision_for(t) for t in trades},
-                   realized=dict(realized), devices=devices_of(arrays), backend=jax.default_backend(),
+                   realized=dict(realized), devices=devices_of(arrays), backend=device.platform,
                    jax_version=jax.__version__, paths=paths, paired_paths=paired_paths, figures=dict(figures or {}),
-                   products={name: product_execution(name, device) for name in sorted(set(computed))})
+                   products={name: product_execution(name, device) for name in sorted(set(computed))},
+                   resolved_policy=execution.report_policy() if execution is not None else report_policy(policy, device))
 
 
 def format_name(x) -> str:
@@ -111,4 +116,4 @@ def _devices(arrays: Iterable) -> list:
     found = set()
     for a in arrays:
         found.update((a.values if isinstance(a, Stored) else a).devices())
-    return sorted(found or {jax.devices()[0]}, key=lambda d: (d.platform, d.id))
+    return sorted(found or {default_device()}, key=lambda d: (d.platform, d.id))

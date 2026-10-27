@@ -138,6 +138,9 @@ def store(x, name: str, rounding: str = "nearest", key: Optional[jax.Array] = No
     along `axis`, the scenario axis, and with `offset="block"` an offset beside each, rounded
     by `rounding` (`stochastic` needs `key`)."""
     fmt = format_of(name)
+    from engine.precision.execution import validate_format
+    from engine.precision.products import default_device
+    validate_format(name, "storage", default_device())
     x = jnp.asarray(x)
     if not fmt.scaled:
         return x.astype(fmt.dtype)
@@ -160,6 +163,9 @@ def load(x, dtype) -> jax.Array:
     float64 for a reduction). A `Stored` without offsets loads exactly at float32 or wider;
     adding its offsets back rounds once in `dtype`."""
     dtype = jnp.dtype(dtype)
+    from engine.precision.execution import validate_format
+    from engine.precision.products import default_device
+    validate_format(dtype.name, "load", default_device())
     if isinstance(x, Stored):
         return _dequantize(x.values, x.scales, x.offsets, axis=x.axis, dtype=dtype)
     return jnp.asarray(x).astype(dtype)

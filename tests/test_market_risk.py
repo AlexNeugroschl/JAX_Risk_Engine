@@ -563,7 +563,7 @@ class TestReportingCurrency:
         def no_work(*args, **kwargs):
             raise AssertionError("revalued before the request was checked")
 
-        monkeypatch.setattr("engine.risk.market.run.revalue_trade", no_work)
+        monkeypatch.setattr("engine.risk.market.run._revalue_trade", no_work)
         with pytest.raises(KeyError, match=r"'swap-eur' is in EUR and the reporting currency is USD \(base_currency\), "
                                            r"but the market has no EURUSD spot"):
             _two_currency_run([m.swap(), m.eur_swap()], {})

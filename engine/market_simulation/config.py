@@ -191,12 +191,18 @@ def build_cross_asset_model(market: Market, config: CamConfig,
     currency with a calibration basket is bootstrapped to it first
     (`engine.calibration.cam`). `sigmas` overrides a currency's volatility instead, in that
     currency's parametrization (the short rate's for a `HullWhiteConfig`)."""
-    from engine.calibration.cam import calibrate_cam
+    from engine.precision.execution import prepare_execution
+    execution = prepare_execution(Precision.reference())
+    return _build_cross_asset_model(market, config, sigmas, execution)
+
+
+def _build_cross_asset_model(market, config, sigmas, execution):
+    from engine.calibration.cam import _calibrate_cam
 
     sigmas = dict(sigmas or {})
     to_calibrate = {c: lgm for c, lgm in config.ir.items() if c not in sigmas}
     sigmas.update({c: result.sigma
-                   for c, result in calibrate_cam(market, to_calibrate, config.bootstrap_tolerance).items()})
+                   for c, result in _calibrate_cam(market, to_calibrate, config.bootstrap_tolerance, execution).items()})
     base = config.base_currency
     ir = tuple(
         IrComponent(currency=c, curve=ZeroCurve.from_config(market.currency(c).discount_curve),
@@ -258,10 +264,17 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     everything else). The shocks and states are not kept: the market records the formats they
     were stored in (`ScenarioMarket.simulation_formats`)."""
     require_precision("simulate's precision", precision)
+    from engine.precision.execution import prepare_execution
     precision.validate_sampling(config.samples, config.replicates, "simulation")
+    execution = prepare_execution(precision, stages=("simulation", "market"))
+    return _simulate(market, config, model, precision, execution)
+
+
+def _simulate(market, config, model, precision, execution):
+    """Internal simulation under the request's validated execution context."""
     sim = precision.arithmetic_for(precision.simulation, "simulation")
     mkt = precision.arithmetic_for(precision.market, "market")
-    model = model or build_cross_asset_model(market, config)
+    model = model or _build_cross_asset_model(market, config, None, execution)
     times = grid_times(market, config)
     moments = step_moments(model, times)
     path = path_moments(model, moments)

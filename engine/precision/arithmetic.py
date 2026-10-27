@@ -71,14 +71,19 @@ class Arithmetic:
     """A stage's compute and accumulate formats, by name (see the module docstring).
     `Arithmetic()` is float64 throughout. Stochastic products need an explicit `key`;
     `Precision.arithmetic_for` binds it for pipelines. Keys and `sample_ids` are data,
-    never static JIT arguments."""
+    never static JIT arguments. `execution` requires native products by default;
+    software or unqualified product experiments explicitly use 'allow_emulation'."""
     compute: str = "float64"
     accumulate: str = "float64"
     rounding: str = "nearest"
     key: object = None
     sample_ids: object = None
+    execution: str = "native"
 
     def __post_init__(self):
+        from engine.precision.execution import EXECUTION_MODES
+        if self.execution not in EXECUTION_MODES:
+            raise ValueError(f"Arithmetic.execution must be one of {EXECUTION_MODES}; got {self.execution!r}")
         rows = {}
         for field in ("compute", "accumulate"):
             try:
@@ -96,11 +101,12 @@ class Arithmetic:
             raise ValueError("Arithmetic.rounding='stochastic' needs a single-grid compute format below float32")
 
     def tree_flatten(self):
-        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding)
+        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution)
 
     @classmethod
     def tree_unflatten(cls, meta, data):
-        return cls(*meta, *data)
+        compute, accumulate, rounding, execution = meta
+        return cls(compute, accumulate, rounding, *data, execution=execution)
 
     def fold_in(self, data):
         """Derive a date/step/product stream; the key remains traced data."""
@@ -125,6 +131,9 @@ class Arithmetic:
 
     def cast(self, x):
         """`x` in the accumulate format."""
+        from engine.precision.execution import validate_format
+        from engine.precision.products import default_device
+        validate_format(self.accumulate, "accumulate", default_device())
         return jnp.asarray(x, dtype=self.dtype)
 
 
@@ -138,6 +147,10 @@ def level_terms(level, dtype) -> Tuple[jnp.ndarray, Optional[jnp.ndarray]]:
     no wider than `dtype` (it is exact there: a float64 run's levels). `hi` is rounded on the
     grid, not by a round trip through `dtype`, which XLA may remove."""
     level = jnp.asarray(level)
+    from engine.precision.execution import validate_format
+    from engine.precision.products import default_device
+    validate_format(level.dtype.name, "level", default_device())
+    validate_format(jnp.dtype(dtype).name, "level output", default_device())
     dtype = jnp.dtype(dtype)
     if jnp.finfo(level.dtype).bits <= jnp.finfo(dtype).bits:
         return level.astype(dtype), None

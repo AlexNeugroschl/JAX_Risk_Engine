@@ -52,8 +52,9 @@ the result's precision report gives each figure's distance from float64 on it: m
 corrected by the two-level estimator, quantiles measured (decision A-13). At float64 everywhere
 it measures zero, and is allowed as a check of the pairing.
 
-Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exposure, VaR/ES)
-are not stages here: they are float64 by decision (A-10).
+Calibration, t=0 values, levels, Greeks, reductions and output are declared in
+`internal` (currently only FP64 is implemented). `execution` requires a backend and
+native products by default; software product paths require explicit research permission.
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
 format not enabled yet (the format table names the item that enables it), a matrix-product
@@ -67,12 +68,13 @@ stage stores in a scaled format (it would change nothing), and a `paired_fractio
 The 32/64 shape retired on 2026-10-01 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
 import math
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from numbers import Real
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.arithmetic import Arithmetic, arithmetic_refusal
 from engine.precision.formats import format_of
+from engine.precision.execution import ExecutionPolicy, InternalPrecision, validate_arrays, validate_product
 from engine.precision.storage import OFFSETS, ROUNDINGS, rounding_key, store
 from engine.precision.estimate import validate_replicates
 from engine.precision.storage import BLOCK
@@ -192,8 +194,13 @@ class Precision:
     rounding_seed: int = 0
     offset: str = "block"
     paired_fraction: float = 0.0
+    internal: InternalPrecision = field(default_factory=InternalPrecision)
+    execution: ExecutionPolicy = field(default_factory=ExecutionPolicy)
 
     def __post_init__(self):
+        for name, expected in (("internal", InternalPrecision), ("execution", ExecutionPolicy)):
+            if not isinstance(getattr(self, name), expected):
+                raise TypeError(f"Precision.{name} must be an {expected.__name__}")
         for stage in STAGES:
             value = getattr(self, stage)
             if not isinstance(value, StagePrecision):
@@ -238,14 +245,82 @@ class Precision:
             yield from getattr(self, name).values()
 
     @classmethod
-    def throughout(cls, name: str) -> "Precision":
-        """Every stage computed in format `name`, stored and accumulated in it where it can be:
-        a format below float32 accumulates in float32, a single pass (`<name>_1x`) is stored in
+    def throughout(cls, name: str, *, execution: ExecutionPolicy = ExecutionPolicy()) -> "Precision":
+        """Every adjustable stage computed in format `name`, stored and accumulated where it can be.
+        Fixed internal kernels remain explicitly FP64; this is NOT an all-FP32 engine profile.
+        A format below float32 accumulates in float32, a single pass (`<name>_1x`) is stored in
         the format it is of, and `tensorfloat32` and `bfloat16_3x` in float32."""
         fmt = format_of(name)
         storage = fmt.base if format_of(fmt.base).array else "float32"
         stage = StagePrecision(storage, name, "float32" if fmt.below_float32 else name)
-        return cls(**{s: stage for s in STAGES})
+        return cls(**{s: stage for s in STAGES}, execution=execution)
+
+    @classmethod
+    def reference(cls, *, backend: str = "default") -> "Precision":
+        """FP64 reference profile, with native execution required."""
+        return cls(execution=ExecutionPolicy(backend=backend))
+
+    @classmethod
+    def research(cls, **kwargs) -> "Precision":
+        """Explicitly allow software/emitter-dependent products in a numerical research run.
+
+        This permits emulation; it does not force it or certify hardware correctness.
+        Fixed FP64 internals are unchanged, so this does not enable full TPU jobs.
+        """
+        kwargs.setdefault("execution", ExecutionPolicy(mode="allow_emulation"))
+        return cls(**kwargs)
+
+    def validate_execution(self, *, stages=STAGES, trades=None, arrays=(), device=None):
+        """Refuse unsupported work before calibration, allocation or tracing.
+
+        Only the stages actually used by the entry point are checked. Fixed internal
+        FP64 requirements apply to every current full-engine entry point.
+        """
+        selected = [(s, getattr(self, s)) for s in stages if s != "pricing"]
+        if "pricing" in stages:
+            selected += ([(f"pricing/{t.trade_id}", self.precision_for(t)) for t in trades]
+                         if trades is not None else [("pricing", self.pricing),
+                             *[(f"{name}/{key}", value) for name in OVERRIDES
+                               for key, value in getattr(self, name).items()]])
+        formats = [(f"internal.{item.name}", getattr(self.internal, item.name)) for item in fields(self.internal)]
+        formats += [(f"{name}.{role}", getattr(stage, role)) for name, stage in selected
+                    for role in ("storage", "compute", "accumulate")]
+        device = self.execution.validate(formats, device=device)
+        validate_arrays(arrays, device)
+        for compute, accumulate in sorted({(stage.compute, stage.accumulate) for _, stage in selected}):
+            validate_product(compute, accumulate, self.execution.mode, device=device)
+        return device
+
+    def resolved(self, device=None):
+        """JSON-ready complete contract, including fixed kernels and concrete placement.
+
+        This describes requirements and algorithms, not proof of emitted instructions.
+        """
+        from engine.precision.products import default_device
+        device = device or default_device()
+        result = {s: asdict(getattr(self, s)) for s in STAGES}
+        result.update({name: {key: asdict(value) for key, value in getattr(self, name).items()}
+                       for name in OVERRIDES})
+        result.update(internal=asdict(self.internal), execution={**asdict(self.execution),
+                      "backend": device.platform}, rounding=self.rounding, rounding_seed=self.rounding_seed,
+                      offset=self.offset, paired_fraction=self.paired_fraction,
+                      host_preprocessing={"dtype": "float64", "backend": "cpu"},
+                      paired_reference={"dtype": "float64", "backend": device.platform,
+                                        "enabled": self.paired_fraction > 0})
+        result["algorithms"] = {
+            "float32_float64_products": "HIGHEST",
+            "float32_compute_float64_accumulate": "FP32 grid represented in FP64; FP64 dot at HIGHEST",
+            "tensorfloat32": "TF32_TF32_F32",
+            "bfloat16_3x": "BF16_BF16_F32_X3",
+            "other_low_products": "scaled operands; shared_terms from format table; FP32 accumulation",
+            "scalar_operations": "stage accumulate format (fixed kernels use internal precision)",
+        }
+        result["product_formats"] = {
+            name: {"product": format_of(name).product, "shared_terms": format_of(name).shared_terms,
+                   "shared_dtype": format_of(name).shared_dtype,
+                   "instruction_qualification": "not_established_by_dispatch"}
+            for name in sorted({stage.compute for stage in self._stages()})}
+        return result
 
     def precision_for(self, trade) -> StagePrecision:
         """The pricing stage of `trade` (any object with `trade_id` and `product`):
@@ -264,7 +339,7 @@ class Precision:
 
     def arithmetic_for(self, stage: StagePrecision, stream: str) -> Arithmetic:
         """The stage's arithmetic with its own traced rounding stream (stage or trade)."""
-        arithmetic = stage.arithmetic
+        arithmetic = replace(stage.arithmetic, execution=self.execution.mode)
         return (replace(arithmetic, key=rounding_key(self.rounding_seed, "compute/" + stream))
                 if arithmetic.rounding == "stochastic" else arithmetic)
 

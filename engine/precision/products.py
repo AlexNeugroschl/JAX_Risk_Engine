@@ -63,10 +63,13 @@ On a CPU every
 format below float32 is emulated; `product_execution` says which ran, and the precision report
 names it per compute format (`PrecisionReport.products`).
 
-**Native execution is the default** wherever the backend/device supports the format,
+**Native dispatch** is selected wherever the backend/device supports the format,
 independently of the GEMM emitter. E5M2 uses an E4M3 shared operand (`Format.shared_dtype`).
 A dispatch label states the requested arithmetic; lowering/traces establish which shapes
 actually use matrix units. A compiler may fuse a matrix-vector product instead.
+Arithmetic requires native execution by default and refuses implicit emulation or
+unqualified FP8 compiler paths. Numerical research explicitly opts into
+`Arithmetic.execution='allow_emulation'` (or `Precision.research`).
 
 **Compiler controls** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
 under Triton and a bfloat16-passes GEMV fusion rounding products in BF16. The latter
@@ -211,6 +214,8 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: 
                              f"shared='left' or 'right' (decision A-23), got {shared!r}")
         compute, accumulate = arithmetic.compute, arithmetic.accumulate
     fmt, out = format_of(compute), format_of(accumulate).dtype
+    from engine.precision.execution import validate_product
+    validate_product(compute, accumulate, arithmetic.execution if arithmetic is not None else "native")
     matrix_vector = min(a.shape[-2] if a.ndim > 1 else 1, b.shape[-1] if b.ndim > 1 else 1) == 1
     precision = product_precision(compute, matrix_vector=matrix_vector)
     if not fmt.below_float32:
