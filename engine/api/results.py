@@ -364,6 +364,7 @@ class RunResultSchema(BaseModel):
     base_currency: str
     engine: EngineIdentitySchema
     config: RunRequestConfigSchema
+    numerics: Dict[str, object] = Field(default_factory=dict)
     trades: List[TradeRowSchema]
     npv: Optional[float] = None
     exposure: Optional[ExposureSectionSchema] = None
@@ -413,7 +414,7 @@ def run_result_document(result: RunResult, schema: RunRequestSchema, run_id: str
     document = RunResultSchema(
         run_id=run_id, analytics=list(request.analytics), asof=request.market.asof.ISO(),
         base_currency=request.config.base_currency, engine=EngineIdentitySchema.from_dataclass(result.engine),
-        config=schema.config, trades=rows, npv=float(portfolio.base_npv) if portfolio is not None else None,
+        config=schema.config, numerics=result.numerics, trades=rows, npv=float(portfolio.base_npv) if portfolio is not None else None,
         warnings=list(dict.fromkeys(warnings)), **sections)
     return document, chunks
 
@@ -466,7 +467,7 @@ def _market_risk_section(result: RunResult, output) -> MarketRiskSectionSchema:
         risk={key: _floats(value)[0] for key, value in risk.risk.items()}, measure=risk.measure,
         source=risk.source, horizon_days=risk.horizon_days, num_scenarios=risk.num_scenarios,
         risk_factors=list(risk.risk_factors),
-        pnl=output(np.asarray(risk.pnl, dtype=np.float64), "pnl", ("scenario", "trade"), "trade", ids),
+        pnl=output(np.asarray(risk.pnl), "pnl", ("scenario", "trade"), "trade", ids),
         precision=PrecisionReportSchema.from_dataclass(risk.precision) if risk.precision is not None else None,
         uncertainty=risk.uncertainty,
         pricing_settings=request.config.pricing.kernel_settings(_products(request), recalibrated=True))

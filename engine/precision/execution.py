@@ -25,16 +25,25 @@ class ValidatedExecution:
     """
     policy: object
     device: object
+    stages: tuple = ()
+    internal_roles: tuple = ()
 
     def report_policy(self):
         """A fresh JSON-ready copy; runtime device/array observations are never cached."""
-        return report_policy(self.policy, self.device)
+        result = report_policy(self.policy, self.device)
+        result['active_stages'] = list(self.stages)
+        result['active_internal_roles'] = list(self.internal_roles)
+        selected = {*self.stages, *(f'internal.{name}' for name in self.internal_roles)}
+        result['placement'] = {k: v for k, v in result['placement'].items() if k in selected}
+        return result
 
 
-def prepare_execution(policy, *, stages=(), trades=None, arrays=()):
+def prepare_execution(policy, *, stages=(), trades=None, arrays=(), internal_roles=None):
     """Called once at the end of structural request validation, before numerical work."""
-    device = policy.validate_execution(stages=stages, trades=trades, arrays=arrays)
-    return ValidatedExecution(policy, device)
+    stages = tuple(stages)
+    roles = tuple(f.name for f in fields(policy.internal)) if internal_roles is None else tuple(internal_roles)
+    device = policy.validate_execution(stages=stages, trades=trades, arrays=arrays, internal_roles=roles)
+    return ValidatedExecution(policy, device, stages, roles)
 
 
 def report_policy(policy, device):
@@ -71,12 +80,7 @@ def _plain(value):
 
 @dataclass(frozen=True)
 class InternalPrecision:
-    """Declared precision of the currently fixed kernels.
-
-    These are requirements, not switches that relabel existing kernels. Only FP64
-    is implemented. A future FP32 profile must change and qualify those kernels
-    before it can accept FP32 here. Host input parsing also uses NumPy FP64.
-    """
+    """Arithmetic of the non-scenario kernels; host input parsing is reported separately."""
     calibration: str = "float64"
     levels: str = "float64"
     initial_values: str = "float64"
@@ -86,9 +90,15 @@ class InternalPrecision:
 
     def __post_init__(self):
         for item in fields(self):
-            if getattr(self, item.name) != "float64":
-                raise ValueError(f"InternalPrecision.{item.name}: only float64 is implemented; "
-                                 "a float32 engine profile requires different, validated kernels")
+            if getattr(self, item.name) not in ("float32", "float64"):
+                raise ValueError(f"InternalPrecision.{item.name}: choose float32 or float64")
+
+    @classmethod
+    def throughout(cls, name):
+        return cls(**{item.name: name for item in fields(cls)})
+
+    def dtype(self, role):
+        return jax.numpy.dtype(getattr(self, role))
 
 
 @dataclass(frozen=True)
@@ -98,8 +108,8 @@ class ExecutionPolicy:
     `default` resolves to the active JAX default device, and is recorded as a concrete
     backend in the report. A named backend must already be selected by the caller;
     a mismatch is an error, never a request to copy work to another device.
-    `native` refuses emulated products and currently unqualified FP8 compiler paths.
-    `allow_emulation` is an explicit research opt-in, not a correctness certificate.
+    `native` refuses engine-selected emulation. Qualification is report metadata.
+    `allow_emulation` permits software routes; it is not a correctness certificate.
     TPU FP64 is refused in either mode because the engine's IEEE FP64 helpers are
     incompatible with TPU's software representation.
     """
@@ -159,10 +169,6 @@ def validate_product(compute, accumulate, mode="native", *, device=None, options
         if dispatch != "native":
             raise ValueError(f"compute={compute!r} requires native execution on {device.platform}; "
                              "this path is emulated. Explicitly use mode='allow_emulation' for research")
-        if format_of(compute).base.startswith("float8"):
-            raise ValueError(f"compute={compute!r}: native FP8 execution is not qualified for this compiler path; "
-                             "FP8 operand dtypes/capability do not prove FP8 instructions. "
-                             "Explicitly use mode='allow_emulation' for an unqualified research run")
 
 
 def validate_arrays(arrays, device):

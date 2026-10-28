@@ -58,8 +58,8 @@ independently of the GEMM emitter. E5M2 uses its own shared grid unless
 `product.shared_format="e4m3"` is explicitly selected.
 A dispatch label states the requested arithmetic; lowering/traces establish which shapes
 actually use matrix units. A compiler may fuse a matrix-vector product instead.
-Arithmetic requires native execution by default and refuses implicit emulation or
-unqualified FP8 compiler paths. Numerical research explicitly opts into
+Arithmetic requires native execution by default and refuses implicit emulation.
+Numerical qualification is metadata. Software research explicitly opts into
 `Arithmetic.execution='allow_emulation'` (or `Precision.research`).
 
 **Compiler controls** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
@@ -101,10 +101,11 @@ _GPU_UNITS = {"float16": 7.0, "bfloat16": 8.0, "tensorfloat32": 8.0, "bfloat16_3
 TRITON_GEMM_OFF = "--xla_gpu_enable_triton_gemm=false"
 #: Optional process-level numerical control or compiler workaround, never set on import.
 EMULATE_PRODUCTS = "JAX_RISK_EMULATE_PRODUCTS"
-#: Conservative native TPU routes enabled by this engine: BF16 and its passes.
-#: Other formats remain emulated pending target/compiler qualification; this is
-#: not a complete hardware specification of every TPU generation's capabilities.
-_TPU_UNITS = {"bfloat16": "", "bfloat16_3x": ""}
+#: TPU compiler candidates. Capability/accuracy qualification does not gate requests.
+# These are compiler candidates, not a numerical or instruction qualification.
+# Unsupported algorithms/dtypes are refused by the target compiler, without fallback.
+_TPU_CANDIDATES = frozenset(("bfloat16", "bfloat16_3x", "float16", "tensorfloat32",
+                             "float8_e4m3fn", "float8_e5m2"))
 #: The dtype an emulated format's operands are multiplied in, by base: one that holds every value
 #: of the format exactly and whose products are exact in float32 (every FP8 value is a float16
 #: value).
@@ -120,7 +121,7 @@ SHARED = ("left", "right")
 
 def product_execution(name: str, device: Optional[jax.Device] = None, *, options=None) -> str:
     """`"native"` if `device` (`default_device()` by default: the one a product traced now runs
-    on) has matrix units for compute format `name`, else `"emulated"` (see the module docstring). float64 and
+    on) has a compiler route for compute format `name`, else `"emulated"` (see the module docstring). float64 and
     float32 are native on a CPU and a GPU; a TPU emulates float64 and runs float32 in bfloat16
     passes, which XLA arranges itself (native). Explicit process emulation overrides capability;
     the GEMM emitter never changes this default. Actual instruction use needs lowering evidence."""
@@ -135,8 +136,8 @@ def product_execution(name: str, device: Optional[jax.Device] = None, *, options
         capability = getattr(device, "compute_capability", None)
         units = _GPU_UNITS.get(fmt.base)
         return "native" if None not in (capability, units) and float(capability) >= units else "emulated"
-    if platform == "tpu" and fmt.base in _TPU_UNITS:
-        return "native" if _TPU_UNITS[fmt.base] in device.device_kind else "emulated"
+    if platform == "tpu" and fmt.base in _TPU_CANDIDATES:
+        return "native"
     return "emulated"
 
 
@@ -182,6 +183,13 @@ def product_precision(compute, device: Optional[jax.Device] = None, matrix_vecto
     device = device or default_device()
     if options is not None and options.algorithm == "fp8_full":
         return lax.DotAlgorithmPreset.ANY_F8_ANY_F8_F32
+    if device.platform == "tpu" and product_execution(fmt.name, device, options=options) == "native":
+        if fmt.base.startswith("float8"):
+            return lax.Precision.DEFAULT
+        if fmt.base == "float16":
+            return lax.DotAlgorithmPreset.F16_F16_F32
+        if fmt.base == "bfloat16":
+            return lax.DotAlgorithmPreset.BF16_BF16_F32
     if fmt.product in _ALGORITHMS and product_execution(fmt.name, device, options=options) == "native":
         return _ALGORITHMS[fmt.product]
     return lax.Precision.HIGHEST
@@ -227,10 +235,6 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: 
         product = (_matmul32(a_lo, b_hi, precision) + _matmul32(a_hi, b_lo, precision)) + _matmul32(a_hi, b_hi,
                                                                                                      precision)
     elif fmt.product == "bfloat16_3x":
-        if (matrix_vector and default_device().platform == "gpu" and options.bf16_padding == "none"
-                and arithmetic.execution == "native"):
-            raise ValueError("unmodified GPU bfloat16_3x vectors are known inaccurate; explicitly select "
-                             "product.bf16_padding='gemm8' or allow an unqualified research run")
         product = _matmul32(a.astype(jnp.float32), b.astype(jnp.float32), precision, padding=options.bf16_padding)
     else:
         native = product_execution(compute, options=options) == "native"

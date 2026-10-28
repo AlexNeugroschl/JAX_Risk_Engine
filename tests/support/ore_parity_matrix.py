@@ -55,7 +55,7 @@ from engine.market_data.day_counts import SUPPORTED_ACCRUAL_DAY_COUNTS
 from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
 from engine.market_simulation.config import SWAPTION_VOL_DECAY_MODES, CamConfig, HullWhiteConfig, LgmConfig
 from engine.models.lgm import Sigma
-from engine.precision import Precision, StagePrecision
+from engine.precision import ExecutionPolicy, InternalPrecision, Precision, ProductOptions, StagePrecision
 from engine.pricing.config import (
     CALIBRATION_METHODS, CALIBRATION_STRATEGIES, EUROPEAN_ENGINES, JamshidianEngineConfig, LgmSwaptionEngineConfig,
     PricingConfig,
@@ -505,6 +505,7 @@ INPUTS: Dict[str, str] = {
     "MarketRiskRequest.trades": _RUN, "MarketRiskRequest.market": _MARKET, "MarketRiskRequest.scenarios": _RUN,
     "MarketRiskRequest.pricing": _RUN, "MarketRiskRequest.precision": _RUN,
     "RunConfig.simulation": _RUN, "RunConfig.pricing": _RUN, "RunConfig.greeks": _RUN, "RunConfig.precision": _RUN,
+    "RunConfig.execution": "backend and implementation requirements; ORE parity uses the FP64 reference profile",
     "PricingConfig.bermudan": _RUN, "PricingConfig.american": _RUN, "PricingConfig.jamshidian": _RUN,
     "GreeksConfig.sensitivity": _RUN,
     "ShockScenarios.factors": "the market's curves (every pillar a factor)",
@@ -519,7 +520,8 @@ INPUTS: Dict[str, str] = {
     "LgmConfig.calibration_terms": "the basket's terms, with its expiries (`LgmConfig.calibration_expiries`)",
 }
 #: Classes whose every field has one reason.
-CLASS_REASONS: Dict[type, Reason] = {Precision: _PRECISION, StagePrecision: _PRECISION}
+CLASS_REASONS: Dict[type, Reason] = {cls: _PRECISION for cls in
+    (Precision, StagePrecision, InternalPrecision, ExecutionPolicy, ProductOptions)}
 #: Market data and model data, inputs as a whole.
 INPUT_CLASSES = {Market: _MARKET, CurrencyMarket: _MARKET, ZeroCurveConfig: _MARKET, SwaptionVolSurface: _MARKET,
                  EquityMarket: "an equity's market data: no equity trade yet (I-18)", RateRiskFactors: _MARKET,

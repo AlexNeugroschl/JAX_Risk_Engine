@@ -64,10 +64,12 @@ def test_native_bfloat16_three_pass_vectors_keep_fp32_products(shape):
 def test_tpu_emulation_requests_float32_products_after_operand_quantization(name,rounding,monkeypatch):
     from types import SimpleNamespace
     from engine.precision import products,Arithmetic
+    from engine.precision import ProductOptions
     monkeypatch.setattr(products,'default_device',lambda:SimpleNamespace(platform='tpu',device_kind='TPU v6 lite'))
-    assert products.product_execution(name)=='emulated'
+    options = ProductOptions(implementation='emulated_fp32')
+    assert products.product_execution(name, options=options)=='emulated'
     arithmetic=Arithmetic(name,'float32',rounding=rounding,
-        key=jax.random.PRNGKey(7) if rounding=='stochastic' else None,execution="allow_emulation")
+        key=jax.random.PRNGKey(7) if rounding=='stochastic' else None,execution="allow_emulation",product=options)
     program=jax.make_jaxpr(lambda a,b:products.matmul(a,b,arithmetic,'right'))(
         np.arange(12,dtype='float32').reshape(3,4),np.ones((4,2),dtype='float32'))
     dots=[eqn for eqn in program.eqns if eqn.primitive.name=='dot_general']
@@ -147,15 +149,16 @@ def test_device_cli_runs_single_pass_and_product_format_engine_controls(tmp_path
     script = """
 from tests.support import precision_devices as p
 original = p.qualify
-def small(device, formats, out):
-    return original(device, formats, out, shapes=((3, 4, 2),), patterns=("wide",), roundings=("nearest",))
+def small(device, formats, out, **kwargs):
+    return original(device, formats, out, shapes=((3, 4, 2),), patterns=("wide",), roundings=("nearest",), **kwargs)
 p.qualify = small
 raise SystemExit(p.main(["--platform", "cpu", "--formats", "float8_e4m3fn_1x", "bfloat16_3x",
-    "--engine-workloads", "comparison_single", "--out", %r]))
+    "--profile", "compensated", "--engine-workloads", "comparison_single", "--out", %r]))
 """ % str(out)
     assert launch_worker([sys.executable, "-c", script], tmp_path / "process", 120.) == 0
     result = json.loads((out / "qualification.json").read_text())
     assert result["passes"] and result["complete"]
+    assert result["profile"] == "compensated"
     assert "--xla_gpu_enable_triton_gemm=true" in result["environment"]["flags"]["XLA_FLAGS"].split()
     assert {r["timing"]["case"] for r in result["engine_workloads"]} == {
         "pricing:compute:float8_e4m3fn_1x", "pricing:compute:bfloat16_3x"}

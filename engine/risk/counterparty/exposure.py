@@ -200,7 +200,7 @@ def _time_weighted(ee_b, eee_b, times, dates, asof, maturity):
     dtype = ee_b.dtype
     scale = jnp.asarray(np.where(alive, deltas, 0.0), dtype=dtype)
     per_date = lambda profile: jnp.where(  # noqa: E731
-        jnp.asarray(alive), jnp.cumsum(profile[1:] * scale) / jnp.asarray(weights, dtype=dtype), 0.0)
+        jnp.asarray(alive), jnp.cumsum(profile[1:] * scale) / jnp.asarray(weights, dtype=dtype), jnp.zeros((), dtype=dtype))
     epe_b = jnp.concatenate([ee_b[:1], per_date(ee_b)])
     eepe_b = jnp.concatenate([eee_b[:1], per_date(eee_b)])
     if dates is None:
@@ -247,11 +247,12 @@ def column_profiles(
     maturities: Optional[Sequence[ORE.Date]] = None,
     paired: Optional[PairedColumns] = None,
     replicates: Optional[int] = None,
+    dtype=jnp.float64,
 ) -> Tuple[ExposureProfile, List[ExposureProfile]]:
     """Netting and standalone profiles directly from stored `[paths, dates]` columns.
 
-    Only one trade is loaded at float64 at a time. Running float64 sums hold the netting
-    set and, if present, its paired sample. Exact PFE and paired estimates use the same
+    Only one trade is loaded at the selected dtype at a time. Running sums hold the
+    netting set; an optional paired sample retains FP64. Exact PFE and paired estimates use the same
     `exposure_profile` as cube-based callers. Each trade's work finishes before the next
     load: asynchronous dispatch cannot retain a whole cube of decoded temporaries (I-105).
     The netting addition follows trade order, so differs from a cube reduction at rounding
@@ -270,7 +271,7 @@ def column_profiles(
         high_numeraire = load(high_numeraire, jnp.float64)
         high_total = jnp.zeros_like(high_numeraire)
 
-    numeraire = load(numeraire, jnp.float64)
+    numeraire = load(numeraire, dtype)
     total = jnp.zeros_like(numeraire)
     common = dict(numeraire=numeraire, discount=discount, times=times, quantiles=quantiles, dates=dates, asof=asof,
                   replicates=replicates)
@@ -303,7 +304,7 @@ def _accumulate_column(total, stored):
     Donation reuses the running sum's buffer. The stored input is never donated: it may
     still be needed for the output cube, and belongs to the caller.
     """
-    column = load(stored, jnp.float64)
+    column = load(stored, total.dtype)
     return total + column, column
 
 

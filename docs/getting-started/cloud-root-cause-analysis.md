@@ -5,6 +5,11 @@ CPU/RTX 5060 experiments on JAX/jaxlib 0.10.2. No cloud resources were provision
 The [cloud rerun](hardware-correctness-rerun.md) remains the record of actual H100
 and TPU execution. Local experiments below do not qualify a new H100/TPU fix.
 
+Subsequent actual TPU validation is recorded in the
+[October 27 precision survey](tpu-precision-survey.md). The revised FP16 emulation
+passes that bounded coverage; the pending statements below describe the analysis
+before that trial. H100 qualification and full TPU portfolio support are unchanged.
+
 The failures have several causes. Some pipeline discrepancies reproduce with
 correct individual products; a new real-workload FP16 counterexample also fails
 an isolated product check. Treating every discrepancy as either a compiler bug

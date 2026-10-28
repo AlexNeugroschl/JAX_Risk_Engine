@@ -187,7 +187,11 @@ def european_value(cfg: SwaptionConfig, context: PricingContext) -> jax.Array:
     t = VOL_DAY_COUNTER.yearFraction(context.date, cfg.exercise_date)
     variance = context.volatility(cfg.currency, t, terms.swap_length) ** 2 * max(t - context.volatility_offset, 0.0)
     known = today_schedule(terms.legs, context.date)
-    return black_multileg_npv(terms, disc, index, 0.0, variance, known.projected, known.known_rates)
+    from engine.market_data.curves import curve_dtype
+    dtype = curve_dtype(disc)
+    return black_multileg_npv(terms.astype(dtype), disc, index, jnp.asarray(0.0, dtype=dtype),
+                              jnp.asarray(variance, dtype=dtype), known.projected,
+                              np.asarray(known.known_rates, dtype=dtype))
 
 
 def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarray, disc: ScenarioCurves,
@@ -199,7 +203,7 @@ def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarra
     # Expiry is a date, not a volatility test: a live zero-variance option has intrinsic value.
     alive = np.asarray(times) < terms.expiry_time
     arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
-    return _european_cube(terms, schedule, times, disc, index, fixings,
+    return _european_cube(terms.astype(arithmetic.levels), schedule, np.asarray(times, dtype=arithmetic.levels), disc, index, fixings,
                           np.asarray(variances, dtype=arithmetic.dtype), alive, arithmetic)
 
 

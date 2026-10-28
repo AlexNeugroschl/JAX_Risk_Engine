@@ -630,5 +630,8 @@ class TestPhaseAnnotations:
 
         monkeypatch.setattr(profiling, "phase", recording)
         trades = [shared.trades()[name] for name in ("swap-payer", "bond")]
-        _greeks(method)(trades, shared.market(), "USD", PRICING)
+        from engine.precision import Precision
+        from engine.precision.execution import prepare_execution
+        from engine.run import SensitivityConfig
+        _greeks(method, prepare_execution(Precision()))(trades, shared.market(), "USD", PRICING, SensitivityConfig())
         assert seen == ["greeks/trade0/SwapConfig", "greeks/trade1/BondConfig"]

@@ -161,8 +161,8 @@ def log_discount_split(target: ZeroCurve, model: IrComponent, t: np.ndarray,
     `LinearGaussMarkovModel::discountBond(t, T, x, targetCurve)`, unfloored) as its value at
     z = 0 and its slope in z, `ln P = level - dH z`: `(level, -dH)`, each `[D, K+1]` in float64,
     for t [D] and tenors [D, K+1]."""
-    t64 = jnp.asarray(t, dtype=jnp.float64)
-    T = t64[:, None] + jnp.asarray(tenors, dtype=jnp.float64)
+    t64 = jnp.asarray(t, dtype=target.pillar_rates.dtype)
+    T = t64[:, None] + jnp.asarray(tenors, dtype=target.pillar_rates.dtype)
     Ht, HT = lgm_H(model.reversion, t64)[:, None], lgm_H(model.reversion, T)
     zeta_t = model.zeta(t64)[:, None]
     level = log_discount(target, T) - log_discount(target, t64)[:, None] - 0.5 * (HT ** 2 - Ht ** 2) * zeta_t
@@ -173,7 +173,7 @@ def log_numeraire_split(model: IrComponent, t: np.ndarray) -> Tuple[np.ndarray, 
     """ln N(t, z) = H(t) z + 1/2 H(t)^2 zeta(t) - ln P(0, t) (`LinearGaussMarkovModel::
     numeraire`) of the LGM `model` on its own curve, as its value at z = 0 and its slope in z:
     `(1/2 H^2 zeta - ln P(0, t), H)`, each `[D]` in float64."""
-    t64 = jnp.asarray(t, dtype=jnp.float64)
+    t64 = jnp.asarray(t, dtype=model.curve.pillar_rates.dtype)
     Ht = lgm_H(model.reversion, t64)
     return np.asarray(0.5 * Ht ** 2 * model.zeta(t64) - log_discount(model.curve, t64)), np.asarray(Ht)
 
@@ -273,6 +273,9 @@ def build_scenario_market(
 
     `index_curves`: index name -> (currency, the index's t=0 forwarding curve)."""
     arithmetic = arithmetic or Arithmetic.of(states.dtype)
+    from engine.precision.prepare import cast_floating
+    model = cast_floating(model, arithmetic.levels)
+    index_curves = cast_floating(index_curves, arithmetic.levels)
     states = arithmetic.cast(states)
     times = np.asarray([TIME_AXIS_DAY_COUNTER.yearFraction(asof, d) for d in dates], dtype=np.float64)
     taus = tenor_times(dates, tenors)
@@ -280,12 +283,12 @@ def build_scenario_market(
     curves = ([(model.ir_index(c.currency), c.curve) for c in model.ir]
               + [(model.ir_index(ccy), curve) for ccy, curve in index_curves.values()])
     layout = _layout(model, times, taus, curves)
-    mean, scale = path.mean[1:], path.scale[1:]                                               # [D, d]
-    level = layout.level + np.einsum("ji,jic->jc", mean, layout.loading)
-    loading = layout.loading * scale[:, :, None]
+    mean, scale = path.mean[1:].astype(arithmetic.levels), path.scale[1:].astype(arithmetic.levels)
+    level = (layout.level + np.einsum("ji,jic->jc", mean, layout.loading)).astype(arithmetic.levels)
+    loading = (layout.loading * scale[:, :, None]).astype(arithmetic.levels)
     logs, numeraire, fx, equity = _market_values(states, mean, scale, level, loading, arithmetic,
                                                  (layout.curves, layout.tenors, layout.fx, layout.equity))
-    pillars = jnp.asarray(np.broadcast_to(as_of_tenor_times(asof, tenors), taus.shape), dtype=jnp.float64)
+    pillars = jnp.asarray(np.broadcast_to(as_of_tenor_times(asof, tenors), taus.shape), dtype=arithmetic.levels)
     on_curve = [ScenarioCurves(tenor_times=pillars, log_discounts=logs[k],
                                level=jnp.asarray(level[:, k * layout.tenors:(k + 1) * layout.tenors]))
                 for k in range(layout.curves)]

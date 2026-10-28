@@ -242,22 +242,22 @@ def curve_keys(cfg) -> Tuple[CurveKey, ...]:
     return (("discount", cfg.currency), ("index", index_name(cfg.currency, cfg.index_tenor_months)))
 
 
-def base_context(market: Market, tenors: Optional[Sequence[str]] = None) -> PricingContext:
+def base_context(market: Market, tenors: Optional[Sequence[str]] = None, dtype=jnp.float64) -> PricingContext:
     """The market a price function's base values are read from: today's, or ORE's sensitivity
     market at `tenors` (see the module docstring)."""
-    return from_market(market) if tenors is None else simulation_market_today(market, tenors)
+    return from_market(market, dtype) if tenors is None else simulation_market_today(market, tenors, dtype)
 
 
 def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingConfig(), dtype=jnp.float64,
-                         tenors: Optional[Sequence[str]] = None) -> TradePriceFunction:
+                         tenors: Optional[Sequence[str]] = None, *, calibration_dtype=jnp.float64) -> TradePriceFunction:
     """The trade's t=0 price on `market` as a function of its curves' node values and its
     quotes: on the market curves' pillars, or on ORE's sensitivity market at `tenors` (see the
     module docstring). The trade must be valued on the market's as-of date."""
     keys = curve_keys(cfg)
-    context = base_context(market, tenors)
+    context = base_context(market, tenors, calibration_dtype)
     tables = {"discount": context.discount, "index": context.index}
     nodes, rates = zip(*(nodes_of(tables[kind][name], dtype) for kind, name in keys))
-    quotes = (np.asarray(market.swaption_vols(cfg.currency).vols, dtype=np.float64)
+    quotes = (np.asarray(market.swaption_vols(cfg.currency).vols, dtype=calibration_dtype)
               if reads_swaption_vols(cfg, pricing) else None)
     asof = market.asof
 
@@ -279,15 +279,15 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
         if pricing.european == "Jamshidian":
             return positioned(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype),
                               JamshidianPnl(pricing.jamshidian))
-        return positioned(bachelier_price, bachelier_terms(cfg, market, dtype), bachelier_pnl)
+        return positioned(bachelier_price, bachelier_terms(cfg, market, dtype, calibration_dtype), bachelier_pnl)
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         if cfg.is_expired():
             return priced(_zero_price, None, _zero_pnl)
         engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
-        terms = option_terms(cfg, engine, context, market, dtype)
+        terms = option_terms(cfg, engine, context, market, dtype, calibration_dtype)
         if terms.calibration is None:
             return positioned(option_price, terms, option_pnl)
-        model = CalibratedModel(engine.reversion, engine.solver)
+        model = CalibratedModel(engine.reversion, engine.solver, jnp.dtype(calibration_dtype).name)
         fn = positioned(CalibratedOptionPrice(model), terms, recalibrated_pnl, ScenarioCalibration(model))
         return dataclasses.replace(fn, stages=Stages(OnTerms(model), OnPosition(option_on_model)))
     raise TypeError(f"no price function for {type(cfg).__name__}")
@@ -330,8 +330,8 @@ def _moved(moves: Moves):
 def moved_quotes(quotes, moves: Moves):
     """The quotes in each scenario `[S, ...]` (float64), or the quotes themselves where the
     scenarios hold them."""
-    quotes = jnp.asarray(quotes, dtype=jnp.float64)
-    return quotes if moves.quotes is None else quotes + jnp.asarray(moves.quotes, dtype=jnp.float64)
+    quotes = jnp.asarray(quotes)
+    return quotes if moves.quotes is None else quotes + jnp.asarray(moves.quotes, dtype=quotes.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -410,11 +410,12 @@ class BachelierTerms(NamedTuple):
     def variance(self, quotes, dtype):
         """The normal variance to expiry on the quotes, computed in float64 and rounded once to
         `dtype` (the curves')."""
-        volatility = jnp.sum(jnp.asarray(self.weights, jnp.float64) * jnp.asarray(quotes, jnp.float64))
-        return (volatility ** 2 * jnp.asarray(self.expiry, jnp.float64)).astype(dtype)
+        work = self.weights.dtype
+        volatility = jnp.sum(jnp.asarray(self.weights, work) * jnp.asarray(quotes, work))
+        return (volatility ** 2 * jnp.asarray(self.expiry, work)).astype(dtype)
 
 
-def bachelier_terms(cfg: SwaptionConfig, market: Market, dtype) -> BachelierTerms:
+def bachelier_terms(cfg: SwaptionConfig, market: Market, dtype, calibration_dtype=jnp.float64) -> BachelierTerms:
     """The `BachelierTerms` of a European on `market`, its volatility read where the engine
     reads it (`vol_point`)."""
     asof = market.asof
@@ -422,7 +423,7 @@ def bachelier_terms(cfg: SwaptionConfig, market: Market, dtype) -> BachelierTerm
     t, swap_len = vol_point(cfg, market)
     weights = market.swaption_vols(cfg.currency).weights(asof, t, swap_len)
     known = today_schedule(terms.legs, asof)
-    return BachelierTerms(terms.astype(dtype), np.asarray(weights, dtype=np.float64), np.asarray(t, dtype=np.float64),
+    return BachelierTerms(terms.astype(dtype), np.asarray(weights, dtype=calibration_dtype), np.asarray(t, dtype=calibration_dtype),
                           known.projected, np.asarray(known.known_rates, dtype=dtype))
 
 
@@ -478,24 +479,28 @@ class OptionTerms(NamedTuple):
 
 
 def option_terms(cfg, engine: LgmSwaptionEngineConfig, context: PricingContext, market: Market,
-                 dtype) -> OptionTerms:
+                 dtype, calibration_dtype=jnp.float64) -> OptionTerms:
     """The `OptionTerms` of a live option on the base `context`: the LGM calibrated there as
     `engine.pricing.bermudan.bermudan_value` calibrates it (refused where it misses ORE's
     acceptance, I-73), and the calibration's terms (None when the engine does not calibrate or
     no helper is left)."""
-    calibrated = calibrate_on(cfg, engine, context)
-    sigma = Sigma.flat(engine.volatility) if calibrated is None else calibrated.sigma
+    from engine.precision.prepare import cast_floating
+    calibrated = calibrate_on(cfg, engine, dataclasses.replace(cast_floating(context, calibration_dtype),
+                                                              calibration_dtype=jnp.dtype(calibration_dtype).name))
+    sigma = Sigma.flat(engine.volatility, dtype) if calibrated is None else calibrated.sigma
     sigma = Sigma(times=jnp.asarray(sigma.times, dtype=dtype), values=jnp.asarray(sigma.values, dtype=dtype))
     prepared = prepared_option(cfg, engine, sigma)
+    prepared = cast_floating(prepared, dtype)
     prepared = dataclasses.replace(prepared, notional=jnp.asarray(prepared.notional, dtype=dtype),
                                    fixed_amounts=jnp.asarray(prepared.fixed_amounts, dtype=dtype))
     calibration = None
     if calibrated is not None:
-        basket = tuple(b.astype(np.float64) for b in calibration_basket(cfg, engine, context.date))
+        basket = tuple(b.astype(calibration_dtype) for b in calibration_basket(cfg, engine, context.date))
         surface = market.swaption_vols(cfg.currency)
         weights = np.stack([surface.weights(market.asof, b.vol_option_time, b.vol_swap_length) for b in basket])
-        calibration = CalibrationTerms(basket, np.diff(basket_expiries(basket), prepend=0.0), weights,
-                                       np.asarray(engine.bootstrap_tolerance))
+        calibration = CalibrationTerms(basket, np.asarray(np.diff(basket_expiries(basket), prepend=0.0), calibration_dtype),
+                                       np.asarray(weights, calibration_dtype),
+                                       np.asarray(engine.bootstrap_tolerance, calibration_dtype))
     return OptionTerms(prepared, induction_rows(prepared), calibration)
 
 
@@ -534,20 +539,20 @@ class CalibratedModel:
     theorem's on the whole basket."""
     reversion: float
     solver: str
+    dtype: str = "float64"
 
     def __call__(self, terms: OptionTerms, curves, quotes):
         calibration = terms.calibration
         return calibrated_values(calibration.basket, *self.market(calibration, curves, quotes), calibration.dt,
                                  self.reversion, self.solver)
 
-    @staticmethod
-    def market(calibration: CalibrationTerms, curves, quotes):
+    def market(self, calibration: CalibrationTerms, curves, quotes):
         """`(disc, index, vols)`: the calibration's market in float64 (A-10), the helpers'
         volatilities read on the quotes `[..., option tenors, swap tenors]` (any batch axes, the
         curves' too)."""
-        disc, index = (jax.tree_util.tree_map(lambda a: jnp.asarray(a, dtype=jnp.float64), c) for c in curves)
+        disc, index = (jax.tree_util.tree_map(lambda a: jnp.asarray(a, dtype=self.dtype), c) for c in curves)
         # The surface is bilinear in the quotes: each helper's volatility is a weighted sum of them.
-        quotes = jnp.asarray(quotes, dtype=jnp.float64)[..., None, :, :]
+        quotes = jnp.asarray(quotes, dtype=self.dtype)[..., None, :, :]
         vols = jnp.sum(calibration.weights * quotes, axis=(-2, -1))
         return disc, index, vols
 

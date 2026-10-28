@@ -168,9 +168,10 @@ def hull_white_matching_zeta(a: float, hagan: "Sigma", last: float) -> "Sigma":
     starts = np.concatenate([[0.0], times])
     if np.any(ends <= starts):
         raise ValueError(f"bucket ends must increase from 0 and `last` follow the bucket times; got {ends.tolist()}")
-    weight = _exp_integral(2.0 * a, jnp.asarray(starts), jnp.asarray(ends))
-    scale = jnp.sqrt(jnp.asarray(ends - starts) / weight)
-    return Sigma(times=jnp.asarray(times), values=jnp.asarray(hagan.values) * scale)
+    dtype = hagan.values.dtype
+    weight = _exp_integral(2.0 * a, jnp.asarray(starts, dtype=dtype), jnp.asarray(ends, dtype=dtype))
+    scale = jnp.sqrt(jnp.asarray(ends - starts, dtype=dtype) / weight)
+    return Sigma(times=jnp.asarray(times, dtype=dtype), values=jnp.asarray(hagan.values) * scale)
 
 
 def H(a: float, t: jax.Array, shift=0.0) -> jax.Array:
@@ -182,7 +183,7 @@ def H(a: float, t: jax.Array, shift=0.0) -> jax.Array:
     # The series preserves both derivatives at zero reversion. A constant `where(a == 0)`
     # branch gives the right value but silently returns zero reversion sensitivities.
     series = 1.0 + x * (-0.5 + x * (1.0 / 6.0 + x * (-1.0 / 24.0 + x / 120.0)))
-    safe = jnp.where(small, 1.0, x)
+    safe = jnp.where(small, jnp.ones_like(x), x)
     return t * jnp.where(small, series, -jnp.expm1(-safe) / safe) + shift
 
 

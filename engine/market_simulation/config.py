@@ -186,13 +186,13 @@ class CamConfig:
 
 
 def build_cross_asset_model(market: Market, config: CamConfig,
-                            sigmas: Optional[Mapping[str, Sigma]] = None) -> CrossAssetModel:
+                            sigmas: Optional[Mapping[str, Sigma]] = None, *, precision: Precision = Precision()) -> CrossAssetModel:
     """The CAM for `config` on `market`, as ORE's `CrossAssetModelBuilder` builds it: every
     currency with a calibration basket is bootstrapped to it first
     (`engine.calibration.cam`). `sigmas` overrides a currency's volatility instead, in that
     currency's parametrization (the short rate's for a `HullWhiteConfig`)."""
     from engine.precision.execution import prepare_execution
-    execution = prepare_execution(Precision.reference())
+    execution = prepare_execution(precision, stages=(), internal_roles=("calibration", "levels"))
     return _build_cross_asset_model(market, config, sigmas, execution)
 
 
@@ -203,15 +203,20 @@ def _build_cross_asset_model(market, config, sigmas, execution):
     to_calibrate = {c: lgm for c, lgm in config.ir.items() if c not in sigmas}
     sigmas.update({c: result.sigma
                    for c, result in _calibrate_cam(market, to_calibrate, config.bootstrap_tolerance, execution).items()})
+    dtype = execution.policy.internal.dtype("levels")
     base = config.base_currency
     ir = tuple(
-        IrComponent(currency=c, curve=ZeroCurve.from_config(market.currency(c).discount_curve),
+        IrComponent(currency=c, curve=ZeroCurve.from_config(market.currency(c).discount_curve, dtype),
                     reversion=float(config.ir[c].reversion),
-                    sigma=as_sigma(sigmas.get(c, config.ir[c].volatility)),
+                    sigma=(sigmas[c].astype(dtype) if c in sigmas else
+                           config.ir[c].volatility.astype(dtype) if isinstance(config.ir[c].volatility, Sigma)
+                           else Sigma.flat(config.ir[c].volatility, dtype)),
                     volatility_type=config.ir[c].volatility_type)
         for c in config.currencies)
     fx = tuple(
-        FxComponent(currency=c, spot=market.fx_spot(c, base), sigma=as_sigma(config.fx_volatilities[c]))
+        FxComponent(currency=c, spot=market.fx_spot(c, base),
+                    sigma=(config.fx_volatilities[c].astype(dtype) if isinstance(config.fx_volatilities[c], Sigma)
+                           else Sigma.flat(config.fx_volatilities[c], dtype)))
         for c in config.currencies[1:])
     eq = []
     for name, vol in config.equity_volatilities.items():
@@ -220,10 +225,11 @@ def _build_cross_asset_model(market, config, sigmas, execution):
         data = market.equities[name]
         dividend = data.dividend_curve
         eq.append(EqComponent(
-            name=name, currency=data.currency, spot=float(data.spot), sigma=as_sigma(vol),
-            forecast_curve=ZeroCurve.from_config(market.currency(data.currency).discount_curve),
-            dividend_curve=(ZeroCurve.flat(0.0, [0.0, 1.0]) if dividend is None
-                            else ZeroCurve.from_config(dividend))))
+            name=name, currency=data.currency, spot=float(data.spot),
+            sigma=vol.astype(dtype) if isinstance(vol, Sigma) else Sigma.flat(vol, dtype),
+            forecast_curve=ZeroCurve.from_config(market.currency(data.currency).discount_curve, dtype),
+            dividend_curve=(ZeroCurve.flat(0.0, [0.0, 1.0], dtype) if dividend is None
+                            else ZeroCurve.from_config(dividend, dtype))))
     names = ([f"IR:{c}" for c in config.currencies] + [f"FX:{c}{base}" for c in config.currencies[1:]]
              + [f"EQ:{e.name}" for e in eq])
     correlation = np.eye(len(names))
@@ -232,7 +238,8 @@ def _build_cross_asset_model(market, config, sigmas, execution):
             raise KeyError(f"correlation ({a}, {b}) names a factor not simulated; factors are {names}")
         i, j = names.index(a), names.index(b)
         correlation[i, j] = correlation[j, i] = float(rho)
-    return CrossAssetModel(ir=ir, fx=fx, eq=tuple(eq), correlation=correlation)
+    from engine.precision.prepare import cast_floating
+    return cast_floating(CrossAssetModel(ir=ir, fx=fx, eq=tuple(eq), correlation=correlation), dtype)
 
 
 def grid_times(market: Market, config: CamConfig) -> np.ndarray:
@@ -257,7 +264,7 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     product and stored; the states are evolved from the loaded shocks in difference form
     (`engine.market_simulation.paths`) and stored; the market is built from the states loaded in
     the market's accumulate format (`build_scenario_market`) and returned stored at
-    `market.storage`, its tenor grid and curve levels kept in float64 (they have no scenario
+    `market.storage`, its tenor grid and curve levels kept in internal.levels (they have no scenario
     axis: they are the curves' coordinates and path-independent parts, not scenario data). The
     step and path moments are computed in float64 on the host. A scaled storage format keeps
     block scales along each array's scenario axis (axis 1 of the shocks `[T, S, d]`, axis 0 of
@@ -266,7 +273,7 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     require_precision("simulate's precision", precision)
     from engine.precision.execution import prepare_execution
     precision.validate_sampling(config.samples, config.replicates, "simulation")
-    execution = prepare_execution(precision, stages=("simulation", "market"))
+    execution = prepare_execution(precision, stages=("simulation", "market"), internal_roles=("calibration", "levels"))
     return _simulate(market, config, model, precision, execution)
 
 
@@ -282,10 +289,11 @@ def _simulate(market, config, model, precision, execution):
     normals = shard_scenarios(generate_sobol_normals(config.samples, len(config.dates), model.dimension, sim.dtype,
                                                      seed=config.seed, replicates=config.replicates), axis=1)
     shocks = precision.store(apply_brownian_bridge(normals, times, sim), precision.simulation.storage, "shocks", axis=1)
-    states = precision.store(evolve_states((path.mean, path.scale), standardized_steps(moments, path),
+    states = precision.store(evolve_states((path.mean.astype(sim.levels), path.scale.astype(sim.levels)),
+                                           standardized_steps(moments, path).astype(sim.levels),
                                            load(shocks, sim.dtype), sim), precision.simulation.storage, "states")
     index_curves = {
-        name: (ccy, ZeroCurve.from_config(curve))
+        name: (ccy, ZeroCurve.from_config(curve, precision.internal.dtype("levels")))
         for ccy in config.currencies
         for name, curve in market.currency(ccy).index_curves.items()
     }

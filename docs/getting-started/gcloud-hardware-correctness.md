@@ -28,6 +28,16 @@ H100 BF16 three-pass fix, but rejected the proposed TPU FP64-grid and FP16-emula
 fixes. Native FP8 and full TPU qualification remain failed; use the rerun report
 for the latest evidence, coverage limits and cleanup record.
 
+The newer [October 27 TPU precision survey](tpu-precision-survey.md) passes all
+tested non-FP64 products and low-format storage round trips after the carrier
+change. FP16/FP8/TF32 remain emulated on this TPU path; full TPU jobs still require
+an implemented FP32 internal profile. The single temporary VM and disk were deleted.
+
+The later [native TPU probes](tpu-native-precision.md) directly exercise JAX/Pallas
+without the engine's conservative dispatch table. FP8 matrix candidates pass,
+FP16 remains unsuccessful, and vector widening limits native coverage. Their
+temporary VM/disk and SSH registration were also removed.
+
 The October 25 comparison CLI defaults to API transport. This guide explicitly uses
 `--transport direct` for its saved CPU/accelerator scenario comparisons and JSON checks.
 The local access audit and CPU baseline are recorded separately in

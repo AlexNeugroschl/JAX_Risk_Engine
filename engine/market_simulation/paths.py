@@ -45,7 +45,7 @@ def evolve_states(path: Tuple[jax.Array, jax.Array], steps: jax.Array, normals: 
     (ORE's `StochasticProcess::evolve` with the exact discretization), in `arithmetic`'s
     accumulate format: `path` is the mean and the scale `[T+1, d]` (`PathMoments`), `steps` the
     standardized moments `[T, 2d, d]` (`standardized_steps`)."""
-    mean, scale = jnp.asarray(path[0], dtype=jnp.float64), arithmetic.cast(path[1])
+    mean, scale = jnp.asarray(path[0], dtype=arithmetic.levels), arithmetic.cast(path[1])
     normals = arithmetic.cast(normals)
 
     def step(deviation, inputs):

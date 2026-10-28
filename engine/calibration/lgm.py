@@ -153,6 +153,8 @@ class BasketInstrument:
         dtype of the curves it is given."""
         cast = {f.name: np.asarray(getattr(self, f.name), dtype=dtype) for f in fields(self)
                 if isinstance(getattr(self, f.name), np.ndarray) and getattr(self, f.name).dtype.kind == "f"}
+        cast.update({f.name: np.asarray(getattr(self, f.name), dtype=dtype) for f in fields(self)
+                     if isinstance(getattr(self, f.name), (float, np.floating))})
         return dataclasses.replace(self, **cast)
 
     def tree_flatten(self):
@@ -457,7 +459,7 @@ class BootstrapResult:
         """`[...]`: True where the calibration misses ORE's acceptance (see the module
         docstring): its error not below `tolerance` (a non-finite one included), or a bucket at
         the bracket's ceiling."""
-        return _misses(self.rmse, self.hit_ceiling, tolerance)
+        return _misses(self.rmse, self.hit_ceiling, jnp.asarray(tolerance, dtype=self.rmse.dtype))
 
 
 @jax.jit
@@ -505,7 +507,7 @@ def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, rever
     expiries = basket_expiries(basket)
     dtype = curve_dtype(disc)
     values, market, model, hit = bootstrap(tuple(b.astype(dtype) for b in basket), disc, index, vols,
-                                           np.diff(expiries, prepend=0.0), reversion, solver)
+                                           np.diff(expiries, prepend=0.0), jnp.asarray(reversion, dtype=dtype), solver)
     return BootstrapResult(times=expiries[:-1], values=values, market=market, model=model, hit_ceiling=hit,
                            rmse=_calibration_error(market, model))
 

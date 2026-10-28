@@ -189,7 +189,7 @@ def replicated_es_error(pnl, percentile: float, replicates: int):
     """
     from engine.precision.uncertainty import delete_group, jackknife_error
     if replicates < 2:
-        return jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return jnp.asarray(jnp.nan, dtype=pnl.dtype)
     estimates = jax.lax.map(lambda i: expected_shortfall(delete_group(pnl, i, replicates)[:, None], percentile)[0],
                             jnp.arange(replicates))
     return jackknife_error(estimates)
@@ -200,7 +200,7 @@ def historical_es_error(pnl, key, percentile: float, block: int, replicates: int
     """Conditional moving-block bootstrap SE, preserving within-block dependence."""
     from engine.precision.uncertainty import moving_block_indices
     if block * 2 > pnl.shape[0]:
-        return jnp.asarray(jnp.nan, dtype=jnp.float64)
+        return jnp.asarray(jnp.nan, dtype=pnl.dtype)
     def resample(index):
         indices = moving_block_indices(jax.random.fold_in(key, index), pnl.shape[0], block, 1)[0]
         return expected_shortfall(pnl[indices, None], percentile)[0]

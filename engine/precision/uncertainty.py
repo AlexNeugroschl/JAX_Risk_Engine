@@ -1,7 +1,7 @@
 """Sampling uncertainty without treating dependent observations as IID.
 
 Pricing owns which observations belong to a scramble; market risk owns the statistic
-and historical block length. All reductions are float64. Interval availability is
+and historical block length. Reductions preserve the input floating dtype. Interval availability is
 host metadata and never enters a JAX trace.
 """
 from dataclasses import dataclass
@@ -45,7 +45,7 @@ def delete_group(sample, index, groups):
 @jax.jit
 def jackknife_error(estimates):
     """Delete-one-replicate jackknife SE of a pooled nonlinear statistic."""
-    estimates = jnp.asarray(estimates, dtype=jnp.float64)
+    estimates = jnp.asarray(estimates)
     groups = estimates.shape[0]
     return jnp.sqrt((groups - 1) * jnp.mean((estimates - jnp.mean(estimates, axis=0)) ** 2, axis=0))
 

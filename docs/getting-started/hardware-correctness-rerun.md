@@ -2,6 +2,11 @@
 
 October 26, 2026. Correctness testing; no performance conclusion.
 
+**Newer TPU evidence:** the [October 27 precision survey](tpu-precision-survey.md)
+passes all 1,200 non-FP64 product cases, 32 staged diagnostics and 24 storage cases
+with the revised emulation carrier path. FP64 remains refused and full TPU engine
+jobs remain unsupported. This page preserves the earlier failed revision's results.
+
 Subsequent [boundary analysis](cloud-root-cause-analysis.md) reproduces several
 pipeline flags locally, identifies an additional subnormal-sensitive native
 FP16 failure, and removes the low-dtype round trip in TPU research emulation.

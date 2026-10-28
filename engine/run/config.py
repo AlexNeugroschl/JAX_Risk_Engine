@@ -28,13 +28,14 @@ and Greeks methods price whatever the simulation produced. What the pipeline doe
 implement yet is refused before any work, naming the field, never done some other way: a
 precision format not enabled yet (`engine.precision.policy`), an
 engine option where a trade meets it (`engine.pricing.cube.validate_trades`).
-Calibration, t=0 values, Greeks and reductions over paths are float64 by decision (A-10).
+Calibration, t=0 values, Greeks and reductions over paths default to float64;
+the precision profile and internal role overrides make FP32 experiments explicit.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from engine.market_simulation.config import CamConfig
-from engine.precision import Precision, require_precision
+from engine.precision import ExecutionPolicy, Precision, require_precision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY
 from engine.risk.greeks.bump import SensitivityConfig
@@ -80,6 +81,7 @@ class RunConfig:
     greeks: GreeksConfig = field(default_factory=GreeksConfig)
     precision: Precision = field(default_factory=Precision)
     base_currency: Optional[str] = None
+    execution: Optional[ExecutionPolicy] = None
 
     def __post_init__(self):
         if self.simulation is not None:
@@ -88,6 +90,11 @@ class RunConfig:
         _require_type("RunConfig.pricing", self.pricing, PricingConfig)
         _require_type("RunConfig.greeks", self.greeks, GreeksConfig)
         require_precision("RunConfig.precision", self.precision)
+        if self.execution is not None:
+            _require_type("RunConfig.execution", self.execution, ExecutionPolicy)
+            if self.precision.execution != ExecutionPolicy() and self.precision.execution != self.execution:
+                raise ValueError("RunConfig.execution contradicts legacy precision.execution; specify execution once")
+            object.__setattr__(self, "precision", replace(self.precision, execution=self.execution))
         if (self.simulation is not None and self.base_currency is not None
                 and self.base_currency != self.simulation.base_currency):
             raise ValueError(f"RunConfig.base_currency={self.base_currency!r} contradicts the simulation's "

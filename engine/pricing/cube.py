@@ -30,6 +30,7 @@ pricing configuration the models (audit A-3, I-63). A trade valued on another da
 market's is refused.
 """
 import dataclasses
+import functools
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple, Union, get_args
@@ -108,10 +109,21 @@ class PortfolioValuation:
             return jnp.zeros((self.num_paths, self.num_dates, 0), dtype=jnp.float64)
         return _float64_cube(tuple(self.columns))
 
+    def output_cube(self, dtype) -> jax.Array:
+        """Decode directly into the requested output dtype in one compiled program."""
+        if not self.columns:
+            return jnp.zeros((self.num_paths, self.num_dates, 0), dtype=dtype)
+        return _output_cube(tuple(self.columns), jnp.dtype(dtype).name)
+
 
 @jax.jit
 def _float64_cube(columns):
     return jnp.stack([load(c, jnp.float64) for c in columns], axis=-1)
+
+
+@functools.partial(jax.jit, static_argnames="dtype")
+def _output_cube(columns, dtype):
+    return jnp.stack([load(c, dtype) for c in columns], axis=-1)
 
 
 def require_unique_ids(trades: Sequence[Trade]) -> None:
@@ -212,25 +224,31 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
     require_precision("value_portfolio's precision", precision)
     validate_trades(trades, market, pricing, precision)
     from engine.precision.execution import prepare_execution
-    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays())
+    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays(),
+                                  internal_roles=("calibration", "levels", "initial_values"))
     return _value_portfolio(trades, market, scenarios, base_currency, pricing, decay, precision, execution)
 
 
 def _value_portfolio(trades, market, scenarios, base_currency, pricing, decay, precision, execution):
     columns, exercised = _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
-    return PortfolioValuation(today=_today(trades, market, base_currency, pricing), columns=columns,
+    return PortfolioValuation(today=_today(trades, market, base_currency, pricing,
+                                           dtype=precision.internal.dtype("initial_values"),
+                                           calibration_dtype=precision.internal.calibration), columns=columns,
                               num_paths=scenarios.num_paths, num_dates=len(scenarios.dates), exercised=exercised)
 
 
 def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
-                pricing: PricingConfig = PricingConfig(), context: Optional[PricingContext] = None) -> List[float]:
+                pricing: PricingConfig = PricingConfig(), context: Optional[PricingContext] = None,
+                *, precision: Precision = Precision()) -> List[float]:
     """t=0 NPVs only (no simulation), in the base currency, float64 (decision A-10): on today's
     market, or on another market of the as-of date, `context` (the simulation market's,
     `engine.pricing.context.simulation_market_today`, where an exposure profile starts)."""
     validate_trades(trades, market, pricing)
     from engine.precision.execution import prepare_execution
-    prepare_execution(Precision.reference())
-    return _today(trades, market, base_currency, pricing, context)
+    prepare_execution(precision, stages=(), internal_roles=("calibration", "initial_values", "output"))
+    values = _today(trades, market, base_currency, pricing, context,
+                     dtype=precision.internal.dtype("initial_values"), calibration_dtype=precision.internal.calibration)
+    return [float(np.asarray(v, dtype=precision.internal.dtype("output"))) for v in values]
 
 
 def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
@@ -242,7 +260,8 @@ def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMark
     require_precision("value_paths' precision", precision)
     validate_trades(trades, market, pricing, precision)
     from engine.precision.execution import prepare_execution
-    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays())
+    execution = prepare_execution(precision, stages=("pricing",), trades=trades, arrays=scenarios.path_arrays(),
+                                  internal_roles=("calibration", "levels"))
     return _value_paths(trades, market, scenarios, base_currency, pricing, decay, precision, execution)
 
 
@@ -251,10 +270,14 @@ def _value_paths(trades, market, scenarios, base_currency, pricing, decay, preci
 
 
 def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
-           context: Optional[PricingContext] = None) -> List[float]:
-    context = context or from_market(market)
+           context: Optional[PricingContext] = None, dtype=jnp.float64, calibration_dtype="float64") -> List[float]:
+    context = context or from_market(market, dtype)
+    from engine.precision.prepare import cast_floating
+    context = cast_floating(context, dtype)
+    context = dataclasses.replace(context, calibration_dtype=calibration_dtype)
     spots = reporting_fx_spots(trades, market, base_currency, "base_currency")
-    return [float(value_on(cfg, context, pricing)) * spot for cfg, spot in zip(trades, spots)]
+    return [float(jnp.asarray(value_on(cfg, context, pricing), dtype=dtype) *
+                  jnp.asarray(spot, dtype=dtype)) for cfg, spot in zip(trades, spots)]
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,

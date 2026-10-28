@@ -42,7 +42,7 @@ def test_default_gpu_program_contains_native_fp8_operands(monkeypatch, name, sid
         np.ones((3, 4)), np.ones((4, 2)))
     dot, = (e for e in program.eqns if e.primitive.name == "dot_general")
     base = FORMATS[name].base
-    held = FORMATS[name].shared_dtype or base
+    held = base  # Mixed E5M2/E4M3 is an explicit option, not part of the basic default.
     expected = (held, base) if side == "left" else (base, held)
     assert tuple(v.aval.dtype for v in dot.invars) == tuple(jnp.dtype(n) for n in expected)
     assert dot.params["preferred_element_type"] == jnp.float32

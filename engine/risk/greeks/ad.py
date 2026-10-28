@@ -140,10 +140,12 @@ def ad_warnings(trades: Sequence[Trade]) -> List[str]:
 
 
 def trade_greeks(cfg, market: Market, pricing: PricingConfig = PricingConfig(),
-                 config: SensitivityConfig = SensitivityConfig()) -> Dict[str, np.ndarray]:
+                 config: SensitivityConfig = SensitivityConfig(), *, dtype=jnp.float64,
+                 calibration_dtype=jnp.float64) -> Dict[str, np.ndarray]:
     """Delta and Gamma per tenor of each curve the trade reads and, where its engine reads the
     quotes, Vega per quote, in the trade's currency (see the module docstring)."""
-    fn = trade_price_function(cfg, market, pricing, tenors=config.curve_tenors)
+    fn = trade_price_function(cfg, market, pricing, dtype, tenors=config.curve_tenors,
+                              calibration_dtype=calibration_dtype)
     rates = tuple(jnp.asarray(r) for r in fn.rates)
     quotes = None if fn.quotes is None else jnp.asarray(fn.quotes)
     if fn.stages is None:

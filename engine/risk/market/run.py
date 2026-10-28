@@ -123,9 +123,9 @@ class MarketRiskResult:
         `ES_<q>_tailCount` and `ES_<q>_standardError`: delete-one-scramble jackknife
         for RQMC, conditional moving-block bootstrap for history. NaN with one scramble
         or an unestimable tail. `uncertainty` records the method and its settings.
-    pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded at float64
-        from its storage format and converted at its FX spot.
-    portfolio_pnl: `[S]` the sum across trades, which the statistics use (float64).
+    pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded in
+        internal.reductions, converted at its FX spot and exported in internal.output.
+    portfolio_pnl: `[S]` the sum across trades; statistics use internal.reductions.
     """
     base_npv: float
     base_npv_per_trade: List[float]
@@ -172,13 +172,15 @@ def _run_market_risk(request, execution):
                 value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution)
                 base.append(value * spot)
                 stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
-                column = load(stored[-1], jnp.float64)
+                column = load(stored[-1], precision.internal.dtype("reductions"))
                 if isinstance(cfg, OPTION_TYPES):
                     column = bound_option_pnl(column, value, position_sign(cfg))
                 columns.append(column)
-    pnl, portfolio_pnl = _in_reporting_currency(tuple(columns), jnp.asarray(spots, dtype=jnp.float64))
+    pnl, portfolio_pnl = _in_reporting_currency(tuple(columns),
+                                               jnp.asarray(spots, dtype=precision.internal.dtype("reductions")))
 
-    metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles, include_diagnostics=False)
+    metrics = compute_risk_metrics(pnl[:, None, :], jnp.asarray(0.0, dtype=pnl.dtype),
+                                    percentiles=request.quantiles, include_diagnostics=False)
     risk = {key: _scalar(value) for key, value in metrics.items()}
     for q in request.quantiles:
         risk[f"ES_{quantile_label(q)}_tailCount"] = float(tail_sample_size(portfolio_pnl[:, None], q)[0])
@@ -208,12 +210,16 @@ def _run_market_risk(request, execution):
                    if scenarios.source == SOURCE_HISTORICAL else
                    {"method": report.uncertainty_method, "replicates": scenarios.replicates})
     uncertainty["interval"] = dataclasses.asdict(report.interval)
+    output_dtype = precision.internal.dtype("output")
+    risk = {key: value if key.endswith("_tailCount") else float(np.asarray(value, dtype=output_dtype))
+            for key, value in risk.items()}
 
     return MarketRiskResult(
-        base_npv=float(np.sum(base)),
-        base_npv_per_trade=[float(v) for v in base],
-        pnl=pnl,
-        portfolio_pnl=portfolio_pnl,
+        base_npv=float(np.asarray(np.sum(np.asarray(base, dtype=precision.internal.dtype("reductions"))),
+                                   dtype=precision.internal.dtype("output"))),
+        base_npv_per_trade=[float(np.asarray(v, precision.internal.dtype("output"))) for v in base],
+        pnl=pnl.astype(precision.internal.dtype("output")),
+        portfolio_pnl=portfolio_pnl.astype(precision.internal.dtype("output")),
         risk=risk,
         measure=scenarios.measure,
         source=scenarios.source,
@@ -236,7 +242,7 @@ def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution):
 
 @jax.jit
 def _in_reporting_currency(columns, spots):
-    """Each trade's float64 P&L column `[S]` times its FX spot into the reporting currency:
+    """Each trade's decoded P&L column `[S]` times its FX spot into the reporting currency:
     the `[S, N]` P&L and its sum over trades `[S]`. A spot of 1.0 leaves a column's bits as
     they are. One program per scenario and trade count."""
     pnl = jnp.stack(columns, axis=-1) * spots
@@ -286,8 +292,8 @@ def validate_request(request: MarketRiskRequest, *, execution: bool = False):
     validate_scenarios(request.trades, request.market, request.precision, request.scenarios)
     if execution:
         from engine.precision.execution import prepare_execution
-        return prepare_execution(request.precision, stages=("pricing",), trades=request.trades,
-                                 arrays=request.scenarios.shifts)
+        return prepare_execution(request.precision, stages=("simulation", "pricing"), trades=request.trades,
+                                 arrays=request.scenarios.shifts, internal_roles=("calibration", "reductions", "output"))
 
 
 def validate_scenarios(trades, market: Market, precision: Precision, scenarios) -> None:

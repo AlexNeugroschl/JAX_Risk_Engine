@@ -108,7 +108,8 @@ BUILT = {RateRiskFactors: "the market's curves `scenarios.factors` names (`_Scen
 FUNCTIONS = {
     historical_scenarios: (wire.HistoricalScenariosSchema, {}),
     calibrate_cam: (wire.ModelsSchema, {"market": "the run request's market", "lgm_configs": Rename("ir"),
-                                        "tolerance": Rename("bootstrap_tolerance")}),
+                                        "tolerance": Rename("bootstrap_tolerance"),
+                                        "precision": "the run request's config.precision"}),
 }
 
 ROOTS = (RunRequest,)
@@ -259,6 +260,8 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
 
 #: (schema, field) -> a value other than the default, where the field's type does not give one.
 NON_DEFAULT = {
+    (wire.RunRequestConfigSchema, "execution"): {"backend": "cpu"},
+    (wire.PrecisionSchema, "internal"): {"reductions": "float32"},
     (wire.StagePrecisionSchema, "product"): With({"shared_terms": 2},
         compute="float16", accumulate="float32", storage="float32"),
     (wire.PrecisionSchema, "execution"): {"mode": "allow_emulation"},
@@ -407,6 +410,8 @@ ARRIVES_IN = {
 }
 #: (schema, field) -> the other settings its value moves, as the engine derives them.
 EFFECTS = {
+    (wire.PrecisionSchema, "profile"): ("simulation", "market", "pricing", "internal"),
+    (wire.RunRequestConfigSchema, "execution"): ("precision.execution",),
     (wire.EuropeanTradeSchema, "swap_tenor"): ("effective_date",),
     (wire.EuropeanTradeSchema, "forward_start"): ("effective_date", "maturity_date"),
     (wire.EuropeanTradeSchema, "exercise_lag_days"): ("effective_date", "maturity_date"),
@@ -415,9 +420,6 @@ EFFECTS = {
 }
 #: Fields with no engine setting of their own, with the reason.
 NOT_SETTINGS = {
-    (wire.PrecisionSchema, "internal"): "fixed FP64 kernel requirements; alternatives are refused",
-    **{(wire.InternalPrecisionSchema, f.name): "fixed FP64 requirement; alternatives are refused"
-       for f in dataclasses.fields(InternalPrecision)},
     (wire.LgmConfigSchema, "model"): "selects the schema: LgmConfig, or HullWhiteConfig for `HullWhite`",
     (wire.HullWhiteConfigSchema, "model"): "selects the schema",
     (wire.MonteCarloScenariosSchema, "source"): "selects the schema",
@@ -581,7 +583,7 @@ def test_the_portfolio_analytics_are_one_price_portfolio_of_every_setting():
     assert {f.name for f in dataclasses.fields(PortfolioRequest)} == {
         "market", "trades", "config", "pfe_quantiles", "compute_greeks", "scenario_risk", "include_npv_cube"}
     assert {f.name for f in dataclasses.fields(RunConfig)} == {
-        "simulation", "pricing", "greeks", "precision", "base_currency"}
+        "simulation", "pricing", "greeks", "precision", "base_currency", "execution"}
 
 
 def test_the_market_risk_analytic_is_one_run_market_risk_of_every_setting():

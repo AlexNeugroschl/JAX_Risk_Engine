@@ -57,7 +57,7 @@ from engine.market_simulation.config import (
     DEFAULT_CURVE_TENORS, CamConfig, IrModelConfig, LgmConfig, Volatility,
 )
 from engine.market_simulation.sharding import whole_on_every_host
-from engine.precision import Precision, StagePrecision, require_precision
+from engine.precision import ExecutionPolicy, Precision, StagePrecision, require_precision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, require_unique_ids
 from engine.risk.market import MarketRiskRequest, MarketRiskResult
@@ -166,6 +166,7 @@ class RunRequestConfig:
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
     market_risk: Optional[MarketRiskConfig] = None
     precision: Precision = field(default_factory=Precision)
+    execution: Optional[ExecutionPolicy] = None
 
     def __post_init__(self):
         for name, expected in (("models", ModelsConfig), ("simulation", SimulationParameters),
@@ -178,6 +179,12 @@ class RunRequestConfig:
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"config.{name} must be a {expected.__name__}; got {type(getattr(self, name)).__name__}")
         require_precision("config.precision", self.precision)
+        if self.execution is not None:
+            if not isinstance(self.execution, ExecutionPolicy):
+                raise TypeError("config.execution must be an ExecutionPolicy")
+            if self.precision.execution != ExecutionPolicy() and self.precision.execution != self.execution:
+                raise ValueError("config.execution contradicts legacy config.precision.execution; specify execution once")
+            object.__setattr__(self, "precision", replace(self.precision, execution=self.execution))
 
     def cam(self) -> CamConfig:
         """The cross-asset model's configuration of the `exposure` analytic: `models` simulated
@@ -235,6 +242,7 @@ class RunResult:
     portfolio: Optional[PortfolioResult] = None
     market_risk: Optional[MarketRiskResult] = None
     calibration: Optional[Dict[str, CamCalibration]] = None
+    numerics: dict = field(default_factory=dict)
 
     @property
     def trade_ids(self) -> List[str]:
@@ -247,17 +255,20 @@ def run(request: RunRequest) -> RunResult:
     point, after `validate_run`; on several hosts (a pod slice) every array of the result whole on
     each (`engine.market_simulation.sharding.whole_on_every_host`)."""
     execution = validate_run(request, execution=True)
-    result = RunResult(request=request, engine=engine_identity())
+    result = RunResult(request=request, engine=engine_identity(), numerics=execution.report_policy())
     if request.wants(*PORTFOLIO_ANALYTICS):
         result.portfolio = _price_portfolio(portfolio_request(request), execution)
     if request.wants("market_risk"):
         with phase("scenarios"):
-            scenarios = shock_scenarios(request.config.market_risk.scenarios)
+            scenarios = shock_scenarios(request.config.market_risk.scenarios,
+                                         request.config.precision.simulation.arithmetic.dtype)
         result.market_risk = _run_market_risk(market_risk_request(request, scenarios), execution)
     if request.wants("calibration"):
         models = request.config.models
         with phase("calibration"):
             result.calibration = _calibrate_cam(request.market, models.ir, models.bootstrap_tolerance, execution)
+        from engine.precision.prepare import cast_floating
+        result.calibration = cast_floating(result.calibration, request.config.precision.internal.dtype("output"), scalars=True)
     return whole_on_every_host(result)
 
 
@@ -267,7 +278,8 @@ def portfolio_request(request: RunRequest) -> PortfolioRequest:
     return PortfolioRequest(
         market=request.market, trades=list(request.portfolio),
         config=RunConfig(simulation=config.cam() if exposure else None, pricing=config.pricing,
-                         greeks=config.sensitivity, precision=config.precision, base_currency=config.base_currency),
+                         greeks=config.sensitivity, precision=config.precision, base_currency=config.base_currency,
+                         execution=config.execution),
         pfe_quantiles=config.exposure.pfe_quantiles, compute_greeks=request.wants("sensitivities"),
         scenario_risk=exposure, include_npv_cube=request.include_npv_cube)
 
@@ -320,10 +332,19 @@ def validate_run(request: RunRequest, *, execution: bool = False):
         # API submission calls structural validation only. At execution, validate
         # the union of every requested analytic before any of them starts work.
         stages = (("simulation", "market", "pricing") if request.wants("exposure") else
-                  ("pricing",) if request.wants("market_risk") else ())
+                  ("simulation", "pricing") if request.wants("market_risk") else ())
+        roles = ["calibration", "output"]
+        if request.wants(*TRADE_ANALYTICS):
+            roles += ["reductions"]
+        if request.wants(*PORTFOLIO_ANALYTICS):
+            roles += ["initial_values"]
+        if request.wants("exposure"):
+            roles += ["levels"]
+        if request.wants("sensitivities"):
+            roles += ["greeks"]
         risk = config.market_risk.scenarios if request.wants("market_risk") else None
         return prepare_execution(config.precision, stages=stages, trades=request.portfolio,
-                                 arrays=getattr(risk, "shifts", ()))
+                                 arrays=getattr(risk, "shifts", ()), internal_roles=roles)
 
 
 def _check_analytics(analytics: Sequence[str]) -> None:
@@ -344,9 +365,9 @@ def _check_sections(request: RunRequest) -> None:
     if not request.wants("exposure", "market_risk"):
         # Execution/internal requirements apply to every analytic, but adjustable
         # scenario stages still cannot be supplied to an analytic that ignores them.
-        adjustable = replace(config.precision, internal=defaults.precision.internal,
-                             execution=defaults.precision.execution)
-        if adjustable != defaults.precision:
+        baseline = Precision(profile=config.precision.profile)
+        adjustable = replace(config.precision, internal=baseline.internal, execution=baseline.execution)
+        if adjustable != baseline:
             raise ValueError(_unread("config.precision", ("exposure", "market_risk"),
                                      request.analytics))
     needs = {"models": ("exposure", "calibration"), "simulation": ("exposure",), "market_risk": ("market_risk",)}
@@ -389,9 +410,9 @@ def _check_models_for_calibration(models: ModelsConfig, analytics: Sequence[str]
 def _check_market_risk_precision(precision: Precision) -> None:
     """Market risk reads the simulation stage's storage and accumulate formats (its shifts) and
     the pricing stage with its overrides (I-95)."""
-    if precision.market != StagePrecision():
+    if precision.market != Precision(profile=precision.profile).market:
         raise ValueError("config.precision.market is not read by market risk, which has no scenario market (its "
-                         "trades are revalued on shocked curves today); leave it at float64")
+                         "trades are revalued on shocked curves today); leave it at the profile default")
     simulation = precision.simulation
     if simulation.compute != simulation.accumulate:
         raise ValueError(f"config.precision.simulation.compute={simulation.compute!r} is not read by market risk: "

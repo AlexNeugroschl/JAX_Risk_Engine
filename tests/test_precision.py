@@ -67,9 +67,8 @@ def _accumulate(compute: str) -> str:
     return "float32" if FORMATS[compute].below_float32 else compute
 
 
-#: Every (storage, compute) pair a stage accepts: storage no wider than the accumulator.
-ACCEPTED = tuple((storage, compute) for compute in FORMAT_NAMES for storage in ARRAYS
-                 if FORMATS[storage].bits <= FORMATS[_accumulate(compute)].bits)
+#: Storage and arithmetic are independent; wider storage does not restore lost bits.
+ACCEPTED = tuple((storage, compute) for compute in FORMAT_NAMES for storage in ARRAYS)
 F32 = StagePrecision("float32", "float32", "float32")
 #: float64 arithmetic, float32 storage.
 STORED32 = StagePrecision("float32", "float64", "float64")
@@ -153,10 +152,8 @@ class TestPolicy:
             Precision().pricing = StagePrecision("float32")
 
     @pytest.mark.parametrize(("storage", "compute"), ACCEPTED)
-    def test_every_storage_no_wider_than_accumulate_is_accepted(self, storage, compute):
-        """Every array format stores (since 1.6), under every compute format (since the kernel
-        rewrite, F-07), no wider than the stage accumulates: float32 under a compute format
-        below float32, else the compute format's own (wider storage is refused below)."""
+    def test_storage_and_compute_formats_are_independent(self, storage, compute):
+        """Every implemented array storage format can hold a stage's output, including an upcast."""
         accumulate = _accumulate(compute)
         stage = StagePrecision(storage, compute, accumulate)
         assert stage.storage_dtype == jnp.dtype(storage) and stage.arithmetic.dtype == jnp.dtype(accumulate)
@@ -184,8 +181,6 @@ class TestPolicy:
          r"StagePrecision\.accumulate='tensorfloat32': tensorfloat32 is a matrix-product format, not an array"),
         ({"storage": "bfloat16_3x", "compute": "bfloat16_3x", "accumulate": "float32"},
          r"StagePrecision\.storage='bfloat16_3x': a matrix-product format, not an array format to store in"),
-        ({"storage": "float64", "compute": "float32", "accumulate": "float32"},
-         r"StagePrecision\.storage='float64': wider than accumulate='float32'"),
         ({"compute": "float64", "accumulate": "float32"}, r"StagePrecision\.accumulate='float32': narrower"),
         ({"compute": "float128"}, r"StagePrecision\.compute: unknown number format"),
     ])

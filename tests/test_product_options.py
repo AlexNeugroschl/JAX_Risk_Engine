@@ -53,8 +53,7 @@ def test_full_fp8_algorithm_is_an_explicit_request(cpu):
     assert products.product_precision("float8_e4m3fn", gpu) == jax.lax.Precision.HIGHEST
     assert products.product_precision("float8_e4m3fn", gpu, options=requested) == jax.lax.DotAlgorithmPreset.ANY_F8_ANY_F8_F32
     validate_product("float8_e4m3fn", "float32", "allow_emulation", device=gpu, options=requested)
-    with pytest.raises(ValueError, match="not qualified"):
-        validate_product("float8_e4m3fn", "float32", device=gpu, options=requested)
+    validate_product("float8_e4m3fn", "float32", device=gpu, options=requested)
 
 
 def test_basic_fp8_overflow_is_not_silently_repaired(cpu):

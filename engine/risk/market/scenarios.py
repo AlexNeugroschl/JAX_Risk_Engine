@@ -130,7 +130,7 @@ class MonteCarloScenarios:
         object.__setattr__(self, "covariance", validate_monte_carlo(self.factors, self.covariance, self.horizon_days,
                                                                     self.num_scenarios, self.replicates))
 
-    def draw(self) -> ShockScenarios:
+    def draw(self, dtype=jnp.float64) -> ShockScenarios:
         """The `ShockScenarios`: scrambled Sobol normals times a root of the covariance."""
         eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
         # Eigenvalues below round-off of the largest are zero: a rank-deficient
@@ -138,15 +138,15 @@ class MonteCarloScenarios:
         # square roots of its ~1e-21 numerical eigenvalues.
         eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
         root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
-        normals = np.asarray(generate_sobol_normals(self.num_scenarios, 1, self.factors.size, jnp.float64,
+        normals = np.asarray(generate_sobol_normals(self.num_scenarios, 1, self.factors.size, dtype,
                                                     seed=self.seed, replicates=self.replicates)[0])
         return ShockScenarios(factors=self.factors, shifts=normals @ root.T, horizon_days=self.horizon_days,
                               source=SOURCE_MONTE_CARLO, replicates=self.replicates)
 
 
-def shock_scenarios(scenarios) -> ShockScenarios:
+def shock_scenarios(scenarios, dtype=jnp.float64) -> ShockScenarios:
     """`scenarios` drawn: a `MonteCarloScenarios` drawn now, a `ShockScenarios` as it is."""
-    return scenarios.draw() if isinstance(scenarios, MonteCarloScenarios) else scenarios
+    return scenarios.draw(dtype) if isinstance(scenarios, MonteCarloScenarios) else scenarios
 
 
 def validate_monte_carlo(factors: RateRiskFactors, covariance, horizon_days: int, num_scenarios: int,

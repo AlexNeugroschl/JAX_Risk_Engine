@@ -81,16 +81,16 @@ class SensitivityConfig:
     theta_days: int = 1
 
 
-def sensitivity_context(market: Market, config: SensitivityConfig) -> PricingContext:
+def sensitivity_context(market: Market, config: SensitivityConfig, dtype=jnp.float64) -> PricingContext:
     """The base sensitivity market (see the module docstring): ORE's simulation market on the
     as-of date at the sensitivity tenors."""
-    return simulation_market_today(market, config.curve_tenors)
+    return simulation_market_today(market, config.curve_tenors, dtype)
 
 
-def theta_context(market: Market, config: SensitivityConfig) -> PricingContext:
+def theta_context(market: Market, config: SensitivityConfig, dtype=jnp.float64) -> PricingContext:
     """The Theta market (see the module docstring): the sensitivity market's curves on the Theta
     date, the volatility matrix read from it, fixings backfilled."""
-    base = sensitivity_context(market, config)
+    base = sensitivity_context(market, config, dtype)
     asof, theta_date = market.asof, market.asof + config.theta_days
     fixings = {name: _backfilled_fixings(name, curve, asof, theta_date) for name, curve in base.index.items()}
 
@@ -150,28 +150,38 @@ def greeks_by_trade(trade_greeks: TradeGreeks, trades: Sequence[Trade], market: 
 def _greeks_by_trade(trade_greeks, trades, market, base_currency, pricing, config, execution):
     from engine.run.trace import trade_greeks_phase
 
-    base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
+    dtype = execution.policy.internal.dtype("greeks")
+    base_context, theta_ctx = sensitivity_context(market, config, dtype), theta_context(market, config, dtype)
+    from dataclasses import replace
+    base_context = replace(base_context, calibration_dtype=execution.policy.internal.calibration)
+    theta_ctx = replace(theta_ctx, calibration_dtype=execution.policy.internal.calibration)
+    options = ({} if dtype == jnp.dtype("float64") and execution.policy.internal.calibration == "float64" else
+               {"dtype": dtype, "calibration_dtype": execution.policy.internal.dtype("calibration")})
     result: Dict[int, Dict[str, np.ndarray]] = {}
     for i, cfg in enumerate(trades):
         with trade_greeks_phase(i, cfg):
             fx = market.fx_spot(cfg.currency, base_currency)
-            greeks = {key: value * fx for key, value in trade_greeks(cfg, market, pricing, config).items()}
+            greeks = {key: value * fx for key, value in trade_greeks(cfg, market, pricing, config, **options).items()}
             value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
             greeks["theta"] = trade_theta(value, value(base_context), theta_ctx)
-            result[i] = greeks
+            result[i] = {k: np.asarray(v, dtype=dtype) for k, v in greeks.items()}
     return result
 
 
 def trade_sensitivities(cfg, market: Market, pricing: PricingConfig = PricingConfig(),
-                        config: SensitivityConfig = SensitivityConfig()) -> Dict[str, np.ndarray]:
+                        config: SensitivityConfig = SensitivityConfig(), *, dtype=jnp.float64,
+                        calibration_dtype=jnp.float64) -> Dict[str, np.ndarray]:
     """ORE's Delta and Gamma per tenor of each curve the trade reads and, where its engine reads
     the quotes, its Vega per quote, in the trade's currency: every shift a scenario of one
     revaluation of its price function on the sensitivity market (see the module docstring)."""
-    fn = trade_price_function(cfg, market, pricing, tenors=config.curve_tenors)
+    fn = trade_price_function(cfg, market, pricing, dtype, tenors=config.curve_tenors,
+                              calibration_dtype=calibration_dtype)
     moves = bump_moves(fn, config)
     count = moves.shifts[0].shape[0]
-    _, pnl = price_function_pnl(cfg, fn, fn.rates, moves, pricing, count, Arithmetic())
-    pnl = host_array(pnl).astype(np.float64)
+    name = jnp.dtype(dtype).name
+    _, pnl = price_function_pnl(cfg, fn, fn.rates, moves, pricing, count,
+                               Arithmetic(name, name, levels=name, calibration=jnp.dtype(calibration_dtype).name))
+    pnl = host_array(pnl).astype(dtype)
     greeks: Dict[str, np.ndarray] = {}
     row = 0
     for (kind, name), rates in zip(fn.curves, fn.rates):
@@ -205,7 +215,9 @@ def bump_moves(fn: TradePriceFunction, config: SensitivityConfig) -> Moves:
         vega = np.zeros((count, quotes))
         vega[row:] = config.vol_shift * np.eye(quotes)
         vega = vega.reshape((count,) + fn.quotes.shape)
-    return Moves(tuple(jnp.asarray(s) for s in shifts), quotes=None if vega is None else jnp.asarray(vega))
+    dtype = fn.rates[0].dtype
+    return Moves(tuple(jnp.asarray(s, dtype=dtype) for s in shifts),
+                 quotes=None if vega is None else jnp.asarray(vega, dtype=fn.quotes.dtype))
 
 
 def trade_theta(value, base: float, theta: PricingContext) -> np.ndarray:

@@ -38,6 +38,7 @@ class PricingContext:
     volatility: VolatilityLookup
     fixings: Mapping[str, Mapping[ORE.Date, float]] = field(default_factory=dict)
     volatility_offset: float = 0.0
+    calibration_dtype: str = "float64"
 
     def curves(self, currency: str, index_name: str):
         if currency not in self.discount:
@@ -57,14 +58,14 @@ def floating_volatility_date(date: ORE.Date) -> ORE.Date:
     return VOL_CALENDAR.adjust(date, VOL_BUSINESS_DAY_CONVENTION)
 
 
-def from_market(market: Market) -> PricingContext:
+def from_market(market: Market, dtype=jnp.float64) -> PricingContext:
     """Today's market: the zero curves as given, the vol surfaces read as ORE reads them on
     the as-of date."""
     discount: Dict[str, ZeroCurve] = {}
     index: Dict[str, ZeroCurve] = {}
     for code, data in market.currencies.items():
-        discount[code] = ZeroCurve.from_config(data.discount_curve)
-        index.update({name: ZeroCurve.from_config(curve) for name, curve in data.index_curves.items()})
+        discount[code] = ZeroCurve.from_config(data.discount_curve, dtype)
+        index.update({name: ZeroCurve.from_config(curve, dtype) for name, curve in data.index_curves.items()})
 
     def volatility(currency: str, option_time: float, swap_length: float) -> float:
         return float(market.swaption_vols(currency).volatility(market.asof, option_time, swap_length))
@@ -80,11 +81,12 @@ def sampled_curve(curve: ZeroCurve, asof: ORE.Date, tenors: Sequence[str]) -> Di
     date, `engine.risk.greeks.bump`)."""
     dates = [asof + ORE.Period(t) for t in tenors]
     times = [0.0] + [TIME_AXIS_DAY_COUNTER.yearFraction(asof, d) for d in dates]
-    values = [0.0] + [float(log_discount(curve, t)) for t in times[1:]]
-    return DiscountCurve(times=jnp.asarray(times), log_discounts=jnp.asarray(values))
+    values = [0.0] + [float(log_discount(curve, jnp.asarray(t, dtype=curve.pillar_rates.dtype))) for t in times[1:]]
+    return DiscountCurve(times=jnp.asarray(times, dtype=curve.pillar_rates.dtype),
+                         log_discounts=jnp.asarray(values, dtype=curve.pillar_rates.dtype))
 
 
-def simulation_market_today(market: Market, tenors: Sequence[str]) -> PricingContext:
+def simulation_market_today(market: Market, tenors: Sequence[str], dtype=jnp.float64) -> PricingContext:
     """ORE's simulation market on the as-of date: every discount and index curve sampled at
     `tenors` (`sampled_curve`), the swaption volatilities as given. ORE's exposure simulation
     values every trade here at t=0 (the NPV cube's `T0`) and its sensitivity analysis bumps it,
@@ -92,7 +94,7 @@ def simulation_market_today(market: Market, tenors: Sequence[str]) -> PricingCon
     curves' interpolation between the tenors."""
     discount, index = {}, {}
     for code, data in market.currencies.items():
-        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve), market.asof, tenors)
-        index.update({name: sampled_curve(ZeroCurve.from_config(c), market.asof, tenors)
+        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve, dtype), market.asof, tenors)
+        index.update({name: sampled_curve(ZeroCurve.from_config(c, dtype), market.asof, tenors)
                       for name, c in data.index_curves.items()})
-    return PricingContext(market.asof, discount, index, from_market(market).volatility)
+    return PricingContext(market.asof, discount, index, from_market(market, dtype).volatility)

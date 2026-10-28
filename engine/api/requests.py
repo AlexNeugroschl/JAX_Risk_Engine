@@ -188,13 +188,13 @@ class ExecutionPolicySchema(_Strict):
 
 
 class InternalPrecisionSchema(_Strict):
-    """Requirements of existing kernels; FP32 implementations are not available yet."""
-    calibration: Literal["float64"] = "float64"
-    levels: Literal["float64"] = "float64"
-    initial_values: Literal["float64"] = "float64"
-    reductions: Literal["float64"] = "float64"
-    greeks: Literal["float64"] = "float64"
-    output: Literal["float64"] = "float64"
+    """Arithmetic for preparation, initial pricing, sensitivities and risk reductions."""
+    calibration: Literal["float32", "float64"] = "float64"
+    levels: Literal["float32", "float64"] = "float64"
+    initial_values: Literal["float32", "float64"] = "float64"
+    reductions: Literal["float32", "float64"] = "float64"
+    greeks: Literal["float32", "float64"] = "float64"
+    output: Literal["float32", "float64"] = "float64"
 
     def to_dataclass(self) -> InternalPrecision:
         return InternalPrecision(**self.model_dump())
@@ -208,6 +208,7 @@ class PrecisionSchema(_Strict):
     scale, or none; I-75). The 32/64 shape retired on 2026-10-01 is refused, naming the
     replacement (decision A-12). `paired_fraction`: the share of paths also run at float64, whose
     estimates the result's `precision` report carries (decision A-13)."""
+    profile: Literal["float32", "float64"] = "float64"
     simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     pricing: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
@@ -219,7 +220,8 @@ class PrecisionSchema(_Strict):
     paired_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
     storage_scaling: Literal["power_of_two", "none"] = "power_of_two"
     internal: InternalPrecisionSchema = Field(default_factory=InternalPrecisionSchema)
-    execution: ExecutionPolicySchema = Field(default_factory=ExecutionPolicySchema)
+    execution: ExecutionPolicySchema = Field(default_factory=ExecutionPolicySchema, json_schema_extra={"deprecated": True},
+        description="Compatibility location. New run requests should use config.execution.")
 
     @model_validator(mode="before")
     @classmethod
@@ -228,13 +230,38 @@ class PrecisionSchema(_Strict):
         if isinstance(data, dict) and (any(k in data for k in ("risk", "calibration"))
                                        or any(isinstance(data.get(s), int) for s in STAGES)):
             raise ValueError(RETIRED_PRECISION_SHAPE)
+        if isinstance(data, dict) and data.get("profile") == "float32":
+            data = dict(data)
+            for name in STAGES:
+                value = data.get(name, {})
+                value = value.model_dump() if isinstance(value, BaseModel) else value
+                if not isinstance(value, dict):
+                    raise ValueError(f"precision.{name} must be an object")
+                data[name] = {**dict(storage="float32", compute="float32", accumulate="float32"),
+                              **value}
+            for group in OVERRIDES:
+                if not isinstance(data.get(group, {}), dict):
+                    raise ValueError(f"precision.{group} must be an object")
+                expanded = {}
+                for key, value in data.get(group, {}).items():
+                    value = value.model_dump() if isinstance(value, BaseModel) else value
+                    if not isinstance(value, dict):
+                        raise ValueError(f"precision.{group}[{key!r}] must be an object")
+                    expanded[key] = {**dict(storage="float32", compute="float32", accumulate="float32"), **value}
+                data[group] = expanded
+            internal = data.get("internal", {})
+            internal = internal.model_dump() if isinstance(internal, BaseModel) else internal
+            if not isinstance(internal, dict):
+                raise ValueError("precision.internal must be an object")
+            data["internal"] = {**{f.name: "float32" for f in dataclasses.fields(InternalPrecision)},
+                                **internal}
         return data
 
     def to_dataclass(self, where: str = "precision") -> Precision:
         stages = {stage: getattr(self, stage).to_dataclass(f"{where}.{stage}") for stage in STAGES}
         overrides = {name: {key: value.to_dataclass(f"{where}.{name}[{key!r}]")
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
-        return _named(where, lambda: Precision(**stages, **overrides, rounding=self.rounding,
+        return _named(where, lambda: Precision(**stages, **overrides, profile=self.profile, rounding=self.rounding,
                                                rounding_seed=self.rounding_seed, offset=self.offset,
                                                paired_fraction=self.paired_fraction,
                                                storage_scaling=self.storage_scaling,
@@ -244,7 +271,7 @@ class PrecisionSchema(_Strict):
     @classmethod
     def from_dataclass(cls, precision: Precision) -> "PrecisionSchema":
         stage = StagePrecisionSchema.from_dataclass
-        return cls(**{s: stage(getattr(precision, s)) for s in STAGES},
+        return cls(profile=precision.profile, **{s: stage(getattr(precision, s)) for s in STAGES},
                    **{name: {k: stage(v) for k, v in getattr(precision, name).items()} for name in OVERRIDES},
                    rounding=precision.rounding, rounding_seed=precision.rounding_seed, offset=precision.offset,
                    paired_fraction=precision.paired_fraction,
@@ -723,6 +750,7 @@ class RunRequestConfigSchema(_Strict):
     exposure: ExposureSchema = Field(default_factory=ExposureSchema)
     market_risk: Optional[MarketRiskSchema] = None
     precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
+    execution: Optional[ExecutionPolicySchema] = None
 
     def to_dataclass(self, market: Market) -> RunRequestConfig:
         sections = dict(
@@ -731,7 +759,8 @@ class RunRequestConfigSchema(_Strict):
             pricing=self.pricing.to_dataclass(), sensitivity=self.sensitivity.to_dataclass(),
             exposure=_named("config.exposure", self.exposure.to_dataclass),
             market_risk=self.market_risk.to_dataclass(market) if self.market_risk else None,
-            precision=self.precision.to_dataclass("config.precision"))
+            precision=self.precision.to_dataclass("config.precision"),
+            execution=self.execution.to_dataclass() if self.execution else None)
         return RunRequestConfig(base_currency=self.base_currency, **sections)
 
 

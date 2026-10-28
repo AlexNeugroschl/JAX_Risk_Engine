@@ -102,7 +102,8 @@ def _revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic,
     arithmetic = arithmetic or Arithmetic.of(moves.dtype)
     moves = arithmetic.cast(moves)
     base = arithmetic.cast(factors.base_rates())
-    fn = trade_price_function(cfg, market, pricing, arithmetic.dtype)
+    fn = trade_price_function(cfg, market, pricing, arithmetic.dtype,
+                              calibration_dtype=arithmetic.calibration)
     own = [factors.slice_of(i) for i in factor_indices(cfg, factors)]
     return price_function_pnl(cfg, fn, [base[s] for s in own], Moves(tuple(moves[..., s] for s in own)), pricing,
                               batch_size, arithmetic)

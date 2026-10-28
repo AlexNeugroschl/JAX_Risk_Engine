@@ -303,8 +303,8 @@ class TestProducts:
         ("gpu", "NVIDIA H100", "9.0", {"float64": "native", "float32": "native", "float16": "native",
                                         "bfloat16": "native", "tensorfloat32": "native", "bfloat16_3x": "native",
                                         "float8_e4m3fn": "native", "float8_e5m2": "native"}),
-        ("tpu", "TPU v5 lite", None, {"float32": "native", "bfloat16": "native", "bfloat16_3x": "native"}),
-        ("tpu", "TPU7x", None, {"float32": "native", "bfloat16": "native", "bfloat16_3x": "native"}),
+        ("tpu", "TPU v5 lite", None, {name: "native" for name in FORMAT_NAMES if name != "float64"}),
+        ("tpu", "TPU7x", None, {name: "native" for name in FORMAT_NAMES if name != "float64"}),
     ])
     def test_native_where_the_device_has_units_for_the_format_else_emulated(self, platform, kind, capability,
                                                                              expected, monkeypatch):

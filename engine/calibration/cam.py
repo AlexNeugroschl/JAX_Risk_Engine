@@ -45,40 +45,48 @@ class CamCalibration:
     error: float
 
 
-def calibrate_currency(market: Market, currency: str, lgm, tolerance: float = BOOTSTRAP_TOLERANCE) -> CamCalibration:
+def calibrate_currency(market: Market, currency: str, lgm, tolerance: float = BOOTSTRAP_TOLERANCE,
+                       *, precision=None) -> CamCalibration:
     """Bootstrap `lgm` (an `engine.market_simulation.config.LgmConfig` or `HullWhiteConfig` with a
     basket) on today's market, refused if its error is not below `tolerance` (ORE's
     `BootstrapTolerance`)."""
     from engine.precision import Precision
     from engine.precision.execution import prepare_execution
-    execution = prepare_execution(Precision.reference())
-    return _calibrate_currency(market, currency, lgm, tolerance, execution)
+    policy = Precision.reference() if precision is None else precision
+    execution = prepare_execution(policy, internal_roles=("calibration", "output"))
+    from engine.precision.prepare import cast_floating
+    return cast_floating(_calibrate_currency(market, currency, lgm, tolerance, execution),
+                          policy.internal.dtype("output"), scalars=True)
 
 
 def _calibrate_currency(market, currency, lgm, tolerance, execution):
-    """Internal calibration, under the caller's validated FP64 requirements."""
+    """Internal calibration, under the caller's validated numerical requirements."""
     conventions = lgm.swap_index
     basket = build_basket(market.asof, list(lgm.calibration_expiries), list(lgm.calibration_terms), conventions)
-    disc = ZeroCurve.from_config(market.currency(currency).discount_curve)
-    index = ZeroCurve.from_config(market.index_curve(currency, index_name(currency, conventions.index_tenor_months)))
+    dtype = execution.policy.internal.dtype("calibration")
+    disc = ZeroCurve.from_config(market.currency(currency).discount_curve, dtype)
+    index = ZeroCurve.from_config(market.index_curve(currency, index_name(currency, conventions.index_tenor_months)), dtype)
     result = bootstrap_sigma(basket, disc, index, basket_vols(basket, market.swaption_vols(currency), market.asof),
                              lgm.reversion, lgm.solver)
     require_accepted(result, tolerance, f"the {currency} model of the cross-asset model on {market.asof}")
-    sigma = Sigma(jnp.asarray(result.times), result.values)
+    sigma = Sigma(jnp.asarray(result.times, dtype=dtype), result.values)
     if lgm.volatility_type == "HullWhite":
         sigma = hull_white_matching_zeta(lgm.reversion, sigma, basket[-1].expiry_time)
     return CamCalibration(sigma, np.asarray(result.market), np.asarray(result.model), float(result.rmse))
 
 
 def calibrate_cam(market: Market, lgm_configs: Mapping,
-                  tolerance: float = BOOTSTRAP_TOLERANCE) -> Dict[str, CamCalibration]:
+                  tolerance: float = BOOTSTRAP_TOLERANCE, *, precision=None) -> Dict[str, CamCalibration]:
     """Every currency in `lgm_configs` (currency -> `LgmConfig` or `HullWhiteConfig`) with a
     calibration basket, each refused if its error is not below `tolerance` (ORE's
     `BootstrapTolerance`, one for the model, `CamConfig.bootstrap_tolerance`)."""
     from engine.precision import Precision
     from engine.precision.execution import prepare_execution
-    execution = prepare_execution(Precision.reference())
-    return _calibrate_cam(market, lgm_configs, tolerance, execution)
+    policy = Precision.reference() if precision is None else precision
+    execution = prepare_execution(policy, internal_roles=("calibration", "output"))
+    from engine.precision.prepare import cast_floating
+    return cast_floating(_calibrate_cam(market, lgm_configs, tolerance, execution),
+                          policy.internal.dtype("output"), scalars=True)
 
 
 def _calibrate_cam(market, lgm_configs, tolerance, execution):

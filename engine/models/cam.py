@@ -292,7 +292,7 @@ class _Analytics:
 
 
 def _log_discount(curve: ZeroCurve, t: float) -> float:
-    return float(log_discount(curve, jnp.asarray(t, dtype=jnp.float64)))
+    return float(log_discount(curve, jnp.asarray(t, dtype=curve.pillar_rates.dtype)))
 
 
 # ---------------------------------------------------------------------------

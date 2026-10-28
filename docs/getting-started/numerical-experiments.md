@@ -18,19 +18,19 @@ correction when an input triggers a known compiler problem.
 | `shared_format` | `"same"` | `"e4m3"` holds an E5M2 product's shared operand in E4M3. This changes its rounding grid, not just its implementation. |
 | `bf16_padding` | `"none"` | `"gemm8"` pads GPU `bfloat16_3x` vector products to at least eight output lanes, then slices the result. Avoids the observed GEMV lowering error at the cost of additional output lanes. |
 | `subnormals` | `"native"` | `"normalize_fp16"` preserves quantized FP16 subnormals by splitting and normalizing them before native dots. Adds input checks and a conditional; uses one dot for normal inputs and four when subnormals occur. Requires a capable GPU. |
-| `algorithm` | `"format"` | `"fp8_full"` explicitly requests `ANY_F8_ANY_F8_F32`. Requires a capable GPU and research mode. A compiler may reject this algorithm. |
+| `algorithm` | `"format"` | `"fp8_full"` explicitly requests `ANY_F8_ANY_F8_F32`. Requires a capable GPU. A compiler may reject this algorithm. |
 | `implementation` | `"auto"` | `"emulated_fp32"` preserves the requested low-format operand grids but performs software products using FP32 operands. Requires research mode. It cannot be combined with native-only algorithm/normalization requests. |
 
 `"auto"` dispatch follows the selected backend's capabilities, subject to the
 execution policy. `mode="native"` refuses software fallback. `"allow_emulation"`
-permits software or unqualified compiler paths; it does not force emulation or
-certify accuracy. Native-only FP8 remains refused because the cloud experiments
-did not establish actual FP8 instruction use and correctness.
+permits software paths; it does not force emulation or certify accuracy. Missing
+FP8 instruction or numerical qualification is metadata, rather than a refusal.
+See [precision profiles and execution](explicit-precision-policy.md) for the
+end-to-end FP32 profile and the execution contract.
 
 An unpadded GPU `bfloat16_3x` vector is known inaccurate on the tested compiler.
-Strict execution refuses that shape during tracing; select padding explicitly or
-use research mode to study the unmodified path. Shape-dependent compiler errors
-can still arise after startup validation.
+The report records that limitation; select padding explicitly to try the workaround.
+Shape-dependent compiler errors can still arise after startup validation.
 
 ```python
 from engine.precision import ExecutionPolicy, Precision, ProductOptions, StagePrecision
@@ -49,8 +49,8 @@ The equivalent HTTP fragment, inside the request's `config`, is:
 
 ```json
 {
+  "execution": {"backend": "gpu", "mode": "native", "gpu_gemm": "inherit"},
   "precision": {
-    "execution": {"backend": "gpu", "mode": "native", "gpu_gemm": "inherit"},
     "pricing": {
       "storage": "float32", "compute": "float16", "accumulate": "float32",
       "product": {
@@ -139,5 +139,12 @@ The difference-form pricing kernels, level reconstruction and mandatory FP64
 internals remain core implementations, with no alternative implementation exposed.
 Changing them requires implementing and validating another kernel, not adding a
 label. Full TPU jobs therefore remain unsupported. The new opt-ins do not resolve
-FP8 qualification or establish H100/TPU correctness. Run device-specific numerical
-and lowering checks for each strategy you intend to study.
+native FP8 qualification or establish H100 correctness. The subsequent
+[TPU survey](tpu-precision-survey.md) passes the basic/compensated FP32-input product
+and storage coverage, including revised FP16 emulation. Run device-specific numerical
+and lowering checks for additional strategies you intend to study.
+
+The subsequent [native TPU probes](tpu-native-precision.md) find passing FP8-typed
+matrix candidates using ordinary JAX and Pallas. They also find FP32 widening for
+the tested vector shape and compiler rejection of the generic explicit FP8 preset.
+These candidates are not integrated into the current engine/API dispatch.

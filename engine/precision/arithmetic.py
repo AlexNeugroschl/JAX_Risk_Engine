@@ -15,8 +15,8 @@ arithmetic below float32 faster, so a kernel's other operations run at `accumula
 native low-precision kernel runs them (a matrix unit's float32 accumulator, the vector unit's
 float32 arithmetic). The kernels are written in difference form so that what enters a product
 is a path's deviation from a level that does not depend on the path, never the level itself.
-A level is computed in float64 (it has no path axis, so this is cheap even where float64 is
-emulated) and meets each path's deviation in two terms of the accumulate format
+A level uses the configured internal levels dtype (float64 by default) and meets
+each path's deviation in two terms of the accumulate format
 (`add_level`, `deviation_from`): `hi + (lo + deviation)`, `hi` the level on the format's grid and
 `lo` what it leaves, so the one rounding of a path's value is its own, and no rounding of the
 level is shared by every path, which would be a bias more paths do not remove (measured: a
@@ -73,7 +73,7 @@ class Arithmetic:
     `Arithmetic()` is float64 throughout. Stochastic products need an explicit `key`;
     `Precision.arithmetic_for` binds it for pipelines. Keys and `sample_ids` are data,
     never static JIT arguments. `execution` requires native products by default;
-    software or unqualified product experiments explicitly use 'allow_emulation'."""
+    software product experiments explicitly use 'allow_emulation'."""
     compute: str = "float64"
     accumulate: str = "float64"
     rounding: str = "nearest"
@@ -81,8 +81,13 @@ class Arithmetic:
     sample_ids: object = None
     execution: str = "native"
     product: ProductOptions = ProductOptions()
+    levels: str = "float64"
+    calibration: str = "float64"
 
     def __post_init__(self):
+        for role in ("levels", "calibration"):
+            if getattr(self, role) not in ("float32", "float64"):
+                raise ValueError(f"Arithmetic.{role} must be float32 or float64")
         if not isinstance(self.product, ProductOptions):
             raise TypeError("Arithmetic.product must be ProductOptions")
         from engine.precision.execution import EXECUTION_MODES
@@ -106,12 +111,14 @@ class Arithmetic:
             raise ValueError("Arithmetic.rounding='stochastic' needs a single-grid compute format below float32")
 
     def tree_flatten(self):
-        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution, self.product)
+        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution, self.product,
+                                            self.levels, self.calibration)
 
     @classmethod
     def tree_unflatten(cls, meta, data):
-        compute, accumulate, rounding, execution, product = meta
-        return cls(compute, accumulate, rounding, *data, execution=execution, product=product)
+        compute, accumulate, rounding, execution, product, levels, calibration = meta
+        return cls(compute, accumulate, rounding, *data, execution=execution, product=product,
+                   levels=levels, calibration=calibration)
 
     def fold_in(self, data):
         """Derive a date/step/product stream; the key remains traced data."""

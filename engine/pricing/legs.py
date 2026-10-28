@@ -281,8 +281,10 @@ def today_schedule(legs: Legs, asof: ORE.Date) -> TodaySchedule:
 def today_npv(legs: Legs, asof: ORE.Date, disc, index) -> jax.Array:
     """ORE's t=0 NPV (`today_schedule`)."""
     today = today_schedule(legs, asof)
-    return legs_npv(legs, disc, index, 0.0, today.alive_fixed, today.alive_float, today.projected,
-                    today.known_rates)
+    from engine.market_data.curves import curve_dtype
+    dtype = curve_dtype(disc)
+    return legs_npv(legs.astype(dtype), disc, index, jnp.asarray(0.0, dtype=dtype),
+                    today.alive_fixed, today.alive_float, today.projected, np.asarray(today.known_rates, dtype=dtype))
 
 
 def _known(fixing_serial: int, history: float, asof: ORE.Date) -> float:
@@ -348,7 +350,7 @@ def on_every_date(value_fn, legs: Legs, schedule: PathSchedule, times: np.ndarra
                   index: ScenarioCurves, fixings: Optional[PathFixings], *per_date) -> jax.Array:
     """`[S, D]`: `value_fn(disc_j, index_j, t_j, alive_fixed_j, alive_float_j, projected_j,
     known_rates_j, deviations_j, *per_date_j)` on every simulation date, all paths at once:
-    the curves' levels on date j (`DiscountCurve`s, float64 as `ScenarioCurves` keeps them), the
+    the curves' levels on date j (`DiscountCurve`s, in the configured levels dtype), the
     coupons' known rates at the level (the trade's history before the as-of date, the level of
     FixingManager's path fixings after it, `fixings`), and each path's `Deviations` from them, in
     the curves' format. Extra `per_date` arrays are indexed by
@@ -383,9 +385,10 @@ def legs_cube(legs: Legs, schedule: PathSchedule, times: np.ndarray, disc: Scena
               arithmetic: Optional[Arithmetic] = None) -> jax.Array:
     """`[S, D]` NPVs on every path and simulation date, in `arithmetic` (the curves' own
     format, float64 or float32, by default), whose accumulate format the curves' values are in;
-    the legs and the levels stay float64."""
+    the legs use the configured levels dtype."""
     arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
-    return _legs_cube(legs, schedule, times, disc, index, fixings, arithmetic)
+    return _legs_cube(legs.astype(arithmetic.levels), schedule, np.asarray(times, dtype=arithmetic.levels),
+                       disc, index, fixings, arithmetic)
 
 
 @jax.jit

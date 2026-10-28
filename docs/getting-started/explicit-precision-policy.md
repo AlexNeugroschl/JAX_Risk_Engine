@@ -1,132 +1,148 @@
-# Explicit precision and execution
+# Precision profiles and execution
 
-Every full engine request carries numerical formats and an execution policy.
-Unsupported work raises an error before the pipeline starts. The engine does not
-change a requested format, select another backend, or move the job to CPU.
+The default remains FP64 numerical execution on the active JAX backend. Selecting a
+precision never selects another device, silently downgrades a format, or enables
+emulation. Missing numerical qualification does not prevent a research run.
 
-```python
-from engine.precision import ExecutionPolicy, Precision, StagePrecision
+## A small starting configuration
 
-# Default: native FP64 reference arithmetic.
-reference = Precision.reference(backend="gpu")
+The complete API configuration has independent precision and execution sections:
 
-# FP16 products/storage and FP32 accumulation in adjustable stages.
-# Fixed internal kernels remain FP64.
-stage = StagePrecision("float16", "float16", "float32")
-gpu_policy = Precision(
-    simulation=stage, market=stage, pricing=stage,
-    execution=ExecutionPolicy(backend="gpu", mode="native"),
-)
-
-# Explicit permission for software or unqualified product paths in research.
-research = Precision.research(
-    pricing=StagePrecision("float32", "float8_e4m3fn", "float32"),
-)
+```json
+{
+  "config": {
+    "precision": {"profile": "float32"},
+    "execution": {"backend": "tpu", "mode": "native"}
+  }
+}
 ```
 
-Pass the policy as `RunConfig(precision=...)`, `RunRequestConfig(precision=...)`,
-or `MarketRiskRequest(precision=...)`. `simulate` and path valuation also accept
-it directly. Select the backend in the caller's JAX configuration/context first;
-`backend="gpu"` verifies that selection rather than changing it. The default
-`backend="default"` uses the active JAX default device and resolves to its concrete
-platform in the report. Scenario sharding stays on that platform.
+This is a configuration fragment; a POST /runs request still needs its market,
+portfolio, analytics and the sections those analytics consume. The worker must
+already have the requested backend selected. A mismatch fails before numerical
+work; the CPU API server's own backend does not determine the worker's capability.
 
-Direct matrix-product experiments also require explicit permission for emulation:
-
-```python
-from engine.precision import Arithmetic, matmul
-
-arithmetic = Arithmetic("float8_e4m3fn", "float32", execution="allow_emulation")
-result = matmul(a, b, arithmetic, shared="right")
-```
-
-`allow_emulation` permits fallback; it does not force it, change precision, or
-establish correctness. Numerical harnesses explicitly opt into this mode.
-`JAX_RISK_EMULATE_PRODUCTS` can force selected software product paths, but conflicts
-with a `native` requirement cause an error. Set compiler/emulation environment
-variables before tracing in a fresh process, as before.
-
-The HTTP configuration uses the same fields:
+`profile` accepts `float64` (default) and `float32`. It supplies defaults for all
+three adjustable stages and all six internal numerical roles. Explicit stage
+fields and internal fields override the profile. For example:
 
 ```json
 {
   "config": {
     "precision": {
-      "execution": {"backend": "gpu", "mode": "native"},
-      "pricing": {"storage": "float16", "compute": "float16", "accumulate": "float32"}
-    }
+      "profile": "float32",
+      "pricing": {"compute": "bfloat16"}
+    },
+    "execution": {"backend": "gpu"}
   }
 }
 ```
 
-The API validates request structure on its CPU. The worker checks hardware
-requirements on its own device before numerical work. A mismatch fails the job;
-the API server cannot infer worker capabilities from its own CPU.
+This selects BF16 pricing products, FP32 accumulation and storage, and FP32
+internal arithmetic. It does not activate residual terms, product scaling,
+padding, subnormal normalization or stochastic rounding.
 
-Runtime checks are integrated into the existing validation functions:
-`validate_run(request, execution=True)` for a complete job, and the corresponding
-`validate_request(..., execution=True)` for a direct portfolio or market-risk job.
-The returned immutable execution context is passed through private implementations
-of simulation, calibration, pricing, Greeks and paired reference calculations.
-Nested analytics do not repeat policy validation. In a multi-analytic job, all
-requested stages and pricing overrides are checked before the first analytic runs.
+The corresponding Python configuration is:
 
-Public standalone helpers still validate their own execution requirements. Low-level
-format/product guards remain in place, including checks during JIT tracing, and
-execution mode remains part of the JIT cache identity. There is no process-wide
-"already validated" flag or cached permission to execute. Each new job rechecks
-the active backend, x64 support and emulation controls.
+```python
+from engine.precision import ExecutionPolicy, Precision, StagePrecision
+from engine.run import RunRequestConfig
 
-Only static policy-report metadata is cached, by immutable policy and concrete
-backend. Callers receive fresh copies; actual output formats, devices, path counts,
-figures and qualification observations are read anew for each result.
+config = RunRequestConfig(
+    precision=Precision(profile="float32",
+                        pricing=StagePrecision("float32", "bfloat16", "float32")),
+    execution=ExecutionPolicy(backend="gpu"),
+)
+```
 
-See [Selecting numerical experiments](numerical-experiments.md) for per-stage
-product strategies, storage scaling and worker compiler requirements. Low-format
-products now default to one unscaled shared term; the historical compensated
-profile is available explicitly.
+A Python StagePrecision is already fully specified: StagePrecision("float16")
+continues to mean FP16 storage and FP64 compute/accumulation. API partial stage
+objects inherit missing fields from their selected profile. API per-product/trade
+overrides inherit the selected profile too; Python StagePrecision objects remain
+fully specified.
 
-## Fixed precision is part of the contract
+## What each setting controls
 
-`Precision.internal` declares the existing FP64 kernels: `calibration`, `levels`,
-`initial_values`, `reductions`, `greeks`, and `output`. These fields currently
-accept only `"float64"`. Asking for FP32 raises an error because those kernels
-have not been converted and validated. Host input processing and model moments
-also use FP64; host preprocessing is recorded separately from device work.
+| Setting | Actual numerical work |
+| --- | --- |
+| simulation | Shock storage, state evolution products and stage arithmetic |
+| market | Scenario market storage, products and stage arithmetic |
+| pricing | Scenario revaluation products, accumulation and stored values |
+| internal.calibration | Model bootstrap arithmetic and calibration-dependent model inputs |
+| internal.levels | Path-independent levels and prepared kernel data |
+| internal.initial_values | Today's trade valuations |
+| internal.reductions | Portfolio aggregation, exposure reductions and risk statistics |
+| internal.greeks | Bump or AD sensitivity arithmetic |
+| internal.output | Exported financial values and arrays; counts and identifiers retain their meaning |
 
-`Precision.throughout("float32")` retains its historical meaning: all three
-**adjustable** stages use FP32. Fixed kernels remain FP64. There is currently no
-all-FP32 full-engine profile.
+Internal roles accept FP32 or FP64; scenario product formats also include the
+supported low-format algorithms. Low products accumulate in FP32. Overrides per
+trade take precedence over overrides per product, then the pricing stage.
 
-Consequently, **full TPU engine jobs are currently refused**, including jobs with
-FP32 adjustable stages or `allow_emulation`. TPU software FP64 is incompatible
-with the engine's IEEE-word precision helpers. Requested FP64 with JAX x64 disabled
-is also refused instead of accepting implicit FP32 demotion. Individual FP32/BF16
-primitives can still be tested on TPUs. Supporting full TPU jobs requires real
-FP32 versions of the fixed kernels and new device validation. A warning or changed
-policy label would not implement that support.
+Host input parsing, schedules, scenario input preparation and numerical quadrature
+setup still contain NumPy/SciPy FP64 work. These are reported as host preprocessing;
+`profile=float32` specifies the engine's configurable numerical kernels, not an
+absence of double precision anywhere in Python or external libraries. It is not
+an all-CPU-free workload: scalar materialization and result assembly also run on
+the host. Declared placement describes the backend required for JAX kernels.
+JSON numerical scalars do not have a floating dtype;
+array artifacts retain their requested dtype. Wider storage is permitted and does
+not recover information lost in narrower arithmetic. Market-risk P&L anchors use the
+revaluation stage arithmetic; internal.initial_values controls portfolio NPV and
+exposure start values.
 
-Paired FP64 correction runs stay on the selected backend. There is no automatic
-CPU reference pass or hybrid-device execution.
+Precision.throughout("float32") keeps its historical meaning: only the adjustable
+stages become FP32. Use Precision(profile="float32") for the expanded profile.
+Existing config.precision.execution is a compatibility location. New requests
+should use config.execution. Contradictory nondefault declarations are refused.
 
-## Read the result
+## Execution and research evidence
 
-Every precision report includes `resolved_policy`: stage formats and overrides,
-rounding and seed, fixed kernel formats, concrete backend, execution mode, product
-algorithms/representations, host preprocessing and paired-reference requirements.
-`policy` preserves the original request. `realized`, `devices`, and `backend`
-describe the stored arrays and actual device platform.
+`backend` is default/cpu/gpu/tpu. `default` resolves to the active backend, without
+hardware-dependent precision changes. `mode=native` forbids engine-selected
+emulation. `allow_emulation` retains the explicit research permission for software
+routes; it does not force emulation. ProductOptions(implementation="emulated_fp32")
+explicitly selects FP32-carrier products and requires that permission.
 
-`products` remains a **dispatch** description. A native dispatch label does not
-prove that every compiled shape used the requested hardware instructions. Native-only
-FP8 currently raises an error even on a capable GPU: the H100 trial emitted FP16
-instructions for FP8 operand programs. Explicit research mode can run that path
-without claiming native FP8 qualification. See the
-[hardware rerun findings](hardware-correctness-rerun.md).
+Native means an engine/compiler route request, not proof of physical instructions.
+FP8 requests are no longer refused because previous instruction or financial
+qualification is missing. TPU low-format candidates are submitted to the compiler:
+BF16 uses its explicit algorithm; FP8 uses typed operands and DEFAULT; FP16 and
+TF32 use explicit algorithms that the tested TPU compiler rejected. Compiler errors
+propagate; there is no catch-and-emulate fallback. Shape-dependent widening remains
+possible, and requires separate lowering/profiler inspection.
 
-The default FP64/FP32 kernels keep their pricing formulas and tolerances.
-Low-format algorithms follow the selected product options; checks run in Python
-at entry/tracing boundaries.
-Execution mode participates in JIT cache identity, so a permissive compiled
-product cannot satisfy a later strict request by cache reuse. The policy does not
-resolve the measured H100 FP16/BF16 pipeline differences or qualify broad TPU correctness.
+Known FP16 subnormal and unpadded GPU BF16-three-pass issues are reported in
+resolved policy metadata, without forbidding the experiment. Product corrections
+remain individually opt-in. Native FP8 qualification and financial accuracy have
+not been established by this configuration change.
+
+FP64 on TPU remains an error. A paired FP64 sample also requires native FP64 on the
+selected backend; it does not cause a CPU pass. There is no automatic hybrid
+placement. An explicit hybrid execution plan is future work.
+
+`gpu_gemm` is a requirement on worker startup (inherit/default/cublas), not a
+per-job compiler switch. Process flags remain frozen after initialization.
+
+## Validation and results
+
+Structural request validation runs at submission; execution validation runs once
+on the worker before numerical work. The immutable context records the stages and
+internal roles actually used and is passed through the analytics. Unused FP64
+declarations do not block an FP32-only analytic. Standalone numerical helpers retain
+their own entry/tracing guards.
+Policies and prepared array dtypes participate in JIT specialization; no per-job
+x64 flag toggling or global precision context is used.
+
+Every complete run, including calibration-only runs, carries `numerics`: the
+resolved profile, role dtypes, backend requirements, declared placement, compiler
+settings, known limitations and qualification status. Portfolio/market-risk
+precision reports additionally record stored formats and observed array devices.
+Qualification never authorizes or blocks execution. Internal precision choices
+are included in accuracy evidence keys, so older FP64-internal results cannot
+certify a new FP32 profile.
+
+Local CPU regression tests cover the FP32 profile. GPU/TPU end-to-end execution,
+physical instruction use, financial accuracy and performance of the new profile
+still require hardware testing. Historical cloud reports describe their recorded
+source revisions; they do not validate this implementation.

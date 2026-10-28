@@ -21,8 +21,9 @@ What the pipeline does not implement is refused before any work (`validate_reque
 
 Precision (`engine.precision`, docs/planning/details/precision.md): `simulate` and
 `value_portfolio` hold the cast points of the simulation, market and pricing stages; the
-calibration, t=0 values and Greeks are float64; every reduction over paths loads one stored
-column and the numeraire at float64 (`_exposures`). Only a requested `npv_cube` is assembled.
+calibration, t=0 values, Greeks and reductions use their declared internal roles
+(FP64 by default). Reductions load one stored column and the numeraire at a time
+(`_exposures`). Only a requested `npv_cube` is assembled.
 With `precision.paired_fraction > 0` the first paths are simulated and priced again at float64
 throughout (`_paired_sample`, decision A-13): the exposure means are the two-level estimates,
 and each figure's estimate is in the result's `PrecisionReport`, which every result carries.
@@ -92,14 +93,20 @@ def _price_on_market(request, execution) -> "PortfolioResult":
         today, exercised = valuation.today, valuation.exercised
         with phase("exposure"):
             start = _today(trades, market, base, run.pricing,
-                                simulation_market_today(market, simulation.curve_tenors))
+                                simulation_market_today(market, simulation.curve_tenors,
+                                                        run.precision.internal.dtype("initial_values")),
+                                dtype=run.precision.internal.dtype("initial_values"),
+                                calibration_dtype=run.precision.internal.calibration)
             exposure, trade_exposures = _exposures(trades, start, valuation.columns, scenarios, market, base,
                                                    request.pfe_quantiles,
-                                                   sample, simulation.replicates)
+                                                   sample, simulation.replicates,
+                                                   dtype=run.precision.internal.dtype("reductions"))
         # Assemble only an explicitly requested output, after the reduction working set
         # has been released. The float64 sample also stays columnar throughout.
         del sample
-        cube = valuation.float64_cube() if request.include_npv_cube else jnp.zeros((0, 0, 0), dtype=jnp.float64)
+        output_dtype = run.precision.internal.dtype("output")
+        cube = ((valuation.float64_cube() if output_dtype == jnp.dtype("float64") else valuation.output_cube(output_dtype))
+                if request.include_npv_cube else jnp.zeros((0, 0, 0), dtype=output_dtype))
         figures = {f"netting_set/{k}": v for k, v in exposure.estimates.items()}
         figures.update({f"trades/{t.trade_id}/{k}": v
                         for t, profile in zip(trades, trade_exposures) for k, v in profile.estimates.items()})
@@ -116,8 +123,9 @@ def _price_on_market(request, execution) -> "PortfolioResult":
         warnings += [w for w in [unused_devices_warning(scenarios.num_paths, "paths")] if w]
     else:
         with phase("base_npv"):
-            today = _today(trades, market, base, run.pricing)
-        cube = jnp.zeros((0, 0, 0))
+            today = _today(trades, market, base, run.pricing, dtype=run.precision.internal.dtype("initial_values"),
+                            calibration_dtype=run.precision.internal.calibration)
+        cube = jnp.zeros((0, 0, 0), dtype=run.precision.internal.dtype("output"))
         report = PrecisionReport.of(run.precision, trades, {}, (), paths=0, execution=execution)
         warnings = []
     if request.compute_greeks:
@@ -126,9 +134,13 @@ def _price_on_market(request, execution) -> "PortfolioResult":
         if run.greeks.method == "AD":
             from engine.risk.greeks.ad import ad_warnings
             warnings = warnings + ad_warnings(trades)
+    from engine.precision.prepare import cast_floating
+    output_dtype = run.precision.internal.dtype("output")
+    exposure, trade_exposures, greeks = cast_floating((exposure, trade_exposures, greeks), output_dtype, scalars=True)
+    base_npv = np.sum(np.asarray(today, dtype=run.precision.internal.dtype("reductions")))
     return PortfolioResult(
-        base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
-        greeks=greeks, warnings=warnings, base_npv_per_trade=list(today),
+        base_npv=float(np.asarray(base_npv, dtype=output_dtype)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
+        greeks=greeks, warnings=warnings, base_npv_per_trade=[float(np.asarray(v, output_dtype)) for v in today],
         scenario_risk_available=request.scenario_risk, measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
         precision=report, exercised=exercised,
     )
@@ -142,7 +154,7 @@ def run_figures(quantiles: Sequence[float]) -> RunFigures:
     names = ("NPV",) + figure_names(quantiles)
     return RunFigures(stages=STAGES, aggregate="netting_set", trade=names, total=names, corrected=CORRECTED_FIGURES,
                       legend="NPV here is the paths' mean value per simulation date (the cube); today's NPV is "
-                             "float64 at every precision.")
+                             "float64 by default, controlled by internal.initial_values.")
 
 
 def pricing_settings(pricing: PricingConfig, trades: Sequence) -> Dict[str, str]:
@@ -171,7 +183,8 @@ def _paired_sample(trades: Sequence, market: Market, model, run, paths: int, exe
     """The paired float64 sample (decision A-13): the first `paths` paths simulated and priced
     again at float64 throughout, on the same calibrated model, as columns `[n, D]` and the
     numeraire `[n, D]`. A Sobol sequence's first points do not depend on the sample size, and
-    every kernel is per path, so these are exactly the paths a float64 run would give."""
+    every kernel is per path. This checks FP64 scenario arithmetic on that same model;
+    it does not recalibrate an FP32 model in FP64."""
     simulation = run.simulation
     reference = Precision.reference()
     scenarios = _simulate(market, dataclasses.replace(simulation, samples=paths), model, reference, execution)
@@ -217,24 +230,27 @@ def validate_request(request, *, execution: bool = False):
     if execution:
         from engine.precision.execution import prepare_execution
         return prepare_execution(run.precision, stages=STAGES if request.scenario_risk else (),
-                                 trades=request.trades)
+                                 trades=request.trades, internal_roles=("calibration", "initial_values", "reductions", "output",
+                                     *(("levels",) if request.scenario_risk else ()),
+                                     *(("greeks",) if request.compute_greeks else ())))
 
 
 def _exposures(trades: Sequence, start: List[float], columns, scenarios, market: Market, base: str, quantiles,
-               paired: Optional[PairedColumns] = None, replicates: int = 1) -> "tuple[ExposureProfile, List[ExposureProfile]]":
+               paired: Optional[PairedColumns] = None, replicates: int = 1,
+               dtype=jnp.float64) -> "tuple[ExposureProfile, List[ExposureProfile]]":
     """Netting-set and per-trade profiles, deflated by the LGM numeraire, EE_B against the base
     currency's discount curve, time weights on the simulation dates; with the `paired` float64
     sample, their two-level estimates. Reductions over paths load `columns` individually and
-    the stored numeraire at float64 (cast point 5).
+    the stored numeraire at the selected reductions dtype (cast point 5).
 
     The profiles start from `start`, each trade's value on the simulation market of the as-of
     date (its curves sampled at the simulation tenors), as ORE's start from the cube's `T0`
     (`ValuationEngine::buildCube` prices t=0 on the `ScenarioSimMarket`). The result's
     `base_npv` stays the value on today's market, ORE's NPV analytic."""
-    curve = ZeroCurve.from_config(market.currency(base).discount_curve)
-    p0 = discount(curve, jnp.asarray(scenarios.times, dtype=jnp.float64))
-    numeraire = load(scenarios.numeraire, jnp.float64)
+    curve = ZeroCurve.from_config(market.currency(base).discount_curve, dtype)
+    p0 = discount(curve, jnp.asarray(scenarios.times, dtype=dtype))
+    numeraire = load(scenarios.numeraire, dtype)
     common = dict(numeraire=numeraire, discount=p0, times=scenarios.times, quantiles=quantiles,
                   dates=scenarios.dates, asof=market.asof)
     return column_profiles(columns, start, maturities=[trade_maturity(t) for t in trades], paired=paired,
-                           replicates=replicates, **common)
+                           replicates=replicates, dtype=dtype, **common)

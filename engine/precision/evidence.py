@@ -108,9 +108,13 @@ def combination(precision: Precision, stages: Sequence[str], pricing: StagePreci
     format (they change nothing otherwise). Stochastic compute rounding and nondefault
     replicate counts also enter the key. None when every stage is float64: the reference."""
     chosen = [(s, pricing if s == "pricing" else getattr(precision, s)) for s in stages]
-    if all(stage == StagePrecision() for _, stage in chosen):
+    from engine.precision.execution import InternalPrecision
+    if all(stage == StagePrecision() for _, stage in chosen) and precision.internal == InternalPrecision():
         return None
     parts = [f"{s}={stage.storage}/{stage.compute}/{stage.accumulate}" for s, stage in chosen]
+    if precision.internal != InternalPrecision():
+        parts += [f"internal.{name}={getattr(precision.internal, name)}" for name in
+                  ("calibration", "levels", "initial_values", "reductions", "greeks", "output")]
     parts += [f"{s}.compute_rounding={stage.compute_rounding}" for s, stage in chosen
                if stage.compute_rounding != "nearest"]
     from dataclasses import asdict

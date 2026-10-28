@@ -183,10 +183,13 @@ def calibrate_on(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: Pr
             f"calibration grid {engine.reference_calibration_grid!r} lies in its exercise window; ORE's LgmBuilder "
             f"refuses to build it (no calibrating swaption provided)")
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
+    dtype = context.calibration_dtype
+    from engine.precision.prepare import cast_floating
+    disc, index = cast_floating((disc, index), dtype)
     vols = np.array([context.volatility(cfg.currency, b.vol_option_time, b.vol_swap_length) for b in basket])
     result = bootstrap_sigma(basket, disc, index, vols, engine.reversion, engine.solver)
     require_accepted(result, engine.bootstrap_tolerance, f"{cfg.product} {cfg.trade_id!r} on {context.date}")
-    return Calibration(Sigma(jnp.asarray(result.times), result.values), np.asarray(result.market),
+    return Calibration(Sigma(jnp.asarray(result.times, dtype=dtype), result.values), np.asarray(result.market),
                        np.asarray(result.model))
 
 
@@ -197,20 +200,24 @@ def bermudan_value(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: 
     if dated.is_expired():
         return 0.0
     calibration = calibrate_on(dated, engine, context)
-    sigma = Sigma.flat(engine.volatility) if calibration is None else calibration.sigma
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
-    return float(grid_value(prepared_option(dated, engine, sigma, disc, index)))
+    dtype = (disc.log_discounts if hasattr(disc, "log_discounts") else disc.pillar_rates).dtype
+    sigma = Sigma.flat(engine.volatility, dtype) if calibration is None else calibration.sigma.astype(dtype)
+    from engine.precision.prepare import cast_floating
+    return float(grid_value(cast_floating(prepared_option(dated, engine, sigma, disc, index), dtype)))
 
 
 def built_sigma(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market,
-                scenarios: ScenarioMarket) -> Sigma:
+                scenarios: ScenarioMarket, dtype=jnp.float64) -> Sigma:
     """The LGM volatility ORE builds the trade with and keeps on every path (see the module
     docstring): calibrated on the simulation market of the as-of date (the engine's own with
     `calibration="None"`, or with no exercise left), in float64, as every calibration (A-10) and
     the model the induction's level and grid are on. A calibration that misses its basket is
     refused, naming the trade."""
-    built = calibrate_on(cfg, engine, simulation_market_today(market, scenarios.tenors))
-    return Sigma.flat(engine.volatility) if built is None else built.sigma
+    context = dataclasses.replace(simulation_market_today(market, scenarios.tenors, dtype),
+                                  calibration_dtype=jnp.dtype(dtype).name)
+    built = calibrate_on(cfg, engine, context)
+    return Sigma.flat(engine.volatility, dtype) if built is None else built.sigma
 
 
 def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market, scenarios: ScenarioMarket,
@@ -234,7 +241,7 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
     columns = [jnp.zeros(scenarios.num_paths, dtype=arithmetic.dtype)] * len(scenarios.dates)
     if not alive:
         return jnp.stack(columns, axis=1)
-    sigma = built_sigma(cfg, engine, market, scenarios)
+    sigma = built_sigma(cfg, engine, market, scenarios, arithmetic.calibration)
     history = dict(cfg.fixings)
     fixing_serials = _fixing_serials(cfg)
     grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
@@ -245,7 +252,8 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
         fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials
                          if asof.serialNumber() <= s < date.serialNumber()}
         dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
-        option = prepared_option(dated, engine, sigma, built_on=asof)
+        from engine.precision.prepare import cast_floating
+        option = cast_floating(prepared_option(dated, engine, sigma, built_on=asof), arithmetic.levels)
         level, step, path_known = _known_rates(option, history, asof, grid_serials, fixing_levels)
         prepared.append(dataclasses.replace(option, float_known_rates=level))
         known.append((step, path_known))

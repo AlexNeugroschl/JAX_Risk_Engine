@@ -53,11 +53,13 @@ def test_tpu_primitive_fp32_and_bf16_pass_capability_checks():
 
 
 @pytest.mark.parametrize("field", [f.name for f in dataclasses.fields(InternalPrecision)])
-def test_fixed_kernel_precision_cannot_be_relabelled_float32(field):
-    with pytest.raises(ValueError, match=f"InternalPrecision.{field}: only float64"):
-        InternalPrecision(**{field: "float32"})
+def test_internal_kernel_precision_supports_fp32_but_rejects_low_accumulation(field):
+    assert getattr(InternalPrecision(**{field: "float32"}), field) == "float32"
+    assert getattr(PrecisionSchema.model_validate({"internal": {field: "float32"}}).to_dataclass().internal, field) == "float32"
+    with pytest.raises(ValueError, match=f"InternalPrecision.{field}: choose"):
+        InternalPrecision(**{field: "float16"})
     with pytest.raises(ValueError):
-        PrecisionSchema.model_validate({"internal": {field: "float32"}})
+        PrecisionSchema.model_validate({"internal": {field: "float16"}})
 
 
 def test_named_backend_is_a_requirement_and_never_a_fallback():
@@ -88,8 +90,7 @@ def test_explicit_process_emulation_cannot_override_native_requirement(monkeypat
 @pytest.mark.parametrize("name", ["float8_e4m3fn", "float8_e5m2_1x"])
 def test_capability_is_not_fp8_instruction_qualification(name):
     assert products.product_execution(name, H100) == "native"
-    with pytest.raises(ValueError, match="native FP8 execution is not qualified"):
-        validate_product(name, "float32", device=H100)
+    validate_product(name, "float32", device=H100)
     validate_product(name, "float32", mode="allow_emulation", device=H100)
 
 

@@ -161,7 +161,8 @@ def jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedul
     product in the compute format; `alive` `[D]` says the option has not expired on each
     date."""
     arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
-    return _jamshidian_cube(terms, model, schedule, times, disc, index, fixings, alive, arithmetic)
+    return _jamshidian_cube(terms.astype(arithmetic.levels), model, schedule,
+                            np.asarray(times, dtype=arithmetic.levels), disc, index, fixings, alive, arithmetic)
 
 
 @partial(jax.jit, static_argnames="model")
