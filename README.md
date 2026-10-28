@@ -1,181 +1,177 @@
 # JAX Risk Engine
 
-An end-of-day market risk engine written in [JAX](https://github.com/google/jax). It
-simulates market scenarios, prices a portfolio across them, and computes sensitivities,
-Value at Risk and Expected Shortfall. The models are ported from
-[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) and validated against it.
+An end-of-day risk engine written in [JAX](https://github.com/google/jax). It simulates
+future market scenarios or replays historical ones, prices a portfolio in each of them, and
+turns the results into the risk figures a bank reports: exposure profiles, sensitivities
+(Greeks), Value at Risk and Expected Shortfall.
 
-The engine is designed to run across multiple TPUs, with a Google Cloud TPU VM as the
-target deployment, and also runs on CPU and on NVIDIA GPUs (Linux or WSL2, the `gpu` extra;
-[user guide](docs/getting-started/user-guide.md#on-a-gpu-linux-or-wsl2-on-windows)). Each job's scenarios are split across the
-devices of its host, or of every host of a TPU pod slice, one engine worker per host running
-each job together ([I-61](docs/planning/known-issues.md#i-61): built and tested on CPU processes;
-its speed against device count is to be measured on TPU and H100). A main research goal is to measure how
-much numeric precision Monte Carlo risk needs: whether many lower-precision simulations,
-run concurrently across TPU devices, can match the VaR and Expected Shortfall of fewer
-double-precision simulations in the same wall-clock time.
+The precision of every stage is configurable, from FP64 down to FP8, so the same job can be
+run at different precisions and the results compared. The whole pipeline compiles through
+XLA and runs on CPUs, GPUs and TPUs, splitting a job across several devices or hosts.
 
-The [precision comparison command](benchmarks/README.md) reports matched-scenario accuracy,
-whole-job time, memory availability and execution settings together on CPU and accelerators.
+The models are ported from [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/),
+the widely used open-source C++ risk library, and every result is tested against ORE itself.
+
+## Why
+
+The project exists to answer two questions:
+
+- **How well does risk calculation run on TPUs?** TPUs are built for large, parallel,
+  low-precision arithmetic, which is what a risk run is: the same pricing math repeated over
+  thousands of scenarios. ORE has no TPU support, so this engine re-implements its models as
+  vectorized JAX programs that do.
+- **How much precision does risk actually need?** Lower precision is much faster on
+  accelerators. The engine measures whether many cheaper low-precision scenarios can match the
+  accuracy of fewer double-precision ones in the same time, and which figures hold up at
+  which formats.
 
 ## Features
 
-- ORE's exposure pipeline, reproduced component by component: the cross-asset model (per
-  currency ORE's LGM, or the Hull-White model in ORE's LGM form; Black-Scholes FX and
-  equity; exact discretization; calibrated to swaption baskets), a scenario market of
-  model-implied curves, and every trade repriced on every path with its own t=0 engine,
-  including ORE's fixing, cash-flow and exercise rules. Sobol sequences with a Brownian
-  bridge.
-- Pricing, as ORE's default engines price: interest rate swaps (`DiscountingSwapEngine`),
-  European swaptions (Bachelier on market swaption volatilities, physical or cash settled),
-  Bermudan and American swaptions (each on its own LGM, calibrated to ORE's basket for the
-  trade, accepted or refused as ORE's builder accepts the fit, and priced by ORE's numeric LGM
-  engine), and US Treasury bills and notes
-- Exposure profiles with ORE's `ExposureCalculator` definitions: EPE, ENE, EE_B, EEE_B, PFE,
-  time-weighted EPE_B/EEPE_B and the Basel one-year figures
-- Sensitivities as ORE's sensitivity analysis computes them: bump-and-revalue Delta and Gamma
-  per curve tenor, Vega per swaption quote, and Theta on the rolled market, each option model
-  recalibrated under every shift; or the same Greeks by automatic differentiation on ORE's
-  sensitivity market, ORE's in the limit of a vanishing shift, a calibrated option's through its
-  calibration
-- Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
-  Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
-  conventions and uncertainty from independent Sobol scrambles or historical moving blocks
-  (one scramble reports unavailable errors; nominal confidence intervals are
-  [unavailable without a validated tail bound](docs/reference/sampling-uncertainty.md)), in one reporting currency (each trade
-  converted at the as-of FX spot, which is not shocked)
-- One run request for every analytic, as ORE runs a portfolio with a list of analytics:
-  `engine.run.run(RunRequest)` in Python and `POST /runs` over HTTP, with `npv`, `exposure`,
-  `sensitivities`, `market_risk` and `calibration`, the whole request checked before any work and
-  a setting no requested analytic reads refused by name
-- One run configuration, as ORE configures a run with its files and with
-  ORE's defaults: the simulation and its model per currency (LGM or Hull-White), the engine
-  per product (Bachelier or Jamshidian Europeans, ORE's LGM grid for Bermudans/Americans),
-  the root solver of every calibration and exercise boundary (a safeguarded Newton method, or
-  the bisection it replaced, kept as the reference), the Greeks method (bump or AD) and ORE's
-  sensitivity settings, and the precision per stage.
-  Every option runs with every other; an option not implemented yet is refused by name
-  rather than substituted ([decisions](compliance/decisions.md))
-- Trades as ORE books them: each names its id, its valuation date, its currency and index,
-  and carries no model or curve of its own
-- Adjustable precision, since which precision each calculation needs is what the project
-  studies: compute in FP64, FP32, TF32, BF16 passes, FP16, BF16 or FP8 (matrix products in the
-  format, accumulated in FP32, in kernels written so that only each path's deviation from a
-  level enters a product, the operand every path shares carried in two terms of the format so
-  that its rounding biases no figure, the single pass selectable to measure it; native or
-  emulated by device; the Bermudan/American rollback too, as one operator per step shared by
-  every path) and storage in FP64, FP32, FP16, BF16 or FP8 per stage (the
-  simulation, the scenario market, path pricing) of a portfolio or market-risk run, storage
-  below 32 bits with a power-of-two scale per block of 32 paths and nearest or stochastic
-  rounding; calibration, today's values, Greeks and every reduction over paths kept in FP64;
-  path pricing overridable per product and per trade (say, Bermudans in FP64 inside an FP32
-  run); a precision report on every result (the policy as run, the formats read from the
-  arrays, the device) and an optional paired float64 sample that corrects mean figures (EPE,
-  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64; each
-  option's exercise decisions on every path and date in the result, and the share a format
-  flips measured; an
-  evidence table of which combinations meet the acceptance standard for which figure, up to how
-  many paths ([compliance/precision-evidence.md](compliance/precision-evidence.md)), and a
-  warning on every result for each figure without a passing row
-  ([design](docs/planning/details/precision.md))
-- HTTP API reaching every setting the engine has, each field's value shown to arrive in the
-  engine: one run request, its result saying what each figure is (the configuration as run, each
-  per-trade figure a row keyed by its trade, each Greek's factors, the engine's revision and
-  library versions), a cube or P&L by chunked, hashed reference or inline; runs executed by one
-  engine worker process per host behind a durable job queue, a retried submission one run, a run
-  cancellable at a phase boundary, finished runs kept for a set period; plus a versioned end-of-day
-  contract for hash-verified portfolio bundles
+**Simulation**
+- ORE's cross-asset model: the LGM or Hull-White model per currency, Black-Scholes FX and
+  equity, with correlations between them
+- Calibration to swaption volatility baskets
+- Sobol quasi-random paths with a Brownian bridge
 
-## ORE and hardware acceleration
+**Instruments**
+- Interest rate swaps
+- European swaptions (Bachelier, or Jamshidian on Hull-White), physical or cash settled
+- Bermudan and American swaptions, each calibrated to its own basket and priced by backward
+  induction on an LGM grid
+- US Treasury bills and notes
 
-ORE is written in C++ and runs on CPU, with multi-threaded valuation and adjoint
-algorithmic differentiation. It also has a compute-framework interface that offloads its
-scripted-trade and AMC workloads to GPUs through OpenCL or CUDA, in single precision by
-default. It has no TPU support.
+**Analytics**
+- **NPV**: today's value of every trade
+- **Exposure**: a `[paths, dates, trades]` NPV cube and the standard profiles (EPE, ENE, EE,
+  EEE, PFE, EEPE)
+- **Sensitivities**: Delta and Gamma per curve tenor, Vega per volatility quote, and Theta, by
+  bump-and-revalue or by automatic differentiation
+- **Market risk**: short-horizon VaR and Expected Shortfall by full revaluation under Monte
+  Carlo or historical shocks
+- **Calibration**: the fitted model parameters and how well they fit
 
-This project re-implements the relevant ORE models as vectorized JAX programs, so the full
-pipeline (simulation, pricing, calibration, sensitivities and risk) compiles through XLA
-and can run on TPUs.
+**Precision**
+- Storage and compute formats chosen per stage (simulation, scenario market, pricing), per
+  product or per trade: FP64, FP32, TF32, BF16, FP16 and FP8
+- Low-precision storage with per-block scaling and optional stochastic rounding
+- Every result reports the precision it actually ran at, and can carry a float64 reference
+  sample to measure the error
 
-## Validation
+**Running it**
+- One request for every analytic over an HTTP API, with a background job queue, cancellation
+  and chunked result download
+- Integration with [TraderX](https://github.com/finos/traderX), the FINOS reference trading
+  platform, which submits end-of-day portfolio bundles
 
-Pricing and risk formulas are mapped to their counterparts in ORE's C++ source and tested
-against ORE running in the same process:
+## Validation against ORE
 
-- Every trade type at t=0 agrees with ORE's own engine: swaps, Europeans and bonds to about
-  `1e-14`, calibrated Bermudans and Americans to `4e-11` (a shared test portfolio on a
-  sloped two-curve market).
-- On simulated paths each component agrees with ORE: the cross-asset model's analytics to
-  `1e-12` (the Hull-White model's bonds against QuantLib's `HullWhite` too), and every
-  pricer on a path's curves against the matching ORE engine to between `1e-12` and `1e-10`,
-  under either interest-rate model.
-- Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
-  own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
-  Bermudans (on a fixed LGM) to `2e-13`, and calibrated Bermudans and Americans, recalibrated
-  under every scenario as ORE's historical P&L recalibrates them, to `7e-11`.
-- The assembled simulation and exposure against ORE's own exposure simulation, run in-process:
-  on ORE's paths every trade's NPV equals ORE's cube to `3e-11` of its scale, calibrated
-  Bermudans and Americans included (each keeps the LGM calibrated when the trade was built on
-  the as-of date, as ORE's simulation does), ORE's exposure definitions hold on its cube to
-  `2e-13`, and the profiles agree in distribution.
-- The bump-and-revalue sensitivities against ORE's own sensitivity analytic, run in-process on
-  the shared portfolio: every Delta, Gamma, Vega and Theta of every trade, calibrated Bermudans
-  and Americans recalibrated, to `2e-14` of the trade's NPV. The AD Greeks are ORE's as the
-  shift vanishes (its forward-difference Delta less half its Gamma to `2e-5` of the largest, for
-  swaps, Europeans and bonds); a grid-priced option's price is piecewise smooth in the rates, so
-  its AD Greeks are the price's derivatives rather than ORE's 1bp differences, and the result
-  says so ([I-78](docs/planning/known-issues.md#i-78)).
-- Beyond the shared portfolio: seeded random markets (sloped, inverted, negative, flat), portfolios
-  (strikes far in and out of the money, seasoned trades with their fixings, both positions and
-  settlements) and settings (every calibration strategy, `ShiftHorizon`, grid and sensitivity
-  setting, Theta across weekends, coupons, fixings and exercises) against ORE's NPV and
-  sensitivity analytics and its own historical-simulation VaR analytic, end to end: every trade's
-  value and Greeks to 1e-10 of its notional, every scenario's P&L to 1e-11. The
-  [parity matrix](docs/reference/ore-parity.md#the-parity-matrix) names, for every product,
-  analytic and public setting, the test that compares it with ORE or the reason none does,
-  generated from the tests.
+The test suite runs ORE in the same process and compares results directly:
 
-See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
+- Today's prices for every trade type match ORE's own pricing engines to between `1e-14` and
+  `4e-11`.
+- On simulated paths, model analytics and every pricer agree with ORE to `1e-10` or better.
+- Exposure cubes match ORE's exposure simulation on the same paths.
+- Bump-and-revalue sensitivities match ORE's sensitivity analysis; AD Greeks match in the limit
+  of a small shift.
+- VaR and ES match ORE repricing every shocked scenario.
+- Randomized markets, portfolios and settings are checked end to end against ORE.
 
-The engine is also integrated with [TraderX](https://github.com/finos/traderX), the FINOS
-reference trading platform, which sends it end-of-day portfolio bundles. This checks the
-engine against another system's data and conventions, and the TraderX team verifies the
-results independently. Treasury bills and notes are currently priced on this path; other
-instruments are added as their market inputs and conventions are agreed. See
-[The TraderX Path](docs/reference/traderx-path.md).
-
-## Getting started
+## Installation
 
 Requires Python 3.11 or later.
 
 ```bash
+git clone https://github.com/AlexNeugroschl/JAX_Risk_Engine.git
+cd JAX_Risk_Engine
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
-.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, as CI runs it: about 4 minutes
-.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite: about 27 minutes
+.venv/bin/python -m pip install -r requirements.txt     # Windows: .venv\Scripts\python.exe
 ```
 
-`-n 8` runs the tests in 8 processes; choose the count by memory (1.5–3 GB each), not by
-cores. The times are with the compiled XLA programs already in `.jax_cache/`: the first run
-after a clone or a jax upgrade compiles them all (the fast tier takes about 11 minutes in one
-process), and later runs read them back.
+`requirements.txt` installs the package with the HTTP API, at the exact versions the ORE
+comparisons were verified against.
 
-Use the virtualenv's interpreter to run the tests; the API and schema tests need
-`pydantic` and `jsonschema`. `requirements.txt` installs the exact versions in
-`constraints.txt`, which the ORE-parity tolerances were verified against. CI runs the fast
-tier on every push and pull request; see
-[Running the tests](docs/getting-started/user-guide.md#running-the-tests) for the tiers,
-the pins, and how to upgrade one.
+Optional extras:
 
-The [User Guide](docs/getting-started/user-guide.md) walks through setup and pricing a
-portfolio from Python or over HTTP.
+| Extra | For |
+|---|---|
+| `api` | the HTTP server (FastAPI, Uvicorn) |
+| `gpu` | GPUs, via JAX's CUDA 13 plugin (Linux, or WSL2 on Windows) |
+| `tpu` | TPUs |
+| `profiling` | collecting and viewing profiler traces (XProf) |
+
+For example, on a Linux machine with a GPU:
+
+```bash
+.venv/bin/python -m pip install -c constraints.txt -e ".[api,gpu]"
+.venv/bin/python -c "import jax; print(jax.devices())"   # [CudaDevice(id=0)]
+```
+
+## Usage
+
+Start the server:
+
+```bash
+.venv/bin/python -m uvicorn engine.api.app:app
+```
+
+Interactive API docs are at `http://127.0.0.1:8000/docs`.
+
+A run takes today's market, a portfolio, the analytics to compute and a configuration. This
+one prices a two-year swap and simulates its exposure under Hull-White on 4,096 paths:
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "market": {"asof": "2026-07-30", "currencies": {"USD": {
+      "discount_curve": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.030,0.030,0.034,0.040,0.046,0.050]},
+      "index_curves": {"USD-SIMINDEX-6M": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.034,0.034,0.038,0.044,0.049,0.052]}}}}},
+    "portfolio": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1000000.0, "fixed_rate": 0.036,
+                   "payer": true, "swap_tenor": "2Y"}],
+    "analytics": ["npv", "exposure"],
+    "config": {"models": {"ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
+               "simulation": {"dates": ["2027-01-30", "2027-07-30", "2028-07-30"], "samples": 4096}}
+  }'
+```
+
+The server answers `202 Accepted` with a `run_id` and runs the job in the background. Fetch the
+result, waiting up to 30 seconds for it to finish:
+
+```bash
+curl "http://127.0.0.1:8000/runs/<run_id>?wait=30"
+```
+
+The result has one row per trade (its value today, exposure and Greeks), the portfolio's
+exposure profile, and the NPV cube.
+
+The available analytics are `npv`, `exposure`, `sensitivities`, `market_risk` and
+`calibration`. Anything left out of the configuration takes ORE's default, and
+`GET /config/defaults` returns every section with its defaults. To change the precision, add
+a `precision` section to `config`, for example to price on the paths in FP32:
+
+```json
+"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}
+```
+
+## Project layout
+
+```
+engine/
+  market_data/        today's market: curves, volatility surfaces, FX spots
+  models/             the interest rate, FX and equity models
+  calibration/        fitting models to market volatilities
+  solvers/            root solvers used by calibration and exercise boundaries
+  market_simulation/  path generation and the simulated scenario market
+  instruments/        trade definitions (swaps, swaptions, Treasuries)
+  pricing/            pricing engines, today and on every path
+  risk/               exposure, Greeks, VaR and Expected Shortfall
+  precision/          precision policies and low-precision storage
+  run/                the run request: the single entry point for every analytic
+  api/                the HTTP server and engine worker
+  traderx/            TraderX end-of-day bundle support
+```
 
 ## Documentation
 
-- [Overview](docs/getting-started/overview.md)
-- [Architecture](docs/concepts/architecture.md)
-- [HTTP API](docs/reference/http-api.md)
-- [The TraderX Path](docs/reference/traderx-path.md)
-- [Planning](docs/planning/README.md): [known issues](docs/planning/known-issues.md), [features](docs/planning/features.md), [roadmap](docs/planning/roadmap.md), and [decisions](compliance/decisions.md)
-- [Precision design](docs/planning/details/precision.md)
-- [Full documentation index](docs/README.md)
+See the [User Guide](docs/getting-started/user-guide.md) for setup on GPUs and TPUs, the full
+set of options, and more examples.

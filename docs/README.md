@@ -17,6 +17,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Understand how the code is organized as software | [Architecture](concepts/architecture.md) |
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
+| Use the HTTP API, with examples of every analytic | [API Guide](getting-started/api-guide.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
 | Interpret standard errors and confidence-interval availability | [Sampling uncertainty](reference/sampling-uncertainty.md) |
 | Consume a TraderX end-of-day bundle (and know what gets refused) | [The TraderX Path](reference/traderx-path.md) |
@@ -24,7 +25,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Trace Python calls and GPU kernels across both engine pipelines | [Python/GPU profiling demo](concepts/profiling-python.md) |
 | Compare CPU/GPU scaling and numerical outputs for each instrument | [GPU scaling study](concepts/gpu-scaling.md) |
-| Arrange Google Cloud permissions and hardware for CPU/GPU/TPU research | [Google Cloud research access](google-cloud-research-access.md) |
+| Arrange Google Cloud permissions and hardware for CPU/GPU/TPU research | [Hardware testing](hardware-testing/README.md) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
 | **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](planning/known-issues.md)** |
@@ -108,6 +109,15 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
   matching `ore::data::LgmBuilder::calibrate()`'s own bootstrap convention.
 - **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
   exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
+- **[Precision profiles and execution](reference/explicit-precision-policy.md)** — the
+  `profile`, internal precision roles and `execution` backend of a run.
+- **[Selecting numerical experiments](reference/numerical-experiments.md)** — per-stage
+  product options for low-precision matrix products.
+
+## Hardware testing
+
+- **[Hardware testing](hardware-testing/README.md)** — running correctness trials on Google
+  Cloud H100s and TPUs, and the dated reports of what they found.
 
 ## Known issues and planning
 

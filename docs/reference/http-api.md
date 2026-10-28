@@ -639,7 +639,7 @@ uncertainty. `uncertainty` echoes the method and settings.
 
 Per-stage numerical product strategies, including residual terms, scaling, BF16
 padding, FP16 subnormal normalization and explicit FP8 algorithms, are configured
-through `config.precision.<stage>.product`. See [Selecting numerical experiments](../getting-started/numerical-experiments.md)
+through `config.precision.<stage>.product`. See [Selecting numerical experiments](numerical-experiments.md)
 for all fields, defaults, compatibility changes and worker compiler requirements.
 
 ## The result: `RunResultSchema`

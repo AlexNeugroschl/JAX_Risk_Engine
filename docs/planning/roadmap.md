@@ -163,6 +163,16 @@ and the first large/holdout studies are complete. The [research report](../../co
 holdouts and the limits of each. Remaining work below extends those measured domains and
 establishes target-device performance.
 
+**Next bounded workload (owner, 2026-10-28):** the
+[100-American-swaption VaR/ES experiment](details/american-swaption-var-es-experiment.md)
+implements F-07's next comparison, with I-121/I-122 checks on the configurations
+measured. First freeze the existing synthetic USD market and a diverse portfolio,
+then validate a small CPU FP64 subset against ORE. Expand to the full portfolio,
+preflight the accelerators and collect matched accuracy/timing before selected
+multipass variants. This experiment uses the explicit FP32 internal profile on
+TPU; the older fixed-FP64 deadline configurations below are not its device policy.
+Resource limits follow local pilot measurements and separate cloud authorization.
+
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 2.1 | **First deadline deliverable: a reproducible result on the first verified target device.** Use the [comparison report](../../benchmarks/README.md) on one single trade and one small portfolio of simple trades and options, with scenario PV and portfolio P&L/VaR/ES. Compare CPU FP64/FP32 references, accelerator FP64/FP32, native FP8 and supported BF16; label the current mixed-precision policy, including FP64 calibration and reductions. Include matched-scenario precision errors and accuracy over multiple seeds/counts, an FP64 reference whose sampling uncertainty is stated, and warm whole-job time at equal accuracy. Count host preparation, calibration, conversions, transfers, pairing if used, reductions and required output; separate compile/cold time. Report peak memory (or explicit unavailability), native/fallback evidence and exact reproduction settings. Start with existing measured pricing settings (I-114); small counts smoke-check the tool, then include counts from 65,536 upward as memory permits to test whether scenario work dominates on this device. Keep failed accuracy targets, memory failures and no-speedup cases visible. Do not wait for exhaustive format/product sweeps, tuning or cluster completion | [F-07](features.md#f-07) (first measured result) | Comparison tooling complete; 1.2 and 1.3 on the device/formats measured | M |

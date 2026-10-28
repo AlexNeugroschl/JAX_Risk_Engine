@@ -33,7 +33,7 @@ below float32 carries it in `ProductOptions.shared_terms` terms: one by default,
 explicit residual terms stacked along its free axis and summed smallest first.
 `ProductOptions.compensated(compute)` selects the previous scaled/residual profile.
 These strategies trade extra quantization, product width and reconstruction for
-less shared-operand rounding bias. See docs/getting-started/numerical-experiments.md.
+less shared-operand rounding bias. See docs/reference/numerical-experiments.md.
 
 `Arithmetic.rounding="stochastic"` rounds only the per-path operand between its two
 neighbours with the exact distance probability. This removes its conditional mean

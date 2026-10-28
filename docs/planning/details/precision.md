@@ -1,7 +1,7 @@
 # Precision
 
 The current execution contract is documented in
-[Explicit precision and execution](../../getting-started/explicit-precision-policy.md).
+[Explicit precision and execution](../../reference/explicit-precision-policy.md).
 It makes A-10's fixed FP64 work explicit as `Precision.internal`, requires native
 execution by default, and refuses unsupported execution rather than coercing it.
 FP64 internal kernels remain implemented at FP64; full TPU jobs are currently

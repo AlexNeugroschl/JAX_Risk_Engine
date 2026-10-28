@@ -124,6 +124,7 @@ confident-looking number that happens to be wrong. See
   [Risk Statistics](../risk/var_es.md)) starts
   with a "Plain-language summary" section before getting into formulas.
 - **Want to actually run the code?** See the [User Guide](user-guide.md).
+- **Want to use the HTTP API?** See the [API Guide](api-guide.md).
 - **Want to understand how the pieces fit together as software?** See
   [Architecture](../concepts/architecture.md).
 - **Want the exact inputs/outputs of every function?** See the

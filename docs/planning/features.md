@@ -207,6 +207,13 @@ See the [dispatch validation](../../compliance/precision-research/2026-10-21/REA
 **Details.** [details/precision.md](details/precision.md);
 [native execution and numerical reliability plan](details/native-fp8-reliability.md).
 
+**Next portfolio experiment (owner, 2026-10-28).** Prepare a frozen synthetic USD
+market and 100 American swaptions, establish ORE/engine CPU FP64 VaR/ES references,
+then measure H100/TPU FP32 and supported FP16/BF16/FP8 product cases, followed by
+explicit multipass variants. Reuse the batched ORE API benchmark; start with a local
+CPU dataset/pilot check before requesting cloud resources.
+[Dataset and execution plan](details/american-swaption-var-es-experiment.md).
+
 <a id="f-09"></a>
 ### F-09 — ORE's XML input files as a run request
 

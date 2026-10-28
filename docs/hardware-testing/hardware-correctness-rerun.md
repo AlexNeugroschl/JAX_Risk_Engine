@@ -12,7 +12,7 @@ pipeline flags locally, identifies an additional subnormal-sensitive native
 FP16 failure, and removes the low-dtype round trip in TPU research emulation.
 These local results do not establish a new H100/TPU qualification.
 
-Subsequent implementation: the [explicit execution policy](explicit-precision-policy.md)
+Subsequent implementation: the [explicit execution policy](../reference/explicit-precision-policy.md)
 now refuses full TPU jobs with their fixed FP64 requirements, implicit product
 emulation, and native-only FP8 on the unqualified compiler path. It does not change
 the numerical findings below or establish new hardware correctness.

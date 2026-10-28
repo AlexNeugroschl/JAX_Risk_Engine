@@ -140,11 +140,11 @@ internals remain core implementations, with no alternative implementation expose
 Changing them requires implementing and validating another kernel, not adding a
 label. Full TPU jobs therefore remain unsupported. The new opt-ins do not resolve
 native FP8 qualification or establish H100 correctness. The subsequent
-[TPU survey](tpu-precision-survey.md) passes the basic/compensated FP32-input product
+[TPU survey](../hardware-testing/tpu-precision-survey.md) passes the basic/compensated FP32-input product
 and storage coverage, including revised FP16 emulation. Run device-specific numerical
 and lowering checks for additional strategies you intend to study.
 
-The subsequent [native TPU probes](tpu-native-precision.md) find passing FP8-typed
+The subsequent [native TPU probes](../hardware-testing/tpu-native-precision.md) find passing FP8-typed
 matrix candidates using ordinary JAX and Pallas. They also find FP32 widening for
 the tested vector shape and compiler rejection of the generic explicit FP8 preset.
 These candidates are not integrated into the current engine/API dispatch.

@@ -444,6 +444,9 @@ test portfolio and its ORE references, and other helpers shared across test modu
 
 ## Running the API
 
+The [API Guide](api-guide.md) walks through the API in detail, with an example of every
+analytic, trade type and precision setting. In short:
+
 Requires the `api` extra (`pip install -e .[api]` — already included if you installed via
 `requirements.txt`). Start the server:
 
@@ -857,7 +860,7 @@ Select `StagePrecision.product=ProductOptions(shared_terms=2, ...)` to carry res
 terms explicitly, or use `StagePrecision.compensated(...)` to reproduce the historical
 scaled/residual profile. The `_1x` names remain accepted and require one shared term.
 Padding, FP16 subnormal normalization, mixed FP8 representation and software products
-are also explicit options; see [Selecting numerical experiments](numerical-experiments.md).
+are also explicit options; see [Selecting numerical experiments](../reference/numerical-experiments.md).
 FP8
 compute still leaves a bias of its own rounding ([I-98](../planning/known-issues.md#i-98)): pair
 such a run with float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects
