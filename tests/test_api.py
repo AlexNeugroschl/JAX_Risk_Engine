@@ -221,7 +221,7 @@ class TestPrecisionOnTheWire:
         ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"},
          "accumulate='float16': narrower than float32"),
         ("market", {"compute": "bfloat16"}, "accumulate='float64': compute='bfloat16' runs on matrix units"),
-        ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than accumulate"),
+        ("simulation", {"compute": "float64", "accumulate": "float32"}, "accumulate='float32': narrower"),
         ("pricing", {"storage": "tensorfloat32", "compute": "tensorfloat32", "accumulate": "float32"},
          "a matrix-product format"),
     ])

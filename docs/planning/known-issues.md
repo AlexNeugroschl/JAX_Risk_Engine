@@ -606,6 +606,14 @@ the oracle now releases completed traceback frames before deleting its temporary
 and preserves the original error. The real seed-35 case and the ownership regression pass.
 This does not establish the cause of earlier XLA aborts or every historical teardown hang.
 
+**2026-10-28, an abort with a fresh cache, inside the cache write.** The fast tier of `b8aa305`
+on Windows CPU, in a fresh clone (empty `.jax_cache/`, `-n auto`, 24 processes), lost eight xdist
+processes at about 62% to `Fatal Python error: Aborted`, each crashing thread in
+`jax/_src/compilation_cache.py` (`put_executable_and_time`, from `compiler.py`'s
+`_cache_write`); 4,020 passed. The eight tests' 25 IDs then passed in that clone, its cache
+now warm, at `-n 4`. This rules the cache in for this abort: concurrent first writes of a cold
+cache on Windows. Not seen on Linux CI, whose cold runs were green (`f9cc4c1`).
+
 **Current handling.** No executor pool exists. Benchmark child trees have explicit ownership
 on Windows/POSIX; each batch drops the process's compiler state on exit. CI's full job is
 weekly/manual, bounded, and retains hidden output directories even on failure. Its new
