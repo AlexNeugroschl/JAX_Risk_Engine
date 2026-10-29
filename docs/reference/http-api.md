@@ -576,7 +576,8 @@ a basic product rounds the shared operand once. Set `product.shared_terms` to se
 residual terms explicitly; `_1x` formats require one term. `compute` is the format of a
 stage's matrix products, `accumulate` the format they accumulate in and the rest of the stage
 runs in: float32 or float64, at least as wide as `compute`, and float32 under a compute format
-below float32; `storage` no wider than `accumulate` and not a product format. Every product
+below float32; `storage` any array format, not a product format (wider than `accumulate` is
+accepted and does not recover what the arithmetic lost). Every product
 takes every compute format (the Bermudan/American rollback since 2026-10-13). An inconsistent
 stage is a `400` naming the stage (or override, e.g. `config.precision.by_trade['swap-7']`), the
 field and the rule. So is `"rounding": "stochastic"` or `"offset": "none"` when no stage

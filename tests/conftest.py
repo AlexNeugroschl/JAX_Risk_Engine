@@ -111,6 +111,35 @@ def _return_freed_memory_to_the_os():
             pass
 
 
+#: The commit charge one test process is allowed for under `-n auto` on Windows: the largest of 24
+#: reached 4.4 GB, their mean about 3 (2026-10-28).
+_COMMIT_PER_TEST_PROCESS = 4 << 30
+
+
+class _MemoryStatus(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+        (name, ctypes.c_ulonglong) for name in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                                                "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+
+
+@pytest.hookimpl(wrapper=True, optionalhook=True)
+def pytest_xdist_auto_num_workers(config):
+    """`-n auto` on Windows: no more test processes than the free commit charge holds, at
+    `_COMMIT_PER_TEST_PROCESS` each (I-27). xdist starts one per core whatever the memory, and
+    Windows does not overcommit: on a 24-core machine the fast tier's 24 processes took the
+    commit charge to 118.9 GB of its 121.3 GB limit, and in another run eight of them aborted on a
+    failed allocation (inside XLA's `serialize`, writing the compilation cache). Linux
+    overcommits, and CI's 4-vCPU runner is bounded by its cores. `PYTEST_XDIST_AUTO_NUM_WORKERS`
+    still sets the count outright."""
+    count = yield
+    if sys.platform != "win32" or os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS"):
+        return count
+    status = _MemoryStatus(dwLength=ctypes.sizeof(_MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return count
+    return max(1, min(count, status.ullAvailPageFile // _COMMIT_PER_TEST_PROCESS))
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _stop_the_engine_worker_after_each_module():
     """Stop the engine worker a module's HTTP jobs started, so the modules after it do not run

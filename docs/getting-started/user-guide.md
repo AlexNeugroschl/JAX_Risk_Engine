@@ -377,6 +377,9 @@ three things matter:
   by available memory and measured peaks, not logical cores. Long-lived processes can grow
   to 8–9 GB during the full suite despite cache clearing; use fresh batches for that tier.
   `--dist loadscope` can reuse module fixtures but also keeps their compiled state together.
+  On Windows `-n auto` starts no more processes than the free commit charge holds at 4 GiB
+  each, since a process aborts when an allocation crosses the commit limit (I-27);
+  `PYTEST_XDIST_AUTO_NUM_WORKERS` sets the count outright.
 
 The following timing table is historical; it does not size the current suite.
 

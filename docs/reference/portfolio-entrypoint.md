@@ -119,7 +119,8 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 `compute` is the format of a stage's matrix products (their operands, and how the product
 runs), `accumulate` the format the products accumulate in and every other operation of the
 stage runs in (float32 or float64, and float32 under a compute format below float32), `storage`
-the format its output is kept in until the next stage reads it (no wider than `accumulate`).
+the format its output is kept in until the next stage reads it (it may be wider than
+`accumulate`, which does not recover what the arithmetic lost).
 `storage` is `"float64"`, `"float32"`, `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
 `"float8_e5m2"` (2026-10-02); `compute` any of these, or `"tensorfloat32"` or `"bfloat16_3x"`,
 a float32 product run as TensorFloat-32 or as three bfloat16 passes (2026-10-10), or a format's

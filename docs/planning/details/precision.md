@@ -261,9 +261,10 @@ Checked before any work, by `engine/precision/policy.py`, each refusal naming it
   (no matrix unit accumulates narrower), at least as wide as `compute`'s values, and float32
   under a compute format below float32, whose matrix units accumulate in float32
   (`engine.precision.arithmetic.arithmetic_refusal`, shared by `Arithmetic`);
-- `storage` is an array format no wider than `accumulate` (storing wider than the stage
-  computes gains nothing; until the kernel rewrite, no wider than `compute`, which accumulated
-  in itself);
+- `storage` is an array format, since 2026-10-28 also one wider than `accumulate` (storage and
+  arithmetic are independent; the wider format does not recover what the arithmetic lost).
+  Until then it was no wider than `accumulate`, and until the kernel rewrite no wider than
+  `compute`, which accumulated in itself;
 - a compute format the table marks pending is refused naming its item (none since the kernel
   rewrite, 2026-10-10; FP4 will be until F-07's FP4 part);
 - every `by_trade` key is a trade in the request, every `by_product` key a product;
@@ -1543,8 +1544,9 @@ record of stages 1 and 2.
 
 ### 13.2 Configuration
 
-- Unknown formats, compute below the enabled floor, storage wider than compute, accumulate
+- Unknown formats, compute below the enabled floor, a product format as storage, accumulate
   narrower than compute, unknown trade ids and products: refused, each naming its field.
+  Storage wider than accumulate is accepted (since 2026-10-28).
 - The old `PrecisionConfig` shape: refused in Python and with a 422 over HTTP, naming the
   replacement.
 - A completeness test: every field of `Precision` and `StagePrecision` exists in the HTTP

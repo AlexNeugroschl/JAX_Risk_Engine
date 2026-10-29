@@ -606,16 +606,24 @@ the oracle now releases completed traceback frames before deleting its temporary
 and preserves the original error. The real seed-35 case and the ownership regression pass.
 This does not establish the cause of earlier XLA aborts or every historical teardown hang.
 
-**2026-10-28, an abort with a fresh cache, inside the cache write.** The fast tier of `b8aa305`
-on Windows CPU, in a fresh clone (empty `.jax_cache/`, `-n auto`, 24 processes), lost eight xdist
-processes at about 62% to `Fatal Python error: Aborted`, each crashing thread in
-`jax/_src/compilation_cache.py` (`put_executable_and_time`, from `compiler.py`'s
-`_cache_write`); 4,020 passed. The eight tests' 25 IDs then passed in that clone, its cache
-now warm, at `-n 4`. This rules the cache in for this abort: concurrent first writes of a cold
-cache on Windows. Not seen on Linux CI, whose cold runs were green (`f9cc4c1`).
+**2026-10-28, a Windows abort from the commit limit, fixed for `-n auto`.** The fast tier of
+`b8aa305` on Windows CPU (24 cores, 31 GB, a 121.3 GB commit limit), in a fresh clone at
+`-n auto` (24 processes), lost eight xdist processes at about 62% to `Fatal Python error:
+Aborted` with no XLA message, each crashing thread in `jax/_src/compilation_cache.py`
+(`put_executable_and_time`, at `executable.serialize()`); 4,020 passed. The cache is ruled
+out: its seven modules passed at `-n 8` from an empty cache, and the abort comes before any
+file is written. Memory is ruled in: a rerun at `-n auto` logging the commit charge every 2 s
+finished, but the charge peaked at 118.9 GB of 121.3 (47.8 GB of it other programs'), the 24
+processes at 70.9 GB private, the largest 4.4. Windows does not overcommit, so the allocation
+that crosses the limit fails, and `serialize` copies every program the suite compiles (the
+cache's minimum compile time is 0). `tests/conftest.py` now caps `-n auto` on Windows at the
+free commit charge over 4 GiB a process: 18 here, and the fast tier of `06dd206` with that cap
+passed from an empty cache, 4,029 passed and 10 skipped in 8m12s, at a 109.2 GB peak. Linux
+overcommits, and CI's runner is bounded by its four cores.
 
 **Current handling.** No executor pool exists. Benchmark child trees have explicit ownership
-on Windows/POSIX; each batch drops the process's compiler state on exit. CI's full job is
+on Windows/POSIX; each batch drops the process's compiler state on exit. On Windows, `-n auto`
+starts no more test processes than the free commit charge holds at 4 GiB each. CI's full job is
 weekly/manual, bounded, and retains hidden output directories even on failure. Its new
 configuration has not been exercised on the 16 GB hosted runner.
 

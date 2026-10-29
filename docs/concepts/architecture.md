@@ -480,8 +480,9 @@ scenario market are shared by every trade, so they have no overrides.
 the format of its matrix products; `accumulate` the format those products accumulate in and
 the rest of the stage runs in. The format names come from one table
 (`engine/precision/formats.py`), which validation, the HTTP schema, storage and the products all
-read. `storage` is an array format no wider than `accumulate` (`float64`, `float32`, and since
-2026-10-02 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`); `compute` any format of the
+read. `storage` is an array format (`float64`, `float32`, and since 2026-10-02 `float16`,
+`bfloat16`, `float8_e4m3fn`, `float8_e5m2`), since 2026-10-28 also one wider than `accumulate`,
+which does not recover what the narrower arithmetic lost; `compute` any format of the
 table, since 2026-10-10 the four below float32 and the product formats `tensorfloat32` and
 `bfloat16_3x` too, and since 2026-10-11 each format's single pass, `<format>_1x`;
 `accumulate` float32 or float64, and float32 under a compute format below
