@@ -14,13 +14,32 @@ pipeline (`scenarios`, `revaluation`).
 
 Shocks are **absolute** zero-rate moves: a rate can be zero or negative, and a
 relative move is undefined there (Basel plan decision D-6).
+
+An equity's spot is a factor too (TraderX fork, R1): `equity:<symbol>`, one node whose value
+is the log spot (`SpotFactor`), labelled `"equity:<symbol>/spot"`, so an absolute move of it is
+a lognormal move of the spot. `from_market` lists the market's equities after its curves.
 """
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from engine.market_data.market import Market, ZeroCurveConfig
+
+
+@dataclass(frozen=True)
+class SpotFactor:
+    """An equity's spot as a risk factor: one node at time 0 whose value is the log spot."""
+    spot: float
+
+    @property
+    def times(self) -> List[float]:
+        return [0.0]
+
+    @property
+    def rates(self) -> List[float]:
+        return [math.log(self.spot)]
 
 
 @dataclass(frozen=True, eq=False)
@@ -39,8 +58,8 @@ class RateRiskFactors:
         if len(set(self.names)) != len(self.names):
             raise ValueError(f"curve names must be unique; got {list(self.names)}")
         for name, curve in zip(self.names, self.curves):
-            if not isinstance(curve, ZeroCurveConfig):
-                raise TypeError(f"curve {name!r} must be a ZeroCurveConfig; got {type(curve).__name__}")
+            if not isinstance(curve, (ZeroCurveConfig, SpotFactor)):
+                raise TypeError(f"curve {name!r} must be a ZeroCurveConfig or a SpotFactor; got {type(curve).__name__}")
 
     @classmethod
     def from_curves(cls, curves: Sequence[ZeroCurveConfig], names: Optional[Sequence[str]] = None) -> "RateRiskFactors":
@@ -50,7 +69,7 @@ class RateRiskFactors:
     @classmethod
     def from_market(cls, market: Market) -> "RateRiskFactors":
         """Every curve of `market`: per currency, its discount curve and then its index curves
-        by name."""
+        by name; then every equity's spot, by symbol."""
         curves, names = [], []
         for currency, data in market.currencies.items():
             curves.append(data.discount_curve)
@@ -58,6 +77,9 @@ class RateRiskFactors:
             for index in sorted(data.index_curves):
                 curves.append(data.index_curves[index])
                 names.append(curve_name("index", index))
+        for symbol in sorted(market.equities):
+            curves.append(SpotFactor(market.equities[symbol].spot))
+            names.append(curve_name("equity", symbol))
         return cls(curves=tuple(curves), names=tuple(names))
 
     def index_of(self, name: str) -> int:
@@ -87,9 +109,10 @@ class RateRiskFactors:
 
     def labels(self) -> List[str]:
         """One label per factor, `"<curve>/<pillar time>y"`, in vector order."""
-        return [f"{name}/{t:g}y" for name, curve in zip(self.names, self.curves) for t in curve.times]
+        return [f"{name}/spot" if isinstance(curve, SpotFactor) else f"{name}/{t:g}y"
+                for name, curve in zip(self.names, self.curves) for t in curve.times]
 
 
 def curve_name(kind: str, name: str) -> str:
-    """A market curve's factor name: `discount:<ccy>` or `index:<index name>`."""
+    """A market curve's factor name: `discount:<ccy>`, `index:<index name>` or `equity:<symbol>`."""
     return f"{kind}:{name}"

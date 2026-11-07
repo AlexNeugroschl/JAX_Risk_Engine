@@ -10,6 +10,7 @@ NPV is dirty. The coupon schedule is supplied, not generated.
 The TraderX path prices TraderX's bills and notes with its own pricers
 (`engine.traderx.bill`, `engine.traderx.note`).
 """
+import math
 from dataclasses import dataclass, field
 from typing import ClassVar, Optional, Sequence, Tuple
 
@@ -56,6 +57,10 @@ class BondConfig:
     #: Coupon accrual day count; refused if unsupported. Ignored without coupons.
     accrual_day_count: str = "ACT/ACT (ICMA)"
     currency: str = "USD"
+    #: Flat continuously compounded credit spread over the currency's discount curve, on the
+    #: ACT/365 time axis (ORE's `ZeroSpreadedTermStructure`; TraderX R4, corporate bonds). Held
+    #: fixed under market-risk scenarios. 0 is a Treasury.
+    credit_spread: float = 0.0
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
     #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
@@ -70,6 +75,8 @@ class BondConfig:
                 f"no remaining cashflow to discount; its value is a settlement "
                 f"question, not a pricing one."
             )
+        if not math.isfinite(self.credit_spread):
+            raise BondPricingError(f"credit_spread={self.credit_spread} is not finite")
         if self.redemption_fraction < 0:
             raise BondPricingError(
                 f"redemption_fraction={self.redemption_fraction} is negative"

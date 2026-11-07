@@ -70,7 +70,16 @@ class LgmSwaptionEngineConfig:
         model.
     n_per_std / std_devs: the Grid engine's `nx`/`sx` (ORE's example: 30 and 5).
     exercise_time_steps_per_year: an American's exercise grid.
+    exercise_on_period_starts: TraderX fork (R5): an American's grid also holds every start of
+        an underlying period inside its window, the dates a Bermudan on the same swap exercises
+        on, so the American is never worth less than that Bermudan on one model. ORE's grid is
+        uniform alone (False, the default): at 24 steps a year it misses those dates by up to
+        half a month and prices the American below the Bermudan.
     swap_index: the conventions the calibration helpers are built on.
+    swap_index_from_trade: TraderX fork: each trade's helpers are built on its own underlying's
+        conventions instead (fixed tenor and index tenor its `index_tenor_months`, fixed day
+        counter its accrual's: an overnight index's, else ACT/365), so one portfolio's options on
+        different indices each calibrate to their own (`engine.pricing.bermudan.trade_swap_index`).
     solver: the root solver of the bootstrap's buckets and of each helper's y*
         (`engine.solvers.roots`, decision A-21): `"Newton"` (the default) or `"Bisection"`
         (the reference, the engine's numbers before Newton bit for bit). Both reach
@@ -86,7 +95,9 @@ class LgmSwaptionEngineConfig:
     n_per_std: int = 30
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24
+    exercise_on_period_starts: bool = False
     swap_index: SwapIndexConventions = SwapIndexConventions()
+    swap_index_from_trade: bool = False
     solver: str = DEFAULT_SOLVER
 
     def __post_init__(self):
@@ -181,9 +192,15 @@ class PricingConfig:
             american = product == AmericanSwaptionConfig.product
             engine = self.american if american else self.bermudan
             steps = f" steps_per_year={engine.exercise_time_steps_per_year}" if american else ""
+            steps += " period_starts" if american and engine.exercise_on_period_starts else ""
             model = "recalibrated" if recalibrated and engine.calibrates else "fixed"
             # The state grid by ORE's names, `nx`/`sx`.
             return f"engine=LgmGrid nx={engine.n_per_std} sx={engine.std_devs:g}{steps} model={model}"
+        if product == "equity":
+            return "engine=Spot"
+        if product == "equity_option":
+            # TraderX fork (R2): `engine.pricing.equity`'s grid, always float64.
+            return "engine=FdBlackScholes nx=801 nt=400"
         raise ValueError(f"no pricing engine for product {product!r}")
 
 

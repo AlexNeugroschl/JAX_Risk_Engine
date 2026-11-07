@@ -51,7 +51,9 @@ import numpy as np
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.equity import EquityOptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
+from engine.instruments.treasury import BondConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import shard_scenarios, unused_devices_warning
 from engine.precision import (
@@ -164,12 +166,14 @@ def _run_market_risk(request, execution):
     from engine.run.trace import phase, trade_pricing_phase
 
     base, columns, stored = [], [], []
+    per_contract = {}
     with phase("revaluation"):
         for i, (cfg, spot) in enumerate(zip(request.trades, spots)):
             with trade_pricing_phase(i, cfg):
                 stage = precision.precision_for(cfg)
                 arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
-                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution)
+                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution,
+                                              per_contract)
                 base.append(value * spot)
                 stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
                 column = load(stored[-1], precision.internal.dtype("reductions"))
@@ -233,20 +237,38 @@ def _run_market_risk(request, execution):
     )
 
 
-def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution):
+def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution, per_contract=None):
     """One trade's base value and P&L `[S]` under `moves`, in `arithmetic` (the moves' own
-    format by default; `revalue_trade`)."""
+    format by default; `revalue_trade`).
+
+    An equity option is revalued once per contract and arithmetic (`per_contract`, TraderX fork):
+    one share's value and P&L, times the trade's shares (the same numbers as revaluing the trade at
+    float64, `EquityOptionPnl`), so every position in one listed contract shares one grid run."""
+    if per_contract is not None and isinstance(cfg, EquityOptionConfig):
+        key = (cfg.symbol, cfg.option_type, cfg.strike, cfg.expiry_date.serialNumber(), cfg.exercise, cfg.currency,
+               jnp.dtype(arithmetic.dtype).name)
+        if key not in per_contract:
+            share = dataclasses.replace(cfg, quantity=1.0, multiplier=1.0)
+            per_contract[key] = _revalue_trade(share, request.market, request.scenarios.factors, moves,
+                                               request.pricing, request.batch_size, arithmetic, execution)
+        value, pnl = per_contract[key]
+        return value * cfg.units, (pnl * jnp.asarray(cfg.units, dtype=pnl.dtype)).astype(pnl.dtype)
     return _revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing, request.batch_size,
                           arithmetic, execution)
 
 
-@jax.jit
 def _in_reporting_currency(columns, spots):
     """Each trade's decoded P&L column `[S]` times its FX spot into the reporting currency:
     the `[S, N]` P&L and its sum over trades `[S]`. A spot of 1.0 leaves a column's bits as
-    they are. One program per scenario and trade count."""
-    pnl = jnp.stack(columns, axis=-1) * spots
-    return pnl, jnp.sum(pnl, axis=-1)
+    they are.
+
+    Assembled on the host (TraderX R6): a jitted or eager `jnp.stack` of N operands compiles a
+    program per trade count whose XLA CPU compile time grows about as N^2.3 (47 s at 4,000
+    trades, 280 s at 8,000), so a 26,000-trade book never finished compiling. `np.stack` has no
+    compile step; the columns are already loaded at the reductions dtype."""
+    spots = np.asarray(spots)
+    pnl = np.stack([np.asarray(c) for c in columns], axis=-1) * spots.astype(np.asarray(columns[0]).dtype)
+    return jnp.asarray(pnl), jnp.asarray(np.sum(pnl, axis=-1))
 
 
 def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfolio_pnl, paired: int, execution) -> Dict:
@@ -363,6 +385,14 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
             f"to which a calibrated LGM is recalibrated in every scenario, a fixed LGM or the Jamshidian model): "
             f"only curve pillar rates are shocked, so volatility risk is not in this VaR/ES."
         )
+    equity_options = [cfg.trade_id for cfg in request.trades if isinstance(cfg, EquityOptionConfig)]
+    if equity_options:
+        out.append(f"trades {equity_options} are equity options priced with their equities' volatilities and dividend "
+                   f"yields held: only the spot and the discount curve move, so volatility risk is not in this VaR/ES.")
+    spread = [cfg.trade_id for cfg in request.trades if isinstance(cfg, BondConfig) and cfg.credit_spread != 0.0]
+    if spread:
+        out.append(f"trades {spread} are bonds priced with their credit spreads held: credit spread risk is not in "
+                   f"this VaR/ES.")
     converted = [cfg.trade_id for cfg in request.trades if cfg.currency != request.base_currency]
     if converted:
         out.append(

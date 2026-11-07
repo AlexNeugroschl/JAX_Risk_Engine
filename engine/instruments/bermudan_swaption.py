@@ -21,7 +21,9 @@ import ORE
 from engine.instruments._validation import (
     _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
 )
-from engine.instruments.schedules import book_swap_dates, build_vanilla_swap, is_live, validate_fixings
+from engine.instruments.schedules import (
+    book_swap_dates, build_vanilla_swap, is_live, overnight_index, refuse_in_progress_overnight, validate_fixings,
+)
 from engine.market_data.day_counts import time_from_reference
 
 
@@ -67,6 +69,10 @@ class BermudanSwaptionConfig:
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
+    #: TraderX fork (R3): an overnight index (`engine.instruments.schedules.OVERNIGHT_INDICES`,
+    #: e.g. "USD-SOFR") makes the swap an OIS on its conventions, compounded in arrears and
+    #: paying every `index_tenor_months`; None is the generic term index.
+    overnight_index: Optional[str] = None
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
     settlement: str = "Physical"
@@ -79,7 +85,7 @@ class BermudanSwaptionConfig:
     exercise_style = ExerciseStyle.BERMUDAN
 
     def option_times(self, exercise_time_steps_per_year: Optional[int] = None,
-                     built_on: Optional[ORE.Date] = None) -> List[float]:
+                     built_on: Optional[ORE.Date] = None, period_starts: bool = False) -> List[float]:
         """ORE's Bermudan `optionTimes`: the time of every exercise date strictly after the
         evaluation date (`calculate()`, lines 487-493). The arguments are an American's (its
         step count, and the date its window was built on); a Bermudan ignores them."""
@@ -96,6 +102,7 @@ class BermudanSwaptionConfig:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
+        refuse_in_progress_overnight(self)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)
         if len(self.exercise_dates) == 0:
@@ -113,6 +120,7 @@ def underlying_swap(cfg) -> ORE.VanillaSwap:
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
         index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
+        overnight_index=overnight_index(cfg.overnight_index, cfg.currency),
     )
 
 

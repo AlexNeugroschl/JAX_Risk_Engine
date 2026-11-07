@@ -44,6 +44,7 @@ from engine.api.artifacts import ARRAY_OUTPUTS
 from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.equity import EquityConfig, EquityOptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
@@ -310,10 +311,13 @@ class EquityMarketSchema(_Strict):
     currency: str
     spot: float
     dividend_curve: Optional[ZeroCurveConfigSchema] = None
+    #: Flat Black volatility, for listed options on the equity.
+    volatility: Optional[float] = None
 
     def to_dataclass(self, where: str = "equity") -> EquityMarket:
         return EquityMarket(self.currency, self.spot,
-                            self.dividend_curve.to_dataclass(f"{where}.dividend_curve") if self.dividend_curve else None)
+                            self.dividend_curve.to_dataclass(f"{where}.dividend_curve") if self.dividend_curve else None,
+                            self.volatility)
 
 
 class MarketSchema(_Strict):
@@ -467,7 +471,11 @@ class LgmEngineSchema(_Strict):
     n_per_std: int = 30
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24
+    #: An American also exercises on every underlying period start in its window (TraderX R5).
+    exercise_on_period_starts: bool = False
     swap_index: SwapIndexConventionsSchema = Field(default_factory=SwapIndexConventionsSchema)
+    #: Each trade calibrates on its own underlying's conventions instead of `swap_index` (TraderX fork).
+    swap_index_from_trade: bool = False
     #: The root solver of the calibration and of each helper's exercise boundary (decision A-21).
     solver: SolverName = DEFAULT_SOLVER
 
@@ -548,13 +556,16 @@ class _SwapTerms(_Trade):
     swap_tenor: Optional[str] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
+    #: An overnight index ("USD-SOFR", "EUR-ESTR", "GBP-SONIA", "JPY-TONA") makes the swap an OIS
+    #: on that index's conventions (`engine.instruments.schedules.OVERNIGHT_INDICES`).
+    overnight_index: Optional[str] = None
 
     def _common(self, evaluation_date, trade_id):
         return dict(notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer, currency=self.currency,
                     effective_date=_parse_optional_date(self.effective_date),
                     maturity_date=_parse_optional_date(self.maturity_date), swap_tenor=self.swap_tenor,
                     index_tenor_months=self.index_tenor_months, floating_spread=self.floating_spread,
-                    evaluation_date=evaluation_date, trade_id=trade_id)
+                    overnight_index=self.overnight_index, evaluation_date=evaluation_date, trade_id=trade_id)
 
 
 class SwapTradeSchema(_SwapTerms):
@@ -626,17 +637,54 @@ class BondTradeSchema(_Trade):
     coupon_schedule: List[CouponPeriodSchema] = Field(default_factory=list)
     redemption_fraction: float = 1.0
     accrual_day_count: str = "ACT/ACT (ICMA)"
+    #: Flat continuous credit spread over the discount curve (a corporate bond); 0 for a Treasury.
+    credit_spread: float = 0.0
 
     def to_dataclass(self, evaluation_date, trade_id) -> BondConfig:
         return BondConfig(
             face_amount=self.face_amount, maturity_date=_parse_ore_date(self.maturity_date),
             evaluation_date=evaluation_date, trade_id=trade_id, currency=self.currency, coupon_rate=self.coupon_rate,
             coupon_schedule=tuple(p.to_dataclass() for p in self.coupon_schedule),
-            redemption_fraction=self.redemption_fraction, accrual_day_count=self.accrual_day_count)
+            redemption_fraction=self.redemption_fraction, accrual_day_count=self.accrual_day_count,
+            credit_spread=self.credit_spread)
+
+
+class EquityTradeSchema(_Trade):
+    """A cash equity or ETF position (TraderX fork, R1): `quantity` x `multiplier` units of
+    `market.equities[symbol].spot`."""
+    trade_type: Literal["equity"] = "equity"
+    symbol: str
+    quantity: float
+    multiplier: float = 1.0
+    currency: str = "USD"
+
+    def to_dataclass(self, evaluation_date, trade_id) -> EquityConfig:
+        return EquityConfig(self.symbol, self.quantity, self.multiplier, self.currency, trade_id=trade_id,
+                            evaluation_date=evaluation_date)
+
+
+class EquityOptionTradeSchema(_Trade):
+    """A listed equity option (TraderX fork, R2): `quantity` contracts of `multiplier` shares,
+    priced by finite differences on the equity's spot, dividend curve and volatility."""
+    trade_type: Literal["equity_option"] = "equity_option"
+    symbol: str
+    option_type: Literal["Call", "Put"]
+    strike: float
+    expiry_date: str
+    quantity: float
+    multiplier: float = 100.0
+    exercise: Literal["American", "European"] = "American"
+    currency: str = "USD"
+
+    def to_dataclass(self, evaluation_date, trade_id) -> EquityOptionConfig:
+        return EquityOptionConfig(self.symbol, self.option_type, self.strike, _parse_ore_date(self.expiry_date),
+                                  self.quantity, self.multiplier, self.exercise, self.currency, trade_id=trade_id,
+                                  evaluation_date=evaluation_date)
 
 
 MarketTradeSchema = Annotated[
-    Union[SwapTradeSchema, EuropeanTradeSchema, BermudanTradeSchema, AmericanTradeSchema, BondTradeSchema],
+    Union[SwapTradeSchema, EuropeanTradeSchema, BermudanTradeSchema, AmericanTradeSchema, BondTradeSchema,
+          EquityTradeSchema, EquityOptionTradeSchema],
     Field(discriminator="trade_type"),
 ]
 

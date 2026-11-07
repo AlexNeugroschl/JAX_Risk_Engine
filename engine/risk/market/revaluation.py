@@ -70,8 +70,10 @@ def revalue(
     """
     execution = _prepare_revaluation(moves, arithmetic)
     values = [_revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution) for cfg in trades]
+    # On the host: a device stack of N operands compiles per N, superlinearly (TraderX R6).
     return (np.asarray([base for base, _ in values]),
-            jnp.stack([jnp.asarray(base, dtype=pnl.dtype) + pnl for base, pnl in values], axis=-1))
+            jnp.asarray(np.stack([np.asarray(pnl) + np.asarray(base, dtype=pnl.dtype) for base, pnl in values],
+                                 axis=-1)))
 
 
 def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing: PricingConfig = PricingConfig(),

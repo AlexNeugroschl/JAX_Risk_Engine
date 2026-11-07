@@ -16,8 +16,12 @@ from typing import ClassVar, Dict, Optional
 import ORE
 
 from engine.instruments._validation import _validate_common_fields, _validate_identity
-from engine.instruments.schedules import book_swap_dates, build_vanilla_swap, validate_fixings
-from engine.market_data.day_counts import DEFAULT_ACCRUAL_DAY_COUNT, resolve_accrual_day_count
+from engine.instruments.schedules import (
+    book_swap_dates, build_vanilla_swap, overnight_index, refuse_in_progress_overnight, validate_fixings,
+)
+from engine.market_data.day_counts import (
+    DEFAULT_ACCRUAL_DAY_COUNT, UnsupportedDayCountError, resolve_accrual_day_count,
+)
 
 
 @dataclass
@@ -49,6 +53,10 @@ class SwapConfig:
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
+    #: TraderX fork (R3): an overnight index (`engine.instruments.schedules.OVERNIGHT_INDICES`,
+    #: e.g. "USD-SOFR") makes the swap an OIS on its conventions, compounded in arrears and
+    #: paying every `index_tenor_months`; None is the generic term index.
+    overnight_index: Optional[str] = None
     #: Coupon accrual day count, a property of the booking. Names outside
     #: `SUPPORTED_ACCRUAL_DAY_COUNTS` are refused. Not the simulation time axis (always
     #: ACT/365; see `engine.instruments.schedules`).
@@ -64,9 +72,18 @@ class SwapConfig:
         _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         book_swap_dates(self, swap_tenor)
+        refuse_in_progress_overnight(self)
         validate_fixings(self.fixings)
         # Validate here, where the trade is identifiable, not later inside ORE.
         resolve_accrual_day_count(self.accrual_day_count)
+        index = overnight_index(self.overnight_index, self.currency)
+        if index is None and self.accrual_day_count == "ACT/360":
+            raise UnsupportedDayCountError(
+                "accrual day count 'ACT/360' is an overnight index's: name it in overnight_index (e.g. 'USD-SOFR'). "
+                "A term-index swap accruing ACT/360 against the ACT/365 generic index is refused rather than priced")
+        if index is not None and self.accrual_day_count not in (index.day_count, DEFAULT_ACCRUAL_DAY_COUNT):
+            raise ValueError(f"accrual_day_count {self.accrual_day_count!r} contradicts overnight_index "
+                             f"{self.overnight_index!r}, which accrues {index.day_count}")
 
 
 def underlying_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
@@ -75,5 +92,5 @@ def underlying_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
         index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
-        accrual_day_count=cfg.accrual_day_count,
+        accrual_day_count=cfg.accrual_day_count, overnight_index=overnight_index(cfg.overnight_index, cfg.currency),
     )

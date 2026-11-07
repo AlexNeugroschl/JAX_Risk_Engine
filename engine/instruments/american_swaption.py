@@ -26,7 +26,9 @@ from engine.instruments._validation import (
     _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
 )
 from engine.instruments.bermudan_swaption import ExerciseStyle
-from engine.instruments.schedules import book_swap_dates, is_live, validate_fixings
+from engine.instruments.schedules import (
+    book_swap_dates, is_live, overnight_index, refuse_in_progress_overnight, validate_fixings,
+)
 from engine.market_data.day_counts import time_from_reference
 
 
@@ -51,6 +53,10 @@ class AmericanSwaptionConfig:
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
+    #: TraderX fork (R3): an overnight index (`engine.instruments.schedules.OVERNIGHT_INDICES`,
+    #: e.g. "USD-SOFR") makes the swap an OIS on its conventions, compounded in arrears and
+    #: paying every `index_tenor_months`; None is the generic term index.
+    overnight_index: Optional[str] = None
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
     settlement: str = "Physical"
@@ -62,7 +68,8 @@ class AmericanSwaptionConfig:
 
     exercise_style = ExerciseStyle.AMERICAN
 
-    def option_times(self, exercise_time_steps_per_year: int, built_on: Optional[ORE.Date] = None) -> List[float]:
+    def option_times(self, exercise_time_steps_per_year: int, built_on: Optional[ORE.Date] = None,
+                     period_starts: bool = False) -> List[float]:
         """ORE's American `optionTimes`, with its truncating step count and the same
         arithmetic (`t1 + i * (t2 - t1) / steps`, left to right as in C++), for the trade as
         built on `built_on` (default: the evaluation date) and valued on the evaluation date.
@@ -78,7 +85,13 @@ class AmericanSwaptionConfig:
         t1 = max(0.0, time_from_reference(self.evaluation_date, first))
         t2 = max(t1, time_from_reference(self.evaluation_date, self.last_exercise_date))
         steps = max(1, int((t2 - t1) * float(exercise_time_steps_per_year)))
-        return sorted({t1} | {t1 + float(i) * (t2 - t1) / float(steps) for i in range(steps + 1)})
+        times = {t1} | {t1 + float(i) * (t2 - t1) / float(steps) for i in range(steps + 1)}
+        if period_starts:
+            # TraderX fork (R5, `LgmSwaptionEngineConfig.exercise_on_period_starts`).
+            from engine.instruments.bermudan_swaption import exercisable_dates
+            starts = (time_from_reference(self.evaluation_date, d) for d in exercisable_dates(self))
+            times |= {t for t in starts if t1 <= t <= t2}
+        return sorted(times)
 
     def is_expired(self) -> bool:
         """The window's last day is on or before the evaluation date (ORE's
@@ -90,6 +103,7 @@ class AmericanSwaptionConfig:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
+        refuse_in_progress_overnight(self)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)
         for name in ("first_exercise_date", "last_exercise_date"):

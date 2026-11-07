@@ -177,7 +177,7 @@ def _belongs_until(style: ExerciseStyle, accrual_start: float, accrual_end: floa
 def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig], *, reversion: float,
                      sigma: Union[float, Sigma], shift_horizon: float, n_per_std: int, std_devs: float,
                      exercise_time_steps_per_year: int, built_on: Optional[ORE.Date] = None, curve=None,
-                     index_curve=None) -> _PreparedBermudan:
+                     index_curve=None, period_starts: bool = False) -> _PreparedBermudan:
     """Build the ORE underlying and resolve what `NumericLgmMultiLegOptionEngineBase`
     resolves before its backward run, for a Bermudan or American config:
 
@@ -245,7 +245,8 @@ def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig],
         floating["known_rate"].append(0.0 if known is None else known)
         floating["fixing_serial"].append(fixing_date.serialNumber())
 
-    exercise_times = np.asarray(cfg.option_times(exercise_time_steps_per_year, built_on), dtype=np.float64)
+    exercise_times = np.asarray(cfg.option_times(exercise_time_steps_per_year, built_on, period_starts=period_starts),
+                                dtype=np.float64)
     if exercise_times.size == 0:
         raise ValueError(f"no exercise opportunity falls after the evaluation date {today}")
     final_maturity = max(fixed["pay"][-1], floating["pay"][-1])

@@ -5,13 +5,19 @@ Schedules, calendars and accrual fractions come from ORE (`MakeVanillaSwap`, cou
 `accrualPeriod()`), not reimplemented. Day counts are always set explicitly, never left to
 `MakeVanillaSwap`'s per-index defaults.
 
-Scope: generic term-Ibor swaps only. `build_vanilla_swap` produces a `SimIndex<N>M` index
-on a TARGET calendar, with ACT/365 accrual by default. It cannot express an overnight
-index (SOFR: ACT/360, compounded in arrears, US calendar, lookback/lockout). Such trades
-must be refused, not priced here; see I-05 in docs/planning/known-issues.md.
+Scope: generic term-Ibor swaps, whose `build_vanilla_swap` index is `SimIndex<N>M` on a
+TARGET calendar with ACT/365 accrual by default, and (TraderX fork, R3) overnight-index swaps
+named by `overnight_index` (`OVERNIGHT_INDICES`, `build_overnight_swap`): both legs on the
+index's day count and calendar, paid `payment_lag_days` after each period, the floating coupon
+compounded in arrears with no lookback or lockout. On one forwarding curve a compounded
+overnight coupon is exactly `P(start)/P(end) - 1` (the daily forwards telescope), which is the
+at-par coupon of a term index whose tenor is the period and whose day count is the leg's, so
+the coupon is that coupon and every pricer reads it unchanged.
 """
 import math
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Optional
 
 import ORE
 
@@ -148,6 +154,7 @@ def build_vanilla_swap(
     index_tenor_months: int,
     floating_spread: float,
     accrual_day_count=None,
+    overnight_index: Optional[OvernightIndex] = None,
 ) -> ORE.VanillaSwap:
     """An `ORE.VanillaSwap` built with `MakeVanillaSwap` from explicit booked dates, so
     the schedule does not depend on the evaluation date.
@@ -157,6 +164,9 @@ def build_vanilla_swap(
     itself keeps `TIME_AXIS_DAY_COUNTER` and has no forwarding curve: the engine never
     reads ORE's forecasts, only the schedule and accrual fractions.
     """
+    if overnight_index is not None:
+        return build_overnight_swap(notional, fixed_rate, effective_date, maturity_date,
+                                    index_tenor_months, floating_spread, overnight_index)
     accrual = resolve_accrual_day_count(accrual_day_count)
     index = ibor_index(index_tenor_months)
     swap_type = ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver
@@ -171,6 +181,99 @@ def build_vanilla_swap(
         fixedLegDayCount=accrual,
         floatingLegDayCount=accrual,
     )
+
+
+@dataclass(frozen=True)
+class OvernightIndex:
+    """An overnight index's swap conventions (TraderX fork, R3): its currency, the calendar its
+    schedule rolls Modified Following on and its payments are lagged on, the day count of both
+    legs and of the index, and the payment lag in business days."""
+    currency: str
+    calendar: object
+    day_count: str
+    payment_lag_days: int
+
+
+#: The overnight indices an `overnight_index` swap may name, with the standard OIS conventions:
+#: SOFR on the US government-bond calendar paid 2 days late, ESTR on TARGET paid 1 day late,
+#: SONIA on the UK calendar paid on the period end, TONA on the Japanese calendar paid 2 days late.
+OVERNIGHT_INDICES = {
+    "USD-SOFR": OvernightIndex("USD", ORE.UnitedStates(ORE.UnitedStates.GovernmentBond), "ACT/360", 2),
+    "EUR-ESTR": OvernightIndex("EUR", ORE.TARGET(), "ACT/360", 1),
+    "GBP-SONIA": OvernightIndex("GBP", ORE.UnitedKingdom(), "ACT/365", 0),
+    "JPY-TONA": OvernightIndex("JPY", ORE.Japan(), "ACT/365", 2),
+}
+
+
+def overnight_index(name: Optional[str], currency: str) -> Optional[OvernightIndex]:
+    """The conventions of `name` (None for a term-index swap); an unknown index, or one in
+    another currency than the trade's, is refused."""
+    if name is None:
+        return None
+    if name not in OVERNIGHT_INDICES:
+        raise ValueError(f"overnight_index {name!r} is not supported; this engine implements {sorted(OVERNIGHT_INDICES)}")
+    index = OVERNIGHT_INDICES[name]
+    if index.currency != currency:
+        raise ValueError(f"overnight_index {name!r} is a {index.currency} index; the trade is in {currency}")
+    return index
+
+
+class OvernightSwap:
+    """An overnight-index swap as the pricers read a swap: `fixedLeg()`, `floatingLeg()` (ORE
+    coupons with their lagged payment dates) and `maturityDate()`, the latest accrual end, as
+    `ORE.Swap::maturityDate` gives it."""
+
+    def __init__(self, fixed, floating):
+        self._fixed, self._floating = fixed, floating
+
+    def fixedLeg(self):
+        return self._fixed
+
+    def floatingLeg(self):
+        return self._floating
+
+    def maturityDate(self) -> ORE.Date:
+        return max(ORE.as_coupon(c).accrualEndDate() for c in (*self._fixed, *self._floating))
+
+    def fixedNominals(self):
+        return [ORE.as_coupon(c).nominal() for c in self._fixed]
+
+    def nominal(self) -> float:
+        return self.fixedNominals()[0]
+
+
+def build_overnight_swap(notional: float, fixed_rate: float, effective_date: ORE.Date, maturity_date: ORE.Date,
+                         index_tenor_months: int, floating_spread: float, index: OvernightIndex) -> OvernightSwap:
+    """An overnight-index swap paying every `index_tenor_months` on both legs (see the module
+    docstring). The floating coupons reference a term index over the period with no fixing lag,
+    so they fix on their accrual start (an in-progress coupon needs its realised compounding,
+    which `refuse_in_progress_overnight` refuses) and forecast over exactly their accrual."""
+    calendar, day_count = index.calendar, resolve_accrual_day_count(index.day_count)
+    period = ORE.Period(index_tenor_months, ORE.Months)
+    schedule = ORE.Schedule(effective_date, maturity_date, period, calendar, ORE.ModifiedFollowing,
+                            ORE.ModifiedFollowing, ORE.DateGeneration.Forward, False)
+    term = ORE.IborIndex("SimON", period, 0, ORE.USDCurrency(), calendar, ORE.ModifiedFollowing, False, day_count)
+    fixed = ORE.FixedRateLeg(schedule, day_count, [notional], [fixed_rate], ORE.ModifiedFollowing,
+                             paymentCalendar=calendar, paymentLag=index.payment_lag_days)
+    floating = ORE.IborLeg([notional], schedule, term, day_count, ORE.ModifiedFollowing, [0], [1.0],
+                           [floating_spread], paymentCalendar=calendar, paymentLag=index.payment_lag_days,
+                           withIndexedCoupons=False)
+    return OvernightSwap(fixed, floating)
+
+
+def refuse_in_progress_overnight(cfg) -> None:
+    """An overnight coupon accruing on the evaluation date pays the realised compounding of the
+    days already past, which a single fixing cannot carry; refused, naming the trade."""
+    index = overnight_index(getattr(cfg, "overnight_index", None), cfg.currency)
+    if index is None:
+        return
+    swap = build_overnight_swap(1.0, 0.0, cfg.effective_date, cfg.maturity_date, cfg.index_tenor_months, 0.0, index)
+    for c in swap.floatingLeg():
+        c = ORE.as_floating_rate_coupon(c)
+        if c.accrualStartDate() < cfg.evaluation_date < c.date():
+            raise ValueError(f"trade {cfg.trade_id!r}: its {cfg.overnight_index} coupon accruing "
+                             f"{c.accrualStartDate().ISO()} to {c.accrualEndDate().ISO()} is in progress on "
+                             f"{cfg.evaluation_date.ISO()}; its realised compounding is not an input of this engine")
 
 
 def par_coupon_forecast_period(coupon) -> "tuple[ORE.Date, ORE.Date, float]":

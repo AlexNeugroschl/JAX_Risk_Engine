@@ -91,7 +91,10 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig, underlying_swap as _swap_underlying
 from engine.instruments.treasury import BondConfig
-from engine.market_data.curves import DiscountCurve, ZeroCurve, curve_dtype, with_node_deviation
+from engine.instruments.equity import EQUITY_PRODUCTS, EquityConfig, EquityOptionConfig
+from engine.market_data.curves import (
+    DiscountCurve, ZeroCurve, curve_dtype, log_discount, log_discount_deviation, with_node_deviation,
+)
 from engine.market_data.market import VOL_DAY_COUNTER, Market, index_name
 from engine.models.lgm import Sigma
 from engine.precision import Arithmetic, add_level
@@ -99,6 +102,7 @@ from engine.pricing.bermudan import calibrate_on, calibration_basket, prepared_o
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.context import PricingContext, from_market, simulation_market_today
 from engine.pricing.cube import bond_legs, reads_swaption_vols
+from engine.pricing.equity import OptionPrice, option_terms as option_terms_of
 from engine.pricing.european import (
     EuropeanTerms, bachelier_on_legs, black_multileg_npv, european_legs, european_terms, on_path,
 )
@@ -162,6 +166,28 @@ class TenorNodes:
     @classmethod
     def tree_unflatten(cls, _, children):
         return cls(*children)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class SpotNodes:
+    """An equity's spot as a node (TraderX fork, R1): its one node value is the log spot, market
+    risk's `equity:<symbol>` factor; the "curve" is the node values themselves."""
+
+    @staticmethod
+    def curve(rates):
+        return rates
+
+    @staticmethod
+    def deviation(moves):
+        return moves
+
+    def tree_flatten(self):
+        return (), None
+
+    @classmethod
+    def tree_unflatten(cls, _, children):
+        return cls()
 
 
 def nodes_of(curve, dtype) -> Tuple[Any, np.ndarray]:
@@ -239,6 +265,10 @@ def curve_keys(cfg) -> Tuple[CurveKey, ...]:
     method reports the same curves)."""
     if isinstance(cfg, BondConfig):
         return (("discount", cfg.currency),)
+    if isinstance(cfg, EquityConfig):
+        return (("equity", cfg.symbol),)
+    if isinstance(cfg, EquityOptionConfig):
+        return (("equity", cfg.symbol), ("discount", cfg.currency))
     return (("discount", cfg.currency), ("index", index_name(cfg.currency, cfg.index_tenor_months)))
 
 
@@ -254,6 +284,8 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
     quotes: on the market curves' pillars, or on ORE's sensitivity market at `tenors` (see the
     module docstring). The trade must be valued on the market's as-of date."""
     keys = curve_keys(cfg)
+    if isinstance(cfg, EQUITY_PRODUCTS):
+        return _equity_price_function(cfg, market, keys, dtype)
     context = base_context(market, tenors, calibration_dtype)
     tables = {"discount": context.discount, "index": context.index}
     nodes, rates = zip(*(nodes_of(tables[kind][name], dtype) for kind, name in keys))
@@ -291,6 +323,60 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
         fn = positioned(CalibratedOptionPrice(model), terms, recalibrated_pnl, ScenarioCalibration(model))
         return dataclasses.replace(fn, stages=Stages(OnTerms(model), OnPosition(option_on_model)))
     raise TypeError(f"no price function for {type(cfg).__name__}")
+
+
+def _equity_price_function(cfg, market: Market, keys, dtype) -> TradePriceFunction:
+    """A cash equity's or an equity option's price on its equity's log spot (`SpotNodes`) and,
+    for an option, its currency's discount curve (`engine.pricing.equity`)."""
+    spot = (SpotNodes(), np.asarray([np.log(market.equities[cfg.symbol].spot)], dtype=dtype))
+    if isinstance(cfg, EquityConfig):
+        return TradePriceFunction(keys, (spot[0],), (spot[1],), None, _equity_price,
+                                  np.asarray(cfg.units, dtype=dtype), _equity_pnl)
+    nodes, rates = zip(spot, nodes_of(from_market(market, dtype).discount[cfg.currency], dtype))
+    if cfg.is_expired():
+        return TradePriceFunction(keys, nodes, rates, None, _expired_equity_option, None, _zero_pnl)
+    pricer = OptionPrice(cfg.option_type == "Call", cfg.exercise == "American",
+                         intrinsic=cfg.expiry_date == market.asof)
+    return TradePriceFunction(keys, nodes, rates, None, pricer, option_terms_of(cfg, market, dtype),
+                              EquityOptionPnl(pricer))
+
+
+def _expired_equity_option(_terms, curves, _quotes):
+    """An equity option expired before the market's date: 0."""
+    return jnp.zeros((), dtype=curves[0].dtype)
+
+
+def _equity_price(units, curves, _quotes):
+    """A cash equity's price: units x spot."""
+    return units * jnp.exp(curves[0][0])
+
+
+def _equity_pnl(units, curves, _quotes, moves: Moves, arithmetic: Arithmetic):
+    """A cash equity's P&L under a move `d` of the log spot: units x spot x expm1(d), exactly 0
+    for no move."""
+    shift = moves.shifts[0][..., 0].astype(arithmetic.dtype)
+    return (units * jnp.exp(curves[0][0])).astype(arithmetic.dtype) * jnp.expm1(shift)
+
+
+@dataclass(frozen=True)
+class EquityOptionPnl:
+    """An equity option's P&L: each scenario's spot (the log spot moved) and zero rate to expiry
+    (the discount curve's node deviation) revalued on the grid, less the level, in float64
+    (`engine.pricing.equity`); the dividend yield and the volatility are held."""
+    pricer: OptionPrice
+
+    def __call__(self, terms, curves, _quotes, moves: Moves, arithmetic: Arithmetic):
+        log_spot, disc = curves
+        expiry = jnp.asarray(terms.expiry, jnp.float64)
+        level_log_p = log_discount(disc, expiry.astype(disc.pillar_rates.dtype)).astype(jnp.float64)
+        moved_log_p = level_log_p + log_discount_deviation(disc, moves.shifts[1], expiry[None]
+                                                           .astype(disc.pillar_rates.dtype))[..., 0]
+        safe = jnp.maximum(expiry, 1e-12)
+        level = self.pricer.value(log_spot[0], -level_log_p / safe, terms)
+        shocked = jax.vmap(lambda x, r: self.pricer.value(x, r, terms))(
+            log_spot[0].astype(jnp.float64) + moves.shifts[0][..., 0], -moved_log_p / safe)
+        units = jnp.asarray(terms.units, jnp.float64)
+        return (units * _changed(level, shocked, moves)).astype(arithmetic.dtype)
 
 
 def _zero_price(_terms, curves, quotes):

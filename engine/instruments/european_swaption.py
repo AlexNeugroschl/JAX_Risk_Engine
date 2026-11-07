@@ -19,7 +19,9 @@ import ORE
 from engine.instruments._validation import (
     _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
 )
-from engine.instruments.schedules import SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live
+from engine.instruments.schedules import (
+    SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live, overnight_index, refuse_in_progress_overnight,
+)
 
 
 @dataclass
@@ -56,6 +58,10 @@ class SwaptionConfig:
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
+    #: TraderX fork (R3): an overnight index (`engine.instruments.schedules.OVERNIGHT_INDICES`,
+    #: e.g. "USD-SOFR") makes the swap an OIS on its conventions, compounded in arrears and
+    #: paying every `index_tenor_months`; None is the generic term index.
+    overnight_index: Optional[str] = None
     forward_start: InitVar[Optional[ORE.Period]] = None
     exercise_lag_days: InitVar[Optional[int]] = None
     currency: str = "USD"
@@ -78,6 +84,7 @@ class SwaptionConfig:
         elif exercise_lag_days is not None:
             raise ValueError("exercise_lag_days is only meaningful with swap_tenor")
         book_swap_dates(self, swap_tenor, forward_start)
+        refuse_in_progress_overnight(self)
         if not isinstance(self.exercise_date, ORE.Date):
             raise TypeError(f"exercise_date must be an ORE.Date; got {self.exercise_date!r}")
         if not self.exercise_date < self.maturity_date:
@@ -105,4 +112,5 @@ def underlying_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
         index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
+        overnight_index=overnight_index(cfg.overnight_index, cfg.currency),
     )

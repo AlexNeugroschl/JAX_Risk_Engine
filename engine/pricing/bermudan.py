@@ -45,7 +45,10 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.calibration.lgm import BasketInstrument, CalibrationError, bootstrap_sigma, build_basket, require_accepted
+from engine.calibration.lgm import (
+    BasketInstrument, CalibrationError, SwapIndexConventions, bootstrap_sigma, build_basket, require_accepted,
+)
+from engine.instruments.schedules import overnight_index
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap
 from engine.market_data.curves import DiscountCurve
@@ -123,8 +126,16 @@ def calibration_basket(cfg: OptionConfig, engine: LgmSwaptionEngineConfig,
     """The helpers of the trade built on `built_on` (see the module docstring)."""
     expiries = basket_expiries(cfg, engine, built_on)
     strike = calibration_strike(cfg) if engine.strategy == "CoterminalDealStrike" else None
-    return tuple(build_basket(built_on, list(expiries), [underlying_maturity(cfg)] * len(expiries), engine.swap_index,
+    conventions = trade_swap_index(cfg) if engine.swap_index_from_trade else engine.swap_index
+    return tuple(build_basket(built_on, list(expiries), [underlying_maturity(cfg)] * len(expiries), conventions,
                               [strike] * len(expiries)))
+
+
+def trade_swap_index(cfg: OptionConfig) -> SwapIndexConventions:
+    """The conventions of the trade's own underlying (`LgmSwaptionEngineConfig.swap_index_from_trade`)."""
+    index = overnight_index(cfg.overnight_index, cfg.currency)
+    return SwapIndexConventions(f"{cfg.index_tenor_months}M", index.day_count if index else "ACT/365",
+                                cfg.index_tenor_months)
 
 
 def shift_horizon_time(cfg: OptionConfig, shift_horizon: float, built_on: ORE.Date) -> float:
@@ -146,7 +157,7 @@ def prepared_option(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma, c
                             shift_horizon=shift_horizon_time(cfg, engine.shift_horizon, built_on),
                             n_per_std=engine.n_per_std, std_devs=engine.std_devs,
                             exercise_time_steps_per_year=engine.exercise_time_steps_per_year, built_on=built_on,
-                            curve=curve, index_curve=index_curve)
+                            curve=curve, index_curve=index_curve, period_starts=engine.exercise_on_period_starts)
 
 
 def _on_date(cfg: OptionConfig, context: PricingContext) -> OptionConfig:

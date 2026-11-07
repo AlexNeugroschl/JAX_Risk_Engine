@@ -49,7 +49,7 @@ from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import simulation_market_today
 from engine.pricing.cube import (
-    reporting_fx_spots, trade_maturity, validate_trades, _today, _value_paths, _value_portfolio,
+    reporting_fx_spots, t0_only, trade_maturity, validate_trades, _today, _value_paths, _value_portfolio,
 )
 from engine.risk.counterparty.exposure import (
     CORRECTED_FIGURES, ExposureProfile, PairedColumns, column_profiles, figure_names,
@@ -218,6 +218,11 @@ def validate_request(request, *, execution: bool = False):
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
     validate_trades(request.trades, request.market, run.pricing, run.precision)
+    if request.scenario_risk or request.compute_greeks:
+        for cfg in request.trades:
+            reason = t0_only(cfg)
+            if reason:
+                raise ValueError(f"trade {cfg.trade_id!r}: {reason}, not for exposure or sensitivities")
     if request.scenario_risk:
         simulation = run.simulation
         validate_quantiles("pfe_quantiles", request.pfe_quantiles)

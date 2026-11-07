@@ -31,6 +31,7 @@ market's is refused.
 """
 import dataclasses
 import functools
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple, Union, get_args
@@ -42,6 +43,7 @@ import ORE
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap as _option_underlying
+from engine.instruments.equity import EQUITY_PRODUCTS, EquityConfig, EquityOptionConfig
 from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as _european_underlying
 from engine.instruments.swap import SwapConfig, underlying_swap as _swap_underlying
 from engine.instruments.treasury import BondConfig, _remaining_cashflows
@@ -59,7 +61,8 @@ from engine.pricing.jamshidian import jamshidian_cube, jamshidian_value, validat
 from engine.pricing.legs import Legs, PathFixings, legs_cube, legs_of, path_fixings, path_schedule, today_npv
 from engine.pricing.options import effective_steps, position_sign, underlying_start, wrap
 
-Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig]
+Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig, EquityConfig,
+              EquityOptionConfig]
 
 #: The option trades: each has a position (`long_short`, ORE's `LongShort`), and its engines
 #: value the long option (`engine.pricing.options`).
@@ -164,6 +167,18 @@ def reporting_fx_spots(trades: Sequence[Trade], market: Market, currency: str, f
     return spots
 
 
+def t0_only(cfg: Trade) -> Optional[str]:
+    """Why a trade prices today and under market-risk shocks only, not on simulated paths or as
+    Greeks (TraderX fork), or None: an equity or equity option (no equity simulation or equity
+    Greeks here) and a bond with a credit spread (its spread rides in the amounts from the
+    evaluation date, `bond_legs`)."""
+    if isinstance(cfg, EQUITY_PRODUCTS):
+        return f"a {cfg.product} prices for npv and market_risk only"
+    if isinstance(cfg, BondConfig) and cfg.credit_spread != 0.0:
+        return "a bond with a credit spread prices for npv and market_risk only"
+    return None
+
+
 def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingConfig = PricingConfig(),
                     precision: Precision = Precision()) -> None:
     """Refuse what the pipeline cannot price as specified: a precision override that names
@@ -177,6 +192,9 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
             raise ValueError(f"{label}: evaluation_date {cfg.evaluation_date} is not the market's as-of date "
                              f"{market.asof}; book trades on the valuation date (audit A-4)")
         currency = cfg.currency
+        if isinstance(cfg, EQUITY_PRODUCTS):
+            _validate_equity(cfg, market, label)
+            continue
         try:
             market.currency(currency)
             if not isinstance(cfg, BondConfig):
@@ -189,6 +207,20 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
             check_exercise_into_whole_periods(cfg)
             if pricing.european == "Jamshidian":
                 validate_jamshidian(cfg)
+
+
+def _validate_equity(cfg, market: Market, label: str) -> None:
+    """The market has the trade's equity, in the trade's currency, with a volatility for an
+    option, and the option's currency's discount curve."""
+    if cfg.symbol not in market.equities:
+        raise KeyError(f"{label}: no equity {cfg.symbol!r} in the market; have {sorted(market.equities)}")
+    equity = market.equities[cfg.symbol]
+    if equity.currency != cfg.currency:
+        raise ValueError(f"{label}: the trade is in {cfg.currency}, its equity {cfg.symbol!r} in {equity.currency}")
+    if isinstance(cfg, EquityOptionConfig):
+        market.currency(cfg.currency)
+        if equity.volatility is None and not cfg.is_expired():
+            raise KeyError(f"{label}: equity {cfg.symbol!r} has no volatility to price its option with")
 
 
 def trade_maturity(cfg: Trade) -> ORE.Date:
@@ -276,8 +308,18 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
     context = cast_floating(context, dtype)
     context = dataclasses.replace(context, calibration_dtype=calibration_dtype)
     spots = reporting_fx_spots(trades, market, base_currency, "base_currency")
-    return [float(jnp.asarray(value_on(cfg, context, pricing), dtype=dtype) *
+    return [float(jnp.asarray(_equity_value(cfg, market) if isinstance(cfg, EQUITY_PRODUCTS) else
+                              value_on(cfg, context, pricing), dtype=dtype) *
                   jnp.asarray(spot, dtype=dtype)) for cfg, spot in zip(trades, spots)]
+
+
+def _equity_value(cfg, market: Market) -> float:
+    """An equity's or equity option's NPV today, by its market-risk price function on the
+    market's spot and curves, so the base and every scenario are one function."""
+    # At call time: the price functions import this module.
+    from engine.risk.greeks.price_functions import trade_price_function
+    fn = trade_price_function(cfg, market)
+    return float(fn.price(*fn.rates))
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
@@ -415,11 +457,15 @@ def bond_legs(cfg: BondConfig) -> Legs:
     flows = _remaining_cashflows(cfg)
     t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, d)  # noqa: E731
     empty, empty_int = np.zeros(0), np.zeros(0, dtype=np.int64)
+    # A credit spread is a fixed factor exp(-s t) on each flow from the evaluation date, so
+    # it rides in the amounts: exact today and under t=0 shocks, not on a simulated path
+    # (`t0_only`).
+    spread = np.array([math.exp(-cfg.credit_spread * t_of(d)) for d, _ in flows])
     return Legs(
         payer=False,
         fixed_pay_serial=np.array([d.serialNumber() for d, _ in flows], dtype=np.int64),
         fixed_pay=np.array([t_of(d) for d, _ in flows]),
-        fixed_amount=np.array([a * cfg.face_amount for _, a in flows]),
+        fixed_amount=np.array([a * cfg.face_amount for _, a in flows]) * spread,
         fixed_bps=np.zeros(len(flows)), fixed_rate=0.0,
         float_pay_serial=empty_int, float_pay=empty, float_nominal=empty, float_accrual=empty, float_spread=0.0,
         forecast_start=empty, forecast_end=empty, spanning=empty, fixing_serial=empty_int, history=empty,

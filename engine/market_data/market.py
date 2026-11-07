@@ -201,6 +201,9 @@ class EquityMarket:
     currency: str
     spot: float
     dividend_curve: Optional[ZeroCurveConfig] = None
+    #: Flat Black volatility of the spot, what a listed equity option is priced with (TraderX
+    #: fork, R2); None where no option on the equity is priced.
+    volatility: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +233,8 @@ class Market:
                 raise ValueError(f"equity {name!r} is in {eq.currency}, which has no currency market")
             if not np.isfinite(eq.spot) or eq.spot <= 0.0:
                 raise ValueError(f"equity {name!r} spot must be positive; got {eq.spot}")
+            if eq.volatility is not None and (not np.isfinite(eq.volatility) or eq.volatility <= 0.0):
+                raise ValueError(f"equity {name!r} volatility must be positive; got {eq.volatility}")
 
     def currency(self, code: str) -> CurrencyMarket:
         if code not in self.currencies:
