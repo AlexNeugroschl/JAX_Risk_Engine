@@ -197,10 +197,10 @@ class TestRefusals:
             make_bill(maturity="2026-06-15", coupon_rate=0.04)
 
     def test_an_unsupported_accrual_day_count_is_refused(self):
-        """An unsupported accrual day count (ACT/360) is refused, never defaulted."""
+        """An unsupported accrual day count (30E/360) is refused, never defaulted."""
         with pytest.raises(BondPricingError):
             make_bill(maturity="2026-06-15", coupon_rate=0.04, coupon_schedule=NOTE_SCHEDULE,
-                      accrual_day_count="ACT/360")
+                      accrual_day_count="30E/360")
 
     def test_a_gapped_schedule_is_refused(self):
         gapped = (CouponPeriod(_date("2024-12-15"), _date("2025-06-15")),

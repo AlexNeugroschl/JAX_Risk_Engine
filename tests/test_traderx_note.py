@@ -471,7 +471,7 @@ class TestWrongDayCountIsCaught:
     def test_unsupported_day_count_is_refused_not_defaulted(self):
         """An unsupported day count is refused, not defaulted."""
         with pytest.raises(NotePricingError) as excinfo:
-            price_note(_terms(dayCount="30/360"), FACE, VALUATION, PROFILE, EXPORTED_ACCRUED)
+            price_note(_terms(dayCount="30E/360"), FACE, VALUATION, PROFILE, EXPORTED_ACCRUED)
         assert excinfo.value.reason == DAY_COUNT_NOT_SUPPORTED
 
     def test_absent_day_count_is_refused_not_defaulted(self):

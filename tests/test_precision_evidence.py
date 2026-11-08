@@ -297,6 +297,8 @@ class TestKernelSettings:
     def test_each_product_is_keyed_by_what_changes_its_kernel(self):
         assert PricingConfig().kernel_settings(PRODUCTS, recalibrated=False) == {
             "american_swaption": "engine=LgmGrid nx=30 sx=5 steps_per_year=24 model=fixed",
+            "equity": "engine=Spot",
+            "equity_option": "engine=FdBlackScholes nx=801 nt=400",
             "bermudan_swaption": "engine=LgmGrid nx=30 sx=5 model=fixed", "bond": "engine=Discounting",
             "european_swaption": "engine=Bachelier", "swap": "engine=Discounting"}
         settings = dataclasses.replace(JAMSHIDIAN, jamshidian=JamshidianEngineConfig(0.03, 0.01, "Bisection"),
@@ -304,6 +306,8 @@ class TestKernelSettings:
                                            COARSE, std_devs=3.5, exercise_time_steps_per_year=12))
         assert settings.kernel_settings(PRODUCTS, recalibrated=True) == {
             "american_swaption": "engine=LgmGrid nx=8 sx=3.5 steps_per_year=12 model=recalibrated",
+            "equity": "engine=Spot",
+            "equity_option": "engine=FdBlackScholes nx=801 nt=400",
             "bermudan_swaption": "engine=LgmGrid nx=8 sx=3 model=recalibrated", "bond": "engine=Discounting",
             "european_swaption": "engine=Jamshidian solver=Bisection", "swap": "engine=Discounting"}
 
@@ -333,8 +337,8 @@ class TestKernelSettings:
             "engine=LgmGrid nx=8 sx=3 model=recalibrated")
 
     def test_an_unknown_product_is_refused(self):
-        with pytest.raises(ValueError, match="no pricing engine for product 'equity'"):
-            PricingConfig().kernel_settings(["equity"], recalibrated=False)
+        with pytest.raises(ValueError, match="no pricing engine for product 'fx_forward'"):
+            PricingConfig().kernel_settings(["fx_forward"], recalibrated=False)
 
 
 class TestSettingsLookup:
