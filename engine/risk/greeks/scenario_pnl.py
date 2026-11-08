@@ -15,9 +15,10 @@ scenario first, in float64 (A-10), as ORE's historical P&L and sensitivity analy
 trade's model (`fn.calibration`, I-112); a scenario whose calibration misses ORE's acceptance is
 refused, naming the trade and the scenarios (`CalibrationError`).
 
-**Programs.** The P&L is one jitted program per product, shape and arithmetic (`_pnl`), with the
-price function's pricer static and the trade's terms traced, so a repeated run, or another trade
-of the same shape, reuses it; the calibration is the bootstrap's programs, one per helper shape
+**Programs.** The P&L is one jitted program per product, shape, arithmetic and group size
+(`_pnls`), with the price function's pricer static and the trades' terms traced, so a repeated
+run, or another trade of the same shape, reuses it; trades of one shape are revalued together,
+their terms stacked and the programs mapped over them (`price_function_pnls`, TraderX fork); the calibration is the bootstrap's programs, one per helper shape
 and batch (`engine.calibration.lgm.bootstrap`), shared by every basket with such a helper. The scenarios
 are revalued in batches of at most `batch_size`, fewer where the grid engine's induction would
 exceed its per-device memory budget (`scenario_batch_size`); split across the devices of the host
@@ -31,6 +32,7 @@ from typing import Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax._src.lax.lax import _convert_element_type
 
 from engine.calibration.lgm import CalibrationError
 from engine.instruments.american_swaption import AmericanSwaptionConfig
@@ -64,27 +66,101 @@ def scenario_batch_size(cfg, pricing: PricingConfig, requested: int, itemsize: i
     return max(1, min(requested, induction_memory_budget() // per_scenario))
 
 
+#: Trade-scenario pairs one call of `price_function_pnls` revalues at most, where the grid
+#: engine's memory budget does not set fewer (`trades_per_call`).
+# ponytail: one fixed cap for every device; size it per device if a GPU/TPU measurement asks.
+MODELS_PER_CALL = 16384
+
+
 def price_function_pnl(cfg, fn: TradePriceFunction, rates, moves: Moves, pricing: PricingConfig,
                        batch_size: int, arithmetic: Arithmetic) -> Tuple[float, jax.Array]:
     """The trade's value at the base `rates` and its P&L `[S]` under `moves` (see the module
     docstring), in `arithmetic`: the moves' node values are carried to each curve's node
     deviation (`nodes[i].deviation`); an option's P&L is bounded so that no scenario values it
     below nothing in its position (`engine.pricing.options.bound_option_pnl`)."""
-    value = float(fn.price(*rates))
-    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
+    values, pnl = price_function_pnls([cfg], [fn], rates, moves, pricing, batch_size, arithmetic)
+    return float(values[0]), pnl[:, 0]
+
+
+def group_key(cfg, fn: TradePriceFunction, arithmetic: Arithmetic):
+    """Trades of one key share every program of their revaluation and are revalued together
+    (`price_function_pnls`): one product, pricer, curves and arithmetic, and terms of one
+    structure and shape. None for a trade revalued alone: stochastic rounding's key is the
+    trade's own (`Precision.arithmetic_for`)."""
+    if arithmetic.key is not None:
+        return None
+    leaves, structure = jax.tree_util.tree_flatten(fn.terms)
+    return (type(cfg), fn.pricer, fn.pnl, fn.calibration, fn.curves, fn.quotes is None, structure,
+            tuple((np.shape(leaf), str(getattr(leaf, "dtype", type(leaf).__name__))) for leaf in leaves),
+            dataclasses.replace(arithmetic, sample_ids=None))
+
+
+def _stacked(fns):
+    """The terms of `fns` stacked on the host along a leading axis of the trades. A Python
+    scalar term (an option's `float_spread`) is stacked weakly typed, as JAX types the scalar
+    itself, so a float32 option's arithmetic stays float32."""
+    def stack(*leaves):
+        if isinstance(leaves[0], (int, float)) and not isinstance(leaves[0], bool):
+            # ponytail: JAX's private weak-type cast; jnp has no public one.
+            return _convert_element_type(jnp.asarray(np.asarray(leaves)), weak_type=True)
+        return np.stack([np.asarray(x) for x in leaves])
+    return jax.tree_util.tree_map(stack, *(f.terms for f in fns))
+
+
+def trades_per_call(cfg, pricing: PricingConfig, batch_size: int, itemsize: int) -> int:
+    """How many trades of `cfg`'s group one call of `price_function_pnls` takes: on an
+    accelerator, a batch of scenarios for each within `MODELS_PER_CALL` trade-scenario pairs,
+    or the grid engine's per-device budget (`scenario_batch_size`), a power of two, as a call's
+    trades are padded to one, so calls of every group size share their programs; on a CPU, one.
+
+    A CPU gains nothing from a group, its per-call cost on the host being small, and loses from
+    the call's larger working set: four Bermudans recalibrated under 256 scenarios in one call
+    took 2.4 times the CPU time of four calls (an 11-core Mac, 2026-11-08), and the same as
+    four calls at 64 scenarios a batch."""
+    if jax.default_backend() == "cpu":
+        return 1
+    capacity = scenario_batch_size(cfg, pricing, MODELS_PER_CALL, itemsize)
+    return 1 << ((capacity // min(batch_size, capacity)).bit_length() - 1)
+
+
+def price_function_pnls(cfgs, fns, rates, moves: Moves, pricing: PricingConfig, batch_size: int,
+                        arithmetic: Arithmetic) -> Tuple[np.ndarray, jax.Array]:
+    """`price_function_pnl` of trades of one `group_key` at once: values `[G]` and P&L `[S, G]`.
+    Their terms are stacked on the host and every program is mapped over the trades
+    (`jax.vmap`), so the group is one call per scenario batch and one host sync, where each trade
+    was its own (TraderX fork). The trades are padded to a power of two with copies of the last,
+    so a group's programs are one per shape and power of two. A group of one runs the trade's own
+    programs, unmapped: mapped over one trade, a recalibrated Bermudan's took twice the CPU time
+    (an 11-core Mac, 2026-11-08)."""
+    cfg, fn = cfgs[0], fns[0]
+    count = len(fns)
     curves = curves_on(fn.nodes, rates)
     quotes = None if fn.quotes is None else jnp.asarray(fn.quotes)
+    if count == 1:
+        terms = fn.terms
+        values = np.asarray([fn.pricer(terms, curves, quotes)], dtype=np.float64)
+        calibrated = lambda per: fn.calibration(terms, curves, quotes, per)  # noqa: E731
+    else:
+        terms = _stacked(list(fns) + [fns[-1]] * ((1 << (count - 1).bit_length()) - count))
+        values = np.asarray(jax.vmap(lambda t: fn.pricer(t, curves, quotes))(terms), dtype=np.float64)[:count]
+        calibrated = lambda per: jax.vmap(lambda t: fn.calibration(t, curves, quotes, per), out_axes=1)(terms)  # noqa: E731
+    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
     moves = moves._replace(shifts=tuple(n.deviation(s) for n, s in zip(fn.nodes, moves.shifts)))
     if fn.calibration is not None:
-        models, misses = _map_scenarios(lambda per, _ids: fn.calibration(fn.terms, curves, quotes, per), moves, batch)
-        _require_calibrated(cfg, pricing, host_array(misses))
+        models, misses = _map_scenarios(lambda per, _ids: calibrated(per), moves, batch)
+        misses = host_array(misses).reshape(misses.shape[0], -1)
+        for g, trade in enumerate(cfgs):
+            _require_calibrated(trade, pricing, misses[:, g])
         moves = moves._replace(models=models)
     pnl = _map_scenarios(
-        lambda per, ids: _pnl(fn.pnl, fn.terms, curves, quotes, per, dataclasses.replace(arithmetic, sample_ids=ids)),
+        lambda per, ids: _pnls(fn.pnl, terms, curves, quotes, per, dataclasses.replace(arithmetic, sample_ids=ids),
+                               mapped=count > 1),
         moves, batch)
+    pnl = pnl[:, :count] if count > 1 else pnl[:, None]
     if isinstance(cfg, OPTIONS):
-        pnl = bound_option_pnl(pnl, value, position_sign(cfg))
-    return value, pnl
+        signs = np.asarray([position_sign(trade) for trade in cfgs])
+        pnl = bound_option_pnl(pnl, values, signs)
+    return values, pnl
 
 
 def _require_calibrated(cfg, pricing: PricingConfig, misses: np.ndarray) -> None:
@@ -99,11 +175,15 @@ def _require_calibrated(cfg, pricing: PricingConfig, misses: np.ndarray) -> None
             f"misses its basket (ORE's LgmBuilder acceptance, tolerance {engine.bootstrap_tolerance:g}): scenarios {shown}")
 
 
-@partial(jax.jit, static_argnames="pnl")
-def _pnl(pnl, terms, curves, quotes, moves: Moves, arithmetic: Arithmetic):
-    """`pnl(terms, curves, quotes, moves, arithmetic)`: one program per product, shape and
-    arithmetic."""
-    return pnl(terms, curves, quotes, moves, arithmetic)
+@partial(jax.jit, static_argnames=("pnl", "mapped"))
+def _pnls(pnl, terms, curves, quotes, moves: Moves, arithmetic: Arithmetic, mapped: bool):
+    """`pnl(terms, curves, quotes, moves, arithmetic)` of each of a group's trades, `[S, G]`
+    (`terms` and `moves.models` mapped over the trades), or of one trade, `[S]`, unmapped: one
+    program per product, shape, arithmetic and padded group size."""
+    if not mapped:
+        return pnl(terms, curves, quotes, moves, arithmetic)
+    axes = Moves(shifts=None, models=None if moves.models is None else 1, quotes=None)
+    return jax.vmap(pnl, in_axes=(0, None, None, axes, None), out_axes=1)(terms, curves, quotes, moves, arithmetic)
 
 
 def _map_scenarios(batched, per_scenario, batch_size: int):

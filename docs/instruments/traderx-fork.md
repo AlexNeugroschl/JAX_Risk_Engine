@@ -22,6 +22,7 @@ TraderX class or field still refused or mapped lossily.
 | R4 corporate bond | `credit_spread` (flat, continuous) on `bond`; `accrual_day_count: "30/360"` (US bond basis) | Discount curve plus the spread on every flow | QuantLib: dirty 1,049,185.36; 1,145,157.51 on the Treasury curve |
 | R5 American at least the Bermudan | `config.pricing.american.exercise_on_period_starts: true` | The American's exercise grid also holds every underlying period start in its window | The Bermudan on those dates bounds it from below (ORE's default grid stays the default) |
 | R6 compile time | none | Market risk assembles the `[scenario, trade]` P&L on the host; the exposure cube is filled column by column into a preallocated host buffer | See [R6 timings](#r6-timings) |
+| Batching (TraderX's own, not an R request) | none | On an accelerator, market risk revalues trades of one shape together: their terms stacked, each program mapped over them, one call and one host sync per group of up to `trades_per_call`; a CPU still takes one trade a call | See [Same-shape trades in one call](#same-shape-trades-in-one-call) |
 | — | `config.pricing.{bermudan,american}.swap_index_from_trade: true` | Each option calibrates on its own underlying's conventions | — |
 
 ACT/360 and 30/360 are accrual day counts of every product (`SUPPORTED_ACCRUAL_DAY_COUNTS`),
@@ -58,6 +59,42 @@ The 26,220-trade run was still compiling after 22 minutes upstream. Its `VaR_99`
 449,939,764.42, is the one the same request gave through the HTTP API on the first fork
 commit. The exposure cube's assembly (`engine.pricing.cube._output_cube`) had the same jitted
 stack of T operands and is filled the same way now.
+
+## Same-shape trades in one call
+
+`engine.risk.market.revaluation.revalue_trades` (and `run_market_risk`, through it) groups trades
+by `engine.risk.greeks.scenario_pnl.group_key`: one product, pricer, curves and arithmetic, and
+terms of one pytree structure and leaf shape. `price_function_pnls` stacks a group's terms on the
+host, padded to a power of two with copies of the last trade, and maps the price, the
+recalibration and the P&L program over the trades (`jax.vmap`). A Python-scalar term (a
+Bermudan's `float_spread`) is stacked weakly typed, so a float32 option stays float32. An equity
+option is still revalued once per listed contract. A trade with stochastic rounding is revalued
+alone (its key is its own).
+
+**Why.** On the A100 (2026-11-08, fork `a5bd7c3`), the warm book spent its time in a per-trade
+loop: a program call and a host sync for each of about 8,100 revaluations, with each
+swaption's induction a few milliseconds on the device. Grouped, TraderX's 11,360-trade book
+is 486 groups (Bermudans 75, Americans 55, swaps 90, bonds 29, cash equities 50, Europeans
+50, equity-option contracts 39).
+
+**A CPU takes one trade a call** (`trades_per_call`). On an 11-core Mac, four Bermudans
+recalibrated under 256 scenarios in one call took 2.4 times the CPU time of four calls, and
+four calls' time at 64 scenarios a batch: the call's working set, not the program, set the cost.
+A CPU's per-call cost on the host is small, so a group has nothing to save there. A group of
+one runs the trade's own programs, unmapped: mapped over one trade, a recalibrated Bermudan's
+P&L took twice the CPU time (2.5 s against 5.0 s, warm). So a CPU run's programs are the fork's
+before batching, and its answers are `a5bd7c3`'s bit for bit: every per-trade P&L, base value
+and `VaR_99` of 20 trades of each of the seven classes TraderX books, at 256 scenarios. On an accelerator a call takes up to `MODELS_PER_CALL` (16,384) trade-scenario
+pairs, or what the grid engine's per-device induction budget allows. Neither that cap nor
+whether a mapped induction pays on a GPU or TPU, given its doubled cost per model on a CPU, is
+measured yet.
+
+**Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
+seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),
+every per-trade P&L agrees within 5e-11 of that trade's largest
+(Americans; Bermudans 3e-14, the linear classes 7e-16, cash equities and swaps bit for bit) and
+`VaR_99` within 2e-13. `TestGroupedRevaluation` checks a group against each trade revalued alone
+at float64 and float32, a short Bermudan among long ones.
 
 ## Remaining gaps
 

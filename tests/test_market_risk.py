@@ -25,7 +25,9 @@ from engine.risk.market import (
     monte_carlo_scenarios,
     run_market_risk,
 )
-from engine.risk.market.revaluation import revalue, revalue_trade
+from engine.risk.market.revaluation import factor_indices, revalue, revalue_trade
+from engine.risk.greeks.price_functions import Moves
+from engine.risk.greeks.scenario_pnl import group_key, price_function_pnl, price_function_pnls
 from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from tests import market_risk_support as m
 
@@ -576,3 +578,32 @@ class TestReportingCurrency:
         for key in ("portfolio/VaR_99", "portfolio/ES_97.5"):
             figure = result.precision.figures[key]
             np.testing.assert_allclose(np.asarray(figure.paired), np.asarray(figure.paired_float64), rtol=1e-14)
+
+
+class TestGroupedRevaluation:
+    """Trades of one shape revalued together (`price_function_pnls`, TraderX fork; a CPU run
+    revalues them one by one, `trades_per_call`) are each trade revalued alone, a float32
+    option's dtype included."""
+
+    @pytest.mark.parametrize("arithmetic", [Arithmetic(), Arithmetic.of(jnp.float32)], ids=["float64", "float32"])
+    @pytest.mark.parametrize("make,pricing", [(m.swap, PricingConfig()), (m.bermudan, m.CALIBRATED)],
+                             ids=["swap", "bermudan"])
+    def test_a_group_is_each_trade_alone(self, make, pricing, arithmetic):
+        cfgs = [dataclasses.replace(make(), trade_id=f"t{i}", notional=n, fixed_rate=k)
+                for i, (n, k) in enumerate(((1e6, 0.03), (2.5e6, 0.035), (4e6, 0.04)))]
+        if hasattr(cfgs[-1], "long_short"):
+            cfgs[-1] = dataclasses.replace(cfgs[-1], long_short="Short")
+        fns = [trade_price_function(c, m.market(), pricing, arithmetic.dtype) for c in cfgs]
+        assert len({group_key(c, f, arithmetic) for c, f in zip(cfgs, fns)}) == 1
+        moves = arithmetic.cast(jnp.asarray(_scenarios(num=8).shifts))
+        own = [FACTORS.slice_of(i) for i in factor_indices(cfgs[0], FACTORS)]
+        base = arithmetic.cast(FACTORS.base_rates())
+        rates, shifts = [base[s] for s in own], Moves(tuple(moves[..., s] for s in own))
+        values, pnl = price_function_pnls(cfgs, fns, rates, shifts, pricing, 256, arithmetic)
+        assert pnl.shape == (8, 3) and pnl.dtype == arithmetic.dtype
+        rel = 1e-5 if arithmetic.dtype == jnp.float32 else 1e-12
+        for g, (cfg, fn) in enumerate(zip(cfgs, fns)):
+            value, alone = price_function_pnl(cfg, fn, rates, shifts, pricing, 256, arithmetic)
+            assert values[g] == pytest.approx(value, rel=rel)
+            tolerance = rel * float(np.max(np.abs(alone)))
+            np.testing.assert_allclose(np.asarray(pnl[:, g]), np.asarray(alone), rtol=0, atol=tolerance)

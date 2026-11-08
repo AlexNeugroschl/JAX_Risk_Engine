@@ -32,7 +32,7 @@ engine refuses a misfit everywhere, A-24); each scenario is then priced on its o
 values (the surface, the Jamshidian model), so volatility risk is not captured.
 `run_market_risk` says so in its warnings for every option trade.
 """
-from typing import Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -41,7 +41,7 @@ from engine.market_data.market import Market
 from engine.precision import Arithmetic
 from engine.pricing.config import PricingConfig
 from engine.risk.greeks.price_functions import Moves, curve_keys, trade_price_function
-from engine.risk.greeks.scenario_pnl import price_function_pnl
+from engine.risk.greeks.scenario_pnl import group_key, price_function_pnl, price_function_pnls, trades_per_call
 from engine.risk.market.factors import RateRiskFactors, curve_name
 
 
@@ -68,8 +68,8 @@ def revalue(
     batch_size: the most scenarios to revalue at once; the grid engine may use fewer to stay
         within `induction_memory_budget()` per device.
     """
-    execution = _prepare_revaluation(moves, arithmetic)
-    values = [_revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution) for cfg in trades]
+    _prepare_revaluation(moves, arithmetic)
+    values = revalue_trades(trades, market, factors, lambda _: moves, pricing, batch_size, [arithmetic] * len(trades))
     # On the host: a device stack of N operands compiles per N, superlinearly (TraderX R6).
     return (np.asarray([base for base, _ in values]),
             jnp.asarray(np.stack([np.asarray(pnl) + np.asarray(base, dtype=pnl.dtype) for base, pnl in values],
@@ -86,6 +86,47 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
     (`CalibrationError`, naming the trade and the scenarios)."""
     execution = _prepare_revaluation(moves, arithmetic)
     return _revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution)
+
+
+def revalue_trades(trades: Sequence, market: Market, factors: RateRiskFactors, moves: Callable,
+                   pricing: PricingConfig = PricingConfig(), batch_size: int = 256,
+                   arithmetics: Optional[Sequence[Optional[Arithmetic]]] = None) -> List[Tuple[float, jnp.ndarray]]:
+    """Each trade's `revalue_trade`, in trade order, trades of one shape revalued together
+    (`engine.risk.greeks.scenario_pnl.price_function_pnls`: one call and one host sync for up
+    to `trades_per_call` of them, where each trade was its own; TraderX fork).
+
+    moves: `moves(arithmetic)`, the `[S, F]` factor moves for a trade's arithmetic (None: the
+        moves' own format).
+    arithmetics: each trade's, or None for all in the moves' own format.
+    """
+    from engine.run.trace import trade_pricing_phase
+    arithmetics = arithmetics or [None] * len(trades)
+    fns, groups = [], {}
+    for i, (cfg, arithmetic) in enumerate(zip(trades, arithmetics)):
+        arithmetic = arithmetic or Arithmetic.of(jnp.asarray(moves(None)).dtype)
+        fn = trade_price_function(cfg, market, pricing, arithmetic.dtype, calibration_dtype=arithmetic.calibration)
+        own = factor_indices(cfg, factors)
+        key = group_key(cfg, fn, arithmetic)
+        groups.setdefault(("alone", i) if key is None else (key, own), []).append(i)
+        fns.append((fn, arithmetic, own))
+    results = [None] * len(trades)
+    for members in groups.values():
+        cfg = trades[members[0]]
+        _, arithmetic, own = fns[members[0]]
+        shifts = arithmetic.cast(jnp.asarray(moves(arithmetics[members[0]])))
+        base = arithmetic.cast(factors.base_rates())
+        own = [factors.slice_of(i) for i in own]
+        per_call = trades_per_call(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
+        for start in range(0, len(members), per_call):
+            chunk = members[start:start + per_call]
+            with trade_pricing_phase(chunk[0], cfg):
+                values, pnl = price_function_pnls([trades[i] for i in chunk], [fns[i][0] for i in chunk],
+                                                  [base[s] for s in own], Moves(tuple(shifts[..., s] for s in own)),
+                                                  pricing, batch_size, arithmetic)
+                pnl = np.asarray(pnl)
+            for g, i in enumerate(chunk):
+                results[i] = (float(values[g]), jnp.asarray(pnl[:, g]))
+    return results
 
 
 def _prepare_revaluation(moves, arithmetic):

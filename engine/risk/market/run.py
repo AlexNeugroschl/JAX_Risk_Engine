@@ -68,7 +68,7 @@ from engine.pricing.cube import (
 )
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.greeks.scenario_pnl import scenario_batch_size
-from engine.risk.market.revaluation import factor_indices, _revalue_trade
+from engine.risk.market.revaluation import factor_indices, _revalue_trade, revalue_trades
 from engine.risk.market.scenarios import ShockScenarios
 from engine.risk.market.scenarios import SOURCE_HISTORICAL
 from engine.risk.market.var_es import (
@@ -166,14 +166,12 @@ def _run_market_risk(request, execution):
     from engine.run.trace import phase, trade_pricing_phase
 
     base, columns, stored = [], [], []
-    per_contract = {}
     with phase("revaluation"):
-        for i, (cfg, spot) in enumerate(zip(request.trades, spots)):
+        stages = [precision.precision_for(cfg) for cfg in request.trades]
+        priced = _trade_pnls(request, shifts, [precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+                                               for cfg, stage in zip(request.trades, stages)])
+        for i, (cfg, spot, stage, (value, trade_pnl)) in enumerate(zip(request.trades, spots, stages, priced)):
             with trade_pricing_phase(i, cfg):
-                stage = precision.precision_for(cfg)
-                arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
-                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution,
-                                              per_contract)
                 base.append(value * spot)
                 stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
                 column = load(stored[-1], precision.internal.dtype("reductions"))
@@ -237,22 +235,49 @@ def _run_market_risk(request, execution):
     )
 
 
-def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution, per_contract=None):
-    """One trade's base value and P&L `[S]` under `moves`, in `arithmetic` (the moves' own
-    format by default; `revalue_trade`).
+def _trade_pnls(request: MarketRiskRequest, shifts, arithmetics):
+    """Each trade's base value and P&L `[S]` under the stored `shifts`, in its arithmetic,
+    trades of one shape revalued together (`revalue_trades`).
 
-    An equity option is revalued once per contract and arithmetic (`per_contract`, TraderX fork):
-    one share's value and P&L, times the trade's shares (the same numbers as revaluing the trade at
-    float64, `EquityOptionPnl`), so every position in one listed contract shares one grid run."""
-    if per_contract is not None and isinstance(cfg, EquityOptionConfig):
-        key = (cfg.symbol, cfg.option_type, cfg.strike, cfg.expiry_date.serialNumber(), cfg.exercise, cfg.currency,
-               jnp.dtype(arithmetic.dtype).name)
-        if key not in per_contract:
-            share = dataclasses.replace(cfg, quantity=1.0, multiplier=1.0)
-            per_contract[key] = _revalue_trade(share, request.market, request.scenarios.factors, moves,
-                                               request.pricing, request.batch_size, arithmetic, execution)
-        value, pnl = per_contract[key]
-        return value * cfg.units, (pnl * jnp.asarray(cfg.units, dtype=pnl.dtype)).astype(pnl.dtype)
+    An equity option is revalued once per contract and arithmetic (TraderX fork): one share's
+    value and P&L, times the trade's shares (the same numbers as revaluing the trade at float64,
+    `EquityOptionPnl`), so every position in one listed contract shares one grid run."""
+    loaded = {}
+    jobs, job_arithmetics, job_of, contracts = [], [], [], {}
+    for cfg, arithmetic in zip(request.trades, arithmetics):
+        key = None
+        if isinstance(cfg, EquityOptionConfig):
+            key = (cfg.symbol, cfg.option_type, cfg.strike, cfg.expiry_date.serialNumber(), cfg.exercise, cfg.currency,
+                   jnp.dtype(arithmetic.dtype).name)
+            if key in contracts:
+                job_of.append(contracts[key])
+                continue
+            contracts[key] = len(jobs)
+            cfg = dataclasses.replace(cfg, quantity=1.0, multiplier=1.0)
+        job_of.append(len(jobs))
+        jobs.append(cfg)
+        job_arithmetics.append(arithmetic)
+
+    def moves(arithmetic):
+        dtype = jnp.dtype(arithmetic.dtype)
+        if dtype not in loaded:
+            loaded[dtype] = load(shifts, dtype)
+        return loaded[dtype]
+
+    priced = revalue_trades(jobs, request.market, request.scenarios.factors, moves, request.pricing,
+                            request.batch_size, job_arithmetics)
+    out = []
+    for cfg, job in zip(request.trades, job_of):
+        value, pnl = priced[job]
+        if isinstance(cfg, EquityOptionConfig):
+            value, pnl = value * cfg.units, (pnl * jnp.asarray(cfg.units, dtype=pnl.dtype)).astype(pnl.dtype)
+        out.append((value, pnl))
+    return out
+
+
+def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution):
+    """One trade's base value and P&L `[S]` under `moves`, in `arithmetic` (the moves' own
+    format by default; `revalue_trade`)."""
     return _revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing, request.batch_size,
                           arithmetic, execution)
 
