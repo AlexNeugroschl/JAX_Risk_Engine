@@ -31,7 +31,33 @@ different one is refused.
 
 ## R6 timings
 
-R6_TIMINGS
+Measured 2026-11-07 on an 11-core Mac (CPU, JAX 0.10.2, float64), each figure a fresh process
+with the persistent compilation cache off; another engine run held about 1.7 cores throughout.
+
+Joining N `[256]` float64 P&L columns, first call and cached:
+
+| Operands | Upstream `jnp.stack`, first | cached | Fork (host), first | cached |
+|---|---|---|---|---|
+| 1,000 | 3.30 s | 0.003 s | 0.010 s | 0.004 s |
+| 2,000 | 12.8 s | 0.010 s | 0.010 s | 0.003 s |
+| 4,000 | 62.1 s | 0.016 s | 0.025 s | 0.016 s |
+| 8,000 | 358 s (XLA's "Very slow compile" alarm) | 0.035 s | 0.022 s | 0.011 s |
+
+One in-process `npv` + `market_risk` run (256 Monte Carlo scenarios) of TraderX's large book
+tiled x10 (bonds, GBP/JPY swaps, European swaptions), its first N trades:
+
+| Trades | Wall, cold | Peak RSS |
+|---|---|---|
+| 1,000 | 9.0 s | 605 MiB |
+| 2,000 | 24.6 s | 866 MiB |
+| 4,000 | 26.9 s | 878 MiB |
+| 8,000 | 33.4 s | 900 MiB |
+| 26,220 | 72.6 s | 845 MiB |
+
+The 26,220-trade run was still compiling after 22 minutes upstream. Its `VaR_99`,
+449,939,764.42, is the one the same request gave through the HTTP API on the first fork
+commit. The exposure cube's assembly (`engine.pricing.cube._output_cube`) had the same jitted
+stack of T operands and is filled the same way now.
 
 ## Remaining gaps
 
