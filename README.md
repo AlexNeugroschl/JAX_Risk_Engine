@@ -39,6 +39,9 @@ The project exists to answer two questions:
 - Bermudan and American swaptions, each calibrated to its own basket and priced by backward
   induction on an LGM grid
 - US Treasury bills and notes
+- TraderX fork: overnight-index swaps and swaptions (SOFR, ESTR, SONIA, TONA), corporate
+  bonds with a credit spread, cash equities and listed equity options
+  ([docs/instruments/traderx-fork.md](docs/instruments/traderx-fork.md))
 
 **Analytics**
 - **NPV**: today's value of every trade

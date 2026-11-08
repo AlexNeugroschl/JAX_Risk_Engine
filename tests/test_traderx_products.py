@@ -171,19 +171,14 @@ def test_r3_sofr_ois_matches_quantlib():
     assert npv(SOFR)[0] == pytest.approx(R3_SOFR_OIS_NPV, abs=0.01)
 
 
-def test_r3_act360_without_an_overnight_index_is_refused():
-    with pytest.raises(ValueError, match="overnight_index"):
-        npv({k: v for k, v in SOFR.items() if k != "overnight_index"})
+def test_r3_a_day_count_contradicting_the_index_is_refused():
+    with pytest.raises(ValueError, match="contradicts overnight_index"):
+        npv({**SOFR, "accrual_day_count": "30/360"})
 
 
 def test_r3_an_index_in_another_currency_is_refused():
     with pytest.raises(ValueError, match="EUR index"):
         npv({**SOFR, "overnight_index": "EUR-ESTR"})
-
-
-def test_r3_a_coupon_in_progress_is_refused():
-    with pytest.raises(ValueError, match="in progress"):
-        npv({**SOFR, "effective_date": "2026-09-28", "maturity_date": "2031-09-29"})
 
 
 def _ql_ois(effective, maturity, index):
@@ -285,3 +280,139 @@ def test_r2_positions_in_one_contract_share_one_revaluation_bit_for_bit():
     mr = market_risk_request(request, scenarios)
     _, alone = revalue_trade(mr.trades[1], mr.market, scenarios.factors, scenarios.shifts, mr.pricing)
     np.testing.assert_array_equal(pnl[:, 1], np.asarray(alone))
+
+
+# --- R3 completed: every TraderX convention, and seasoned OIS coupons -----------------------------
+
+#: The R3 convention set (TraderX `SwapConventions`): index, QuantLib's index, schedule and payment
+#: calendar, payment lag, day count of both legs.
+QL_OIS = {
+    "USD-SOFR": (lambda h: ORE.Sofr(h), ORE.UnitedStates(ORE.UnitedStates.GovernmentBond), 2, ORE.Actual360()),
+    "EUR-ESTR": (lambda h: ORE.Estr(h), ORE.TARGET(), 1, ORE.Actual360()),
+    "GBP-SONIA": (lambda h: ORE.Sonia(h), ORE.UnitedKingdom(), 0, ORE.Actual365Fixed()),
+    "JPY-TONA": (lambda h: ORE.Tonar(h), ORE.Japan(), 2, ORE.Actual365Fixed()),
+}
+
+
+def ql_ois_npv(name, effective, maturity, months, fixings=()):
+    """QuantLib's `OvernightIndexedSwap` on the convention set, payer of 4.2% on 10mm, its index's
+    past `fixings` `[(ORE.Date, rate)]` added to (and cleared from) QuantLib's index history."""
+    _, _, curve = ql_setup()
+    make_index, calendar, lag, day_count = QL_OIS[name]
+    index = make_index(curve(0.041))
+    schedule = ORE.Schedule(effective, maturity, ORE.Period(months, ORE.Months), calendar, ORE.ModifiedFollowing,
+                            ORE.ModifiedFollowing, ORE.DateGeneration.Forward, False)
+    swap = ORE.OvernightIndexedSwap(ORE.OvernightIndexedSwap.Payer, 1e7, schedule, 0.042, day_count, index, 0.0, lag,
+                                    ORE.ModifiedFollowing, calendar)
+    swap.setPricingEngine(ORE.DiscountingSwapEngine(curve(0.04)))
+    try:
+        for d, r in fixings:
+            index.addFixing(d, r)
+        return swap.NPV()
+    finally:
+        index.clearFixings()
+
+
+def every_currency_market():
+    usd = market()["currencies"]["USD"]
+    curves = {f"{c}-SIMINDEX-{m}M": flat(0.041) for c in ("USD", "EUR", "GBP", "JPY") for m in (3, 12)}
+    one = lambda c: {**usd, "index_curves": {k: v for k, v in curves.items() if k.startswith(c)}}  # noqa: E731
+    return {**market(), "currencies": {c: one(c) for c in ("USD", "EUR", "GBP", "JPY")}}
+
+
+def daily_fixings(name, start, today):
+    """Made-up daily fixings on the index's own fixing calendar, every day from `start` to before `today`."""
+    calendar = {"USD-SOFR": ORE.Sofr(), "EUR-ESTR": ORE.Estr(), "GBP-SONIA": ORE.Sonia(),
+                "JPY-TONA": ORE.Tonar()}[name].fixingCalendar()
+    out, d, i = [], start, 0
+    while d < today:
+        out.append((d, 0.043 + 0.002 * np.sin(i / 7.0)))
+        d, i = calendar.advance(d, 1, ORE.Days), i + 1
+    return out
+
+
+def ois(name, effective, maturity, months, **fields):
+    currency = name[:3]
+    return {"trade_type": "swap", "trade_id": f"{name}-{effective}", "currency": currency, "notional": 1e7,
+            "fixed_rate": 0.042, "payer": True, "effective_date": effective, "maturity_date": maturity,
+            "index_tenor_months": months, "overnight_index": name, **fields}
+
+
+def iso(d):
+    return ORE.Date(int(d[8:]), int(d[5:7]), int(d[:4]))
+
+
+@pytest.mark.parametrize("name,months", [("USD-SOFR", 3), ("EUR-ESTR", 12), ("GBP-SONIA", 12), ("JPY-TONA", 12)])
+def test_r3_every_convention_matches_quantlib(name, months):
+    trade = ois(name, "2026-10-28", "2031-10-28", months)
+    body = {"market": every_currency_market(), "portfolio": [trade], "analytics": ["npv"],
+            "config": {"base_currency": trade["currency"]}}
+    value = run_in_process(body).portfolio.base_npv_per_trade[0]
+    assert value == pytest.approx(ql_ois_npv(name, iso("2026-10-28"), iso("2031-10-28"), months), abs=0.01)
+
+
+@pytest.mark.parametrize("effective,maturity,months", [
+    ("2026-04-28", "2031-04-28", 12),   # an annual coupon half accrued
+    ("2026-09-28", "2031-09-29", 3),    # a quarterly coupon in progress
+    ("2025-10-23", "2030-10-23", 12),   # a coupon accrued in full on Friday, paid on Tuesday
+])
+def test_r3_a_seasoned_ois_pays_its_realised_compounding(effective, maturity, months):
+    past = daily_fixings("USD-SOFR", iso(effective), iso(ASOF))
+    fixings = {d.ISO(): r for d, r in past}
+    seasoned = lambda history: run_in_process({  # noqa: E731
+        "market": every_currency_market(), "analytics": ["npv"],
+        "portfolio": [ois("USD-SOFR", effective, maturity, months, overnight_fixings=history)]}).portfolio.base_npv_per_trade[0]
+    value = seasoned(fixings)
+    expected = ql_ois_npv("USD-SOFR", iso(effective), iso(maturity), months, past)
+    assert value == pytest.approx(expected, abs=0.01)
+    # negative control: the realised compounding matters (the fixings are 20-40bp off the curve)
+    flat_history = {d: 0.041 for d in fixings}
+    assert abs(seasoned(flat_history) - expected) > 100
+
+
+def test_r3_a_seasoned_ois_missing_a_past_fixing_is_refused():
+    past = daily_fixings("USD-SOFR", iso("2026-04-28"), iso(ASOF))
+    fixings = {d.ISO(): r for d, r in past[:-1]}
+    with pytest.raises(ValueError, match="missing overnight fixing for October 23rd, 2026"):
+        npv(ois("USD-SOFR", "2026-04-28", "2031-04-28", 12, overnight_fixings=fixings))
+
+
+def test_r3_a_spread_on_a_coupon_in_progress_is_refused():
+    fixings = {d.ISO(): r for d, r in daily_fixings("USD-SOFR", iso("2026-04-28"), iso(ASOF))}
+    with pytest.raises(ValueError, match="floating spread"):
+        npv(ois("USD-SOFR", "2026-04-28", "2031-04-28", 12, overnight_fixings=fixings, floating_spread=0.001))
+
+
+def test_r2_delta_matches_quantlib():
+    asof, a365, curve = ql_setup()
+    spot = ORE.SimpleQuote(150.0)
+    process = ORE.BlackScholesMertonProcess(
+        ORE.QuoteHandle(spot), curve(0.005), curve(0.04),
+        ORE.BlackVolTermStructureHandle(ORE.BlackConstantVol(asof, ORE.NullCalendar(), 0.30, a365)))
+    option = ORE.VanillaOption(ORE.PlainVanillaPayoff(ORE.Option.Call, 150.0),
+                               ORE.AmericanExercise(asof, ORE.Date(18, 12, 2026)))
+    option.setPricingEngine(ORE.FdBlackScholesVanillaEngine(process, 2000, 2000))
+    assert option.delta() == pytest.approx(0.5401, abs=1e-4)  # the request's FD(400, 400) value
+    h = 0.01 * 150.0
+    up, down = ({**market(), "equities": {"AAPL": {**market()["equities"]["AAPL"], "spot": 150.0 + s}}} for s in (h, -h))
+    share = {**OPTION, "multiplier": 1}
+    bumped = [run_in_process({"market": m, "portfolio": [share], "analytics": ["npv"]}).portfolio.base_npv_per_trade[0]
+              for m in (up, down)]
+    assert (bumped[0] - bumped[1]) / (2 * h) == pytest.approx(option.delta(), abs=2e-3)
+
+
+def test_r3_a_bermudan_past_its_first_exercise_prices_as_its_remaining_option():
+    """Past its first exercise date, with its underlying accruing, a Bermudan still exercises only
+    into coupons starting on a later exercise date: its value is the forward-starting Bermudan on
+    the remaining dates (calibrated on the same basket; that pricer's ORE parity is
+    `tests/test_ore_bermudan_oracle.py`). It was refused while its underlying had a coupon in progress."""
+    terms = {"notional": 5e6, "fixed_rate": 0.045, "payer": True, "currency": "GBP", "overnight_index": "GBP-SONIA",
+             "index_tenor_months": 12, "maturity_date": "2031-04-28"}
+    mid = {"trade_type": "bermudan_swaption", "trade_id": "mid", "effective_date": "2026-04-28",
+           "exercise_dates": ["2026-04-24", "2027-04-28", "2028-04-28", "2029-04-30", "2030-04-29"], **terms}
+    forward = {**mid, "trade_id": "forward", "effective_date": "2027-04-28", "exercise_dates": mid["exercise_dates"][1:]}
+    body = {"market": every_currency_market(), "portfolio": [mid, forward], "analytics": ["npv"],
+            "config": {"base_currency": "GBP", "pricing": {"bermudan": {"swap_index_from_trade": True}}}}
+    values = run_in_process(body).portfolio.base_npv_per_trade
+    assert values[0] > 0
+    assert values[0] == pytest.approx(values[1], rel=1e-12)

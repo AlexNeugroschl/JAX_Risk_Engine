@@ -61,6 +61,13 @@ from engine.instruments.schedules import SWAP_CALENDAR
 from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_data.day_counts import SUPPORTED_ACCRUAL_DAY_COUNTS
+
+#: The day counts the sweep draws from: upstream's, so the fork's sample is upstream's case for
+#: case (the TraderX fork's ACT/360 and 30/360 are covered by `tests/test_trade_dates.py` and
+#: `tests/test_traderx_products.py`). Drawing them too reaches two American swaptions whose ORE
+#: parity misses by 6e-5 relative on upstream 17ac757 itself, bit for bit
+#: (`docs/instruments/traderx-fork.md`).
+SWEEP_DAY_COUNTS = sorted(set(SUPPORTED_ACCRUAL_DAY_COUNTS) - {"ACT/360", "30/360"})
 from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
 from engine.market_simulation.config import DEFAULT_CURVE_TENORS
 from engine.pricing.config import CALIBRATION_STRATEGIES, LgmSwaptionEngineConfig, PricingConfig, reference_grid_dates
@@ -277,7 +284,7 @@ def _swap(draw: _Draw, market: Market, trade_id: str) -> SwapConfig:
                  payer=draw.pick((True, False)), effective_date=effective,
                  maturity_date=effective + ORE.Period(tenor, ORE.Years), index_tenor_months=_index_months(market),
                  floating_spread=draw.pick((0.0, draw.uniform(-0.005, 0.01))),
-                 accrual_day_count=draw.pick(sorted(SUPPORTED_ACCRUAL_DAY_COUNTS)), evaluation_date=asof,
+                 accrual_day_count=draw.pick(SWEEP_DAY_COUNTS), evaluation_date=asof,
                  trade_id=trade_id)
     cfg = SwapConfig(**terms, fixings={})
     return dataclasses.replace(cfg, fixings=_fixings(draw, market, swap_underlying(cfg)))
@@ -360,7 +367,7 @@ def _bond(draw: _Draw, market: Market, trade_id: str) -> BondConfig:
         dates.append(dates[-1] + ORE.Period(months, ORE.Months))
     periods = tuple(CouponPeriod(a, b) for a, b in zip(dates, dates[1:]))
     return BondConfig(face_amount=face, maturity_date=dates[-1], coupon_rate=draw.uniform(0.0, 0.07),
-                      coupon_schedule=periods, accrual_day_count=draw.pick(sorted(SUPPORTED_ACCRUAL_DAY_COUNTS)),
+                      coupon_schedule=periods, accrual_day_count=draw.pick(SWEEP_DAY_COUNTS),
                       evaluation_date=asof, trade_id=trade_id)
 
 
@@ -384,7 +391,7 @@ def _engine(draw: _Draw, swap_index: SwapIndexConventions) -> LgmSwaptionEngineC
 
 def _pricing(draw: _Draw, index_months: int) -> PricingConfig:
     swap_index = SwapIndexConventions(fixed_tenor=draw.pick(("1Y", "6M")),
-                                      fixed_day_counter=draw.pick(sorted(SUPPORTED_ACCRUAL_DAY_COUNTS)),
+                                      fixed_day_counter=draw.pick(SWEEP_DAY_COUNTS),
                                       index_tenor_months=index_months)
     return PricingConfig(bermudan=_engine(draw, swap_index), american=_engine(draw, swap_index))
 

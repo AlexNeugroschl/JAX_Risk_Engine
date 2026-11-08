@@ -20,7 +20,7 @@ from engine.instruments._validation import (
     _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
 )
 from engine.instruments.schedules import (
-    SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live, overnight_index, refuse_in_progress_overnight,
+    SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live, overnight_index,
 )
 
 
@@ -84,7 +84,6 @@ class SwaptionConfig:
         elif exercise_lag_days is not None:
             raise ValueError("exercise_lag_days is only meaningful with swap_tenor")
         book_swap_dates(self, swap_tenor, forward_start)
-        refuse_in_progress_overnight(self)
         if not isinstance(self.exercise_date, ORE.Date):
             raise TypeError(f"exercise_date must be an ORE.Date; got {self.exercise_date!r}")
         if not self.exercise_date < self.maturity_date:

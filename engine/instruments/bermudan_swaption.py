@@ -22,7 +22,7 @@ from engine.instruments._validation import (
     _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
 )
 from engine.instruments.schedules import (
-    book_swap_dates, build_vanilla_swap, is_live, overnight_index, refuse_in_progress_overnight, validate_fixings,
+    book_swap_dates, build_vanilla_swap, is_live, overnight_index, validate_fixings,
 )
 from engine.market_data.day_counts import time_from_reference
 
@@ -102,7 +102,6 @@ class BermudanSwaptionConfig:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
-        refuse_in_progress_overnight(self)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)
         if len(self.exercise_dates) == 0:

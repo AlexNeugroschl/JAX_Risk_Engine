@@ -102,6 +102,8 @@ def legs_of(swap: ORE.VanillaSwap, payer: bool, asof: ORE.Date, fixings: Mapping
     """`Legs` of an ORE swap from coupon `first_fixed`/`first_float` on (the underlying an
     exercise enters, `Swaption::buildUnderlyingSwaps`)."""
     t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(asof, d)  # noqa: E731
+    # An overnight-index swap's coupons fixed by realised compounding (`build_overnight_swap`).
+    fixings = {**fixings, **getattr(swap, "fixings", {})}
     fixed = [ORE.as_fixed_rate_coupon(c) for c in swap.fixedLeg()][first_fixed:]
     floating = [ORE.as_floating_rate_coupon(c) for c in swap.floatingLeg()][first_float:]
     periods = [par_coupon_forecast_period(c) for c in floating]

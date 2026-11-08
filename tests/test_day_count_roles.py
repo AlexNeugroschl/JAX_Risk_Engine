@@ -155,33 +155,35 @@ class TestUnsupportedDayCountIsRefused:
     """An unsupported day count is refused, not replaced by ACT/365 (which would give a
     wrong accrual)."""
 
-    @pytest.mark.parametrize("name", ("ACT/360", "30/360", "ACT/ACT", "", "Actual365Fixed"))
+    @pytest.mark.parametrize("name", ("30E/360", "ACT/ACT", "", "Actual365Fixed"))
     def test_unsupported_names_raise(self, name):
         with pytest.raises(UnsupportedDayCountError, match="not supported"):
             resolve_accrual_day_count(name)
 
-    def test_act360_is_refused_specifically(self):
-        """ACT/360 (USD-SOFR's convention) is refused: it is not implemented, and ACT/365
-        instead would move every accrual by 1.389%."""
+    def test_the_traderx_forks_day_counts_are_ores(self):
+        """ACT/360 (the overnight indices', R3) and 30/360 (US bond basis, R4) are supported
+        in the TraderX fork, as ORE's own day counters; the Eurobond 30/360 is still refused."""
+        assert resolve_accrual_day_count("ACT/360").name() == ORE.Actual360().name()
+        assert resolve_accrual_day_count("30/360").name() == ORE.Thirty360(ORE.Thirty360.BondBasis).name()
         with pytest.raises(UnsupportedDayCountError):
-            resolve_accrual_day_count("ACT/360")
+            resolve_accrual_day_count("30E/360")
 
     def test_the_error_names_what_is_supported(self):
         with pytest.raises(UnsupportedDayCountError) as exc:
-            resolve_accrual_day_count("ACT/360")
+            resolve_accrual_day_count("30E/360")
         assert "ACT/365" in str(exc.value)
         assert "refused rather than" in str(exc.value)
 
     def test_builder_refuses_at_build_time(self):
         with pytest.raises(UnsupportedDayCountError):
-            _swap("ACT/360")
+            _swap("30E/360")
 
     def test_swap_config_refuses_at_construction(self):
         """Refused at construction, where the trade is identifiable."""
         with pytest.raises(UnsupportedDayCountError):
             SwapConfig(trade_id="swap-L159", 
                 notional=1e6, fixed_rate=0.04, payer=True,
-                    swap_tenor="5Y", evaluation_date=EVAL_DATE, accrual_day_count="ACT/360",
+                    swap_tenor="5Y", evaluation_date=EVAL_DATE, accrual_day_count="30E/360",
             )
 
     def test_an_ore_daycounter_passes_through(self):

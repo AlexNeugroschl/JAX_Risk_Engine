@@ -733,6 +733,8 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
 | `SwapConfig.fixings` | none | T21, T36, T40 | · | · | · | · |
 | `SwapConfig.fixings` | past fixings | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | 30/360 | T41 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/360 | T41 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/365 | T21, T36, T40, T41, T43 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T21, T36, T40, T41 | · | · | · | · |
 | `SwaptionConfig.payer` | payer | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
@@ -777,14 +779,16 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `AmericanSwaptionConfig.long_short` | Short | · | · | · | T21, T39 | · |
 | `BondConfig.currency` | = USD | · | · | · | · | T21, T40 |
 | `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | 30/360 | · | · | · | · | R2 |
+| `BondConfig.accrual_day_count` | ACT/360 | · | · | · | · | R2 |
 | `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T21 |
 | `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T21, T40 |
 | `BondConfig.coupon_schedule` | coupons | · | · | · | · | T21, T40 |
 | `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T21 |
 | `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T21, T40 |
-| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R3 |
 | `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T21, T40 |
-| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R4 |
 | `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
 | `LgmSwaptionEngineConfig.calibration` | None | · | · | T10, T11, T21, T42 | T10, T11, T21, T42 | · |
 | `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
@@ -818,7 +822,7 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `JamshidianEngineConfig.reversion` | any | · | T2, T3, T4 | · | · | · |
 | `JamshidianEngineConfig.volatility` | any | · | T2, T3, T4 | · | · | · |
 | `JamshidianEngineConfig.solver` | Newton | · | T2, T3, T4 | · | · | · |
-| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R5 | · | · | · |
 | `RunConfig.base_currency` | USD | T21, T36, T40, T41, T43 | T2, T3, T4, T21, T32, T39, T40 | T9, T10, T11, T12, T21, T34, T39, T40, T42 | T10, T11, T13, T21, T34, T39, T40, T42 | T21, T40 |
 | `RunConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
 
@@ -837,6 +841,8 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
 | `SwapConfig.fixings` | none | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
 | `SwapConfig.fixings` | past fixings | T24, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | 30/360 | R2 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/360 | R2 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/365 | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T24, T26, T27, T28, T29, T33 | · | · | · | · |
 | `SwaptionConfig.payer` | payer | · | T1, T22, T24, T26, T27, T28, T29, T31 | · | · | · |
@@ -881,14 +887,16 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `AmericanSwaptionConfig.long_short` | Short | · | · | · | T22 | · |
 | `BondConfig.currency` | = USD | · | · | · | · | T24, T25, T26, T27, T28, T29 |
 | `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | 30/360 | · | · | · | · | R2 |
+| `BondConfig.accrual_day_count` | ACT/360 | · | · | · | · | R2 |
 | `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T25 |
 | `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T24, T25, T26, T27, T28, T29 |
 | `BondConfig.coupon_schedule` | coupons | · | · | · | · | T24, T25, T26, T27, T28, T29 |
 | `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T25 |
 | `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T24, T25, T26, T27, T28, T29 |
-| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R3 |
 | `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T24, T25, T26, T27, T28, T29 |
-| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R4 |
 | `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
 | `LgmSwaptionEngineConfig.calibration` | None | · | · | T23 | T23 | · |
 | `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
@@ -922,7 +930,7 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `JamshidianEngineConfig.reversion` | any | · | T1 | · | · | · |
 | `JamshidianEngineConfig.volatility` | any | · | T1 | · | · | · |
 | `JamshidianEngineConfig.solver` | Newton | · | T1 | · | · | · |
-| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R5 | · | · | · |
 | `CamConfig.ir` | LgmConfig | T24, T25, T26, T27, T28, T29, T33 | T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.ir` | HullWhiteConfig | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T24, T25, T26, T27, T28, T29, T31 | T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.curve_tenors` | = the 13 defaults | T1, T24, T25, T26, T27, T28, T29 | T1, T22, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T24, T25, T26, T27, T28, T29 |
@@ -932,13 +940,13 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `CamConfig.bootstrap_tolerance` | = 0.0001 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.bootstrap_tolerance` | ≠ 0.0001 | T25 | T25 | T25 | T25 | T25 |
 | `CamConfig.replicates` | = 1 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
-| `CamConfig.replicates` | ≠ 1 | R5 | R5 | R5 | R5 | R5 |
+| `CamConfig.replicates` | ≠ 1 | R6 | R6 | R6 | R6 | R6 |
 | `CamConfig.base_currency` | USD | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
 | `CamConfig.fx_volatilities` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.fx_volatilities` | FX simulated | R1 | R1 | R1 | R1 | R1 |
 | `CamConfig.equity_volatilities` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
-| `CamConfig.equity_volatilities` | equities simulated | R6 | R6 | R6 | R6 | R6 |
+| `CamConfig.equity_volatilities` | equities simulated | R7 | R7 | R7 | R7 | R7 |
 | `CamConfig.correlations` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `CamConfig.correlations` | correlated | R1 | R1 | R1 | R1 | R1 |
 | `LgmConfig.reversion` | zero | T25 | T25 | T25 | T25 | T25 |
@@ -956,7 +964,7 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `LgmConfig.swap_index.index_tenor_months` | ≠ 6 | T25 | T25 | T25 | T25 | T25 |
 | `LgmConfig.solver` | Newton | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `LgmConfig.solver` | Bisection | T25 | T25 | T25 | T25 | T25 |
-| `PortfolioRequest.pfe_quantiles` | = (0.95, 0.99) | R7 | R7 | R7 | R7 | R7 |
+| `PortfolioRequest.pfe_quantiles` | = (0.95, 0.99) | R8 | R8 | R8 | R8 | R8 |
 | `PortfolioRequest.pfe_quantiles` | ≠ (0.95, 0.99) | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 |
 | `RunConfig.base_currency` | USD | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
 | `RunConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
@@ -976,6 +984,8 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
 | `SwapConfig.fixings` | none | T16, T18, T20, T37, T38 | · | · | · | · |
 | `SwapConfig.fixings` | past fixings | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | 30/360 | R2 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/360 | R2 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/365 | T16, T18, T20, T37, T38 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T16, T18, T20, T37, T38 | · | · | · | · |
 | `SwaptionConfig.payer` | payer | · | T16, T17, T20, T37, T38 | · | · | · |
@@ -1020,14 +1030,16 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `AmericanSwaptionConfig.long_short` | Short | · | · | · | T14, T20 | · |
 | `BondConfig.currency` | = USD | · | · | · | · | T16, T18, T20, T37, T38 |
 | `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | 30/360 | · | · | · | · | R2 |
+| `BondConfig.accrual_day_count` | ACT/360 | · | · | · | · | R2 |
 | `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T20 |
 | `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T16, T18, T20, T37, T38 |
 | `BondConfig.coupon_schedule` | coupons | · | · | · | · | T16, T18, T20, T37, T38 |
 | `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T20 |
 | `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T16, T18, T20, T37, T38 |
-| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R3 |
 | `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T16, T18, T20, T37, T38 |
-| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R4 |
 | `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T14, T20, T37 | T14, T20, T37 | · |
 | `LgmSwaptionEngineConfig.calibration` | None | · | · | T14, T20 | T14, T20 | · |
 | `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T14, T20, T37 | T14, T20, T37 | · |
@@ -1057,13 +1069,13 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `LgmSwaptionEngineConfig.solver` | Newton | · | · | T14, T20, T37 | T14, T20, T37 | · |
 | `LgmSwaptionEngineConfig.solver` | Bisection | · | · | T20 | T20 | · |
 | `PricingConfig.european` | Bachelier | · | T16, T17, T20, T37, T38 | · | · | · |
-| `PricingConfig.european` | Jamshidian | · | R4 | · | · | · |
-| `JamshidianEngineConfig.reversion` | any | · | R4 | · | · | · |
-| `JamshidianEngineConfig.volatility` | any | · | R4 | · | · | · |
-| `JamshidianEngineConfig.solver` | Newton | · | R4 | · | · | · |
-| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `PricingConfig.european` | Jamshidian | · | R5 | · | · | · |
+| `JamshidianEngineConfig.reversion` | any | · | R5 | · | · | · |
+| `JamshidianEngineConfig.volatility` | any | · | R5 | · | · | · |
+| `JamshidianEngineConfig.solver` | Newton | · | R5 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R5 | · | · | · |
 | `GreeksConfig.method` | Bump | T16, T18, T20, T37 | T16, T17, T20, T37 | T14, T20, T37 | T14, T20, T37 | T16, T18, T20, T37 |
-| `GreeksConfig.method` | AD | T20, T38 | T20, T38 | R8 | R8 | T20, T38 |
+| `GreeksConfig.method` | AD | T20, T38 | T20, T38 | R9 | R9 | T20, T38 |
 | `SensitivityConfig.curve_tenors` | = the 13 defaults | T20, T37, T38 | T20, T37, T38 | T20, T37 | T20, T37 | T20, T37, T38 |
 | `SensitivityConfig.curve_tenors` | ≠ the 13 defaults | T16, T18, T20 | T16, T17, T20 | T14, T20 | T14, T20 | T16, T18, T20 |
 | `SensitivityConfig.curve_shift` | = 0.0001 | T18, T20, T37, T38 | T17, T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | T18, T20, T37, T38 |
@@ -1090,6 +1102,8 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
 | `SwapConfig.fixings` | none | T5, T6, T7, T8, T19 | · | · | · | · |
 | `SwapConfig.fixings` | past fixings | T19 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | 30/360 | R2 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/360 | R2 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/365 | T5, T6, T7, T8, T19 | · | · | · | · |
 | `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T19 | · | · | · | · |
 | `SwaptionConfig.payer` | payer | · | T19 | · | · | · |
@@ -1134,14 +1148,16 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `AmericanSwaptionConfig.long_short` | Short | · | · | · | T19 | · |
 | `BondConfig.currency` | = USD | · | · | · | · | T5, T6, T7, T8, T19 |
 | `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | 30/360 | · | · | · | · | R2 |
+| `BondConfig.accrual_day_count` | ACT/360 | · | · | · | · | R2 |
 | `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T19 |
 | `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T5, T6, T7, T8, T19 |
 | `BondConfig.coupon_schedule` | coupons | · | · | · | · | T5, T6, T7, T8, T19 |
 | `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T19 |
 | `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T5, T6, T7, T8, T19 |
-| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R3 |
 | `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T5, T6, T7, T8, T19 |
-| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R4 |
 | `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T8, T15, T19 | T8, T15, T19 | · |
 | `LgmSwaptionEngineConfig.calibration` | None | · | · | T8, T19 | T19 | · |
 | `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T8, T15, T19 | T8, T15, T19 | · |
@@ -1175,21 +1191,21 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | `JamshidianEngineConfig.reversion` | any | · | T8 | · | · | · |
 | `JamshidianEngineConfig.volatility` | any | · | T8 | · | · | · |
 | `JamshidianEngineConfig.solver` | Newton | · | T8 | · | · | · |
-| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R5 | · | · | · |
 | `ShockScenarios.source` | monte-carlo | T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T19 | T8, T19 | T6, T7, T8, T19 |
 | `ShockScenarios.source` | historical | T5, T19 | T19 | T15, T19 | T15, T19 | T5, T19 |
 | `ShockScenarios.replicates` | one | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
-| `ShockScenarios.replicates` | several | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.replicates` | several | R10 | R10 | R10 | R10 | R10 |
 | `ShockScenarios.bootstrap_replicates` | = 128 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
-| `ShockScenarios.bootstrap_replicates` | ≠ 128 | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.bootstrap_replicates` | ≠ 128 | R10 | R10 | R10 | R10 | R10 |
 | `ShockScenarios.block_length` | = None | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
-| `ShockScenarios.block_length` | ≠ None | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.block_length` | ≠ None | R10 | R10 | R10 | R10 | R10 |
 | `ShockScenarios.bootstrap_seed` | = 42 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
-| `ShockScenarios.bootstrap_seed` | ≠ 42 | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.bootstrap_seed` | ≠ 42 | R10 | R10 | R10 | R10 | R10 |
 | `MarketRiskRequest.quantiles` | = (0.99, 0.975) | T7, T8, T19 | T7, T8, T19 | T8, T19 | T8, T19 | T7, T8, T19 |
 | `MarketRiskRequest.quantiles` | ≠ (0.99, 0.975) | T5, T6, T19 | T6, T19 | T15, T19 | T15, T19 | T5, T6, T19 |
 | `MarketRiskRequest.batch_size` | = 256 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
-| `MarketRiskRequest.batch_size` | ≠ 256 | R10 | R10 | R10 | R10 | R10 |
+| `MarketRiskRequest.batch_size` | ≠ 256 | R11 | R11 | R11 | R11 | R11 |
 | `MarketRiskRequest.base_currency` | = USD | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
 | `MarketRiskRequest.base_currency` | ≠ USD | R1 | R1 | R1 | R1 | R1 |
 
@@ -1267,15 +1283,16 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 **Reasons.**
 
 - **R1** (not compared yet) a second currency: the oracles are one-currency until F-04 extends them.
-- **R2** (ORE cannot express it) the oracle books a coupon bond redeemed at par; a bill redeemed below par is a TraderX instrument priced by its own pricer (I-93).
-- **R3** (ORE cannot express it) the oracle's bond pays each coupon at its period's end (ORE's leg data pays at a lag in days, not on a date per period), and a delayed last payment is valued wrong today (I-104).
-- **R4** (ORE cannot express it) ORE has no builder for QuantLib's Jamshidian engine, so no ORE analytic prices with it; its value and every market-risk scenario are QuantLib's engine's, in tests/test_jamshidian.py and tests/test_market_risk_ore_parity.py.
-- **R5** (not ORE's) the engine's own scrambles of its paths (X-1); on ORE's paths (L3) a cell is compared whatever drew them.
-- **R6** (not compared yet) an equity in the simulation: no equity trade yet (I-18, F-04).
-- **R7** (ORE cannot express it) ORE's exposure analytic reports one PFE quantile (`PfeQuantile`); each quantile is its own figure of one definition, compared at 0.95.
-- **R8** (not ORE's) a grid-priced option's AD Greeks are its price's derivatives, not ORE's 1bp secants across the grid's kinks (I-78); tests/test_greeks_bermudan.py holds them to central differences of the engine's own recalibrating price, and the result says so.
-- **R9** (not ORE's) a sampling-uncertainty setting (I-111, F-10): ORE has no error estimate of a VaR; every scenario's P&L is compared, whatever the setting.
-- **R10** (not ORE's) how many scenarios are revalued at once, a memory setting; the same P&L within the margin (tests/test_market_risk.py).
+- **R2** (not compared yet) a TraderX fork day count: a swap's npv is compared with ORE, a bond's with QuantLib (tests/test_traderx_products.py); its accrual fractions are ORE's own.
+- **R3** (ORE cannot express it) the oracle books a coupon bond redeemed at par; a bill redeemed below par is a TraderX instrument priced by its own pricer (I-93).
+- **R4** (ORE cannot express it) the oracle's bond pays each coupon at its period's end (ORE's leg data pays at a lag in days, not on a date per period), and a delayed last payment is valued wrong today (I-104).
+- **R5** (ORE cannot express it) ORE has no builder for QuantLib's Jamshidian engine, so no ORE analytic prices with it; its value and every market-risk scenario are QuantLib's engine's, in tests/test_jamshidian.py and tests/test_market_risk_ore_parity.py.
+- **R6** (not ORE's) the engine's own scrambles of its paths (X-1); on ORE's paths (L3) a cell is compared whatever drew them.
+- **R7** (not compared yet) an equity in the simulation: no equity trade yet (I-18, F-04).
+- **R8** (ORE cannot express it) ORE's exposure analytic reports one PFE quantile (`PfeQuantile`); each quantile is its own figure of one definition, compared at 0.95.
+- **R9** (not ORE's) a grid-priced option's AD Greeks are its price's derivatives, not ORE's 1bp secants across the grid's kinks (I-78); tests/test_greeks_bermudan.py holds them to central differences of the engine's own recalibrating price, and the result says so.
+- **R10** (not ORE's) a sampling-uncertainty setting (I-111, F-10): ORE has no error estimate of a VaR; every scenario's P&L is compared, whatever the setting.
+- **R11** (not ORE's) how many scenarios are revalued at once, a memory setting; the same P&L within the margin (tests/test_market_risk.py).
 
 <!-- ore-parity-matrix:end -->
 

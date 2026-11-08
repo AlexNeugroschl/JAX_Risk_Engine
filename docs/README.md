@@ -57,6 +57,8 @@ Every trade is valued today and on every simulated path by the engine ORE uses f
 - **[European Swaptions](instruments/european-swaptions.md)** — Bachelier on the market's
   swaption volatility (ORE's default), or Jamshidian's decomposition on a configured
   Hull-White model.
+- **[The TraderX fork](instruments/traderx-fork.md)** — overnight-index swaps and swaptions,
+  corporate bonds, cash equities and listed equity options, and the gaps left.
 - **[American & Bermudan Swaptions](instruments/american-bermudan-swaptions.md)** —
   multi/continuous-exercise-date options via a numeric LGM backward-induction engine
   (Hagan's quadrature convolution), calibrated to the trade's own basket, matching ORE's

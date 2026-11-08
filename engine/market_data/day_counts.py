@@ -36,9 +36,8 @@ SUPPORTED_ACCRUAL_DAY_COUNTS = {
     "ACT/365": ORE.Actual365Fixed(),
     # ORE's ISMA variant is ACT/ACT (ICMA), accruing against the coupon period.
     "ACT/ACT (ICMA)": ORE.ActualActual(ORE.ActualActual.ISMA),
-    # TraderX fork: US corporate bond basis (R4), and the overnight-index day count (R3). A
-    # term-index swap may not accrue ACT/360: only an `overnight_index` swap does, whose index
-    # counts days the same way (`engine.instruments.swap.SwapConfig`).
+    # TraderX fork: US corporate bond basis (R4), and the overnight indices' day count (R3), on
+    # any leg as ORE accrues them (an `overnight_index` swap takes its index's).
     "30/360": ORE.Thirty360(ORE.Thirty360.BondBasis),
     "ACT/360": ORE.Actual360(),
 }

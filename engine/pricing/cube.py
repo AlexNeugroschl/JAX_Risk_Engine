@@ -30,7 +30,6 @@ pricing configuration the models (audit A-3, I-63). A trade valued on another da
 market's is refused.
 """
 import dataclasses
-import functools
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -54,6 +53,7 @@ from engine.precision import Arithmetic, Precision, Stored, load, require_precis
 from engine.pricing.bermudan import bermudan_cube, bermudan_value, contract_exercise_dates
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import PricingContext, from_market
+from engine.pricing.equity import OptionPrice, option_terms
 from engine.pricing.european import (
     check_exercise_into_whole_periods, european_cube, european_terms, european_value, variance_on_path,
 )
@@ -99,7 +99,7 @@ class PortfolioValuation:
         dtypes = {c.dtype for c in self.columns}
         shared = len(dtypes) == 1 and not any(isinstance(c, Stored) for c in self.columns)
         dtype = dtypes.pop() if shared else jnp.float64
-        return jnp.stack([load(c, dtype) for c in self.columns], axis=-1)
+        return _output_cube(tuple(self.columns), jnp.dtype(dtype).name)
 
     def float64_cube(self) -> jax.Array:
         """The requested output cube, decoded and assembled in one compiled program.
@@ -119,14 +119,22 @@ class PortfolioValuation:
         return _output_cube(tuple(self.columns), jnp.dtype(dtype).name)
 
 
-@jax.jit
 def _float64_cube(columns):
-    return jnp.stack([load(c, jnp.float64) for c in columns], axis=-1)
+    return _output_cube(columns, "float64")
 
 
-@functools.partial(jax.jit, static_argnames="dtype")
 def _output_cube(columns, dtype):
-    return jnp.stack([load(c, dtype) for c in columns], axis=-1)
+    """The columns decoded into `dtype` and written one at a time into a preallocated host
+    buffer `[S, D, T]`, then moved to the device. A jitted stack of T operands compiles a
+    program per trade count whose XLA compile time grows superlinearly in T (TraderX R6:
+    47 s at 4,000 operands, 280 s at 8,000); this compiles nothing per T. Beside the buffer
+    there is one decoded column at a time (I-105), and the buffer's device copy."""
+    first = np.asarray(load(columns[0], dtype))
+    cube = np.empty(first.shape + (len(columns),), dtype=first.dtype)
+    cube[..., 0] = first
+    for i, column in enumerate(columns[1:], start=1):
+        cube[..., i] = np.asarray(load(column, dtype))
+    return jnp.asarray(cube)
 
 
 def require_unique_ids(trades: Sequence[Trade]) -> None:
@@ -314,12 +322,16 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
 
 
 def _equity_value(cfg, market: Market) -> float:
-    """An equity's or equity option's NPV today, by its market-risk price function on the
-    market's spot and curves, so the base and every scenario are one function."""
-    # At call time: the price functions import this module.
-    from engine.risk.greeks.price_functions import trade_price_function
-    fn = trade_price_function(cfg, market)
-    return float(fn.price(*fn.rates))
+    """An equity's or equity option's NPV today on the market's spot and discount curve, by the
+    pricer its market-risk price function revalues it with (`engine.pricing.equity`)."""
+    spot = market.equities[cfg.symbol].spot
+    if isinstance(cfg, EquityConfig):
+        return cfg.units * spot
+    if cfg.is_expired():
+        return 0.0
+    pricer = OptionPrice(cfg.option_type == "Call", cfg.exercise == "American", intrinsic=cfg.expiry_date == market.asof)
+    disc = from_market(market).discount[cfg.currency]
+    return float(pricer(option_terms(cfg, market), (jnp.log(jnp.asarray([spot], jnp.float64)), disc), None))
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,

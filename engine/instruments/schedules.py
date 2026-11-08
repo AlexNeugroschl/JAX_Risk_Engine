@@ -155,6 +155,8 @@ def build_vanilla_swap(
     floating_spread: float,
     accrual_day_count=None,
     overnight_index: Optional[OvernightIndex] = None,
+    today: Optional[ORE.Date] = None,
+    overnight_fixings=None,
 ) -> ORE.VanillaSwap:
     """An `ORE.VanillaSwap` built with `MakeVanillaSwap` from explicit booked dates, so
     the schedule does not depend on the evaluation date.
@@ -166,7 +168,7 @@ def build_vanilla_swap(
     """
     if overnight_index is not None:
         return build_overnight_swap(notional, fixed_rate, effective_date, maturity_date,
-                                    index_tenor_months, floating_spread, overnight_index)
+                                    index_tenor_months, floating_spread, overnight_index, today, overnight_fixings)
     accrual = resolve_accrual_day_count(accrual_day_count)
     index = ibor_index(index_tenor_months)
     swap_type = ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver
@@ -192,16 +194,20 @@ class OvernightIndex:
     calendar: object
     day_count: str
     payment_lag_days: int
+    #: The calendar the index publishes on, whose business days its fixings compound over
+    #: (ORE's own index's `fixingCalendar()`).
+    fixing_calendar: object
 
 
 #: The overnight indices an `overnight_index` swap may name, with the standard OIS conventions:
 #: SOFR on the US government-bond calendar paid 2 days late, ESTR on TARGET paid 1 day late,
 #: SONIA on the UK calendar paid on the period end, TONA on the Japanese calendar paid 2 days late.
 OVERNIGHT_INDICES = {
-    "USD-SOFR": OvernightIndex("USD", ORE.UnitedStates(ORE.UnitedStates.GovernmentBond), "ACT/360", 2),
-    "EUR-ESTR": OvernightIndex("EUR", ORE.TARGET(), "ACT/360", 1),
-    "GBP-SONIA": OvernightIndex("GBP", ORE.UnitedKingdom(), "ACT/365", 0),
-    "JPY-TONA": OvernightIndex("JPY", ORE.Japan(), "ACT/365", 2),
+    "USD-SOFR": OvernightIndex("USD", ORE.UnitedStates(ORE.UnitedStates.GovernmentBond), "ACT/360", 2,
+                               ORE.Sofr().fixingCalendar()),
+    "EUR-ESTR": OvernightIndex("EUR", ORE.TARGET(), "ACT/360", 1, ORE.Estr().fixingCalendar()),
+    "GBP-SONIA": OvernightIndex("GBP", ORE.UnitedKingdom(), "ACT/365", 0, ORE.Sonia().fixingCalendar()),
+    "JPY-TONA": OvernightIndex("JPY", ORE.Japan(), "ACT/365", 2, ORE.Tonar().fixingCalendar()),
 }
 
 
@@ -223,8 +229,11 @@ class OvernightSwap:
     coupons with their lagged payment dates) and `maturityDate()`, the latest accrual end, as
     `ORE.Swap::maturityDate` gives it."""
 
-    def __init__(self, fixed, floating):
+    def __init__(self, fixed, floating, fixings=None):
         self._fixed, self._floating = fixed, floating
+        #: The term fixings of the coupons the realised compounding fixed
+        #: (`build_overnight_swap`), which `engine.pricing.legs.legs_of` reads.
+        self.fixings = fixings or {}
 
     def fixedLeg(self):
         return self._fixed
@@ -243,11 +252,22 @@ class OvernightSwap:
 
 
 def build_overnight_swap(notional: float, fixed_rate: float, effective_date: ORE.Date, maturity_date: ORE.Date,
-                         index_tenor_months: int, floating_spread: float, index: OvernightIndex) -> OvernightSwap:
+                         index_tenor_months: int, floating_spread: float, index: OvernightIndex,
+                         today: Optional[ORE.Date] = None, overnight_fixings=None) -> OvernightSwap:
     """An overnight-index swap paying every `index_tenor_months` on both legs (see the module
     docstring). The floating coupons reference a term index over the period with no fixing lag,
-    so they fix on their accrual start (an in-progress coupon needs its realised compounding,
-    which `refuse_in_progress_overnight` refuses) and forecast over exactly their accrual."""
+    so they fix on their accrual start and forecast over exactly their accrual.
+
+    With `today`, a coupon accruing on it (started, not yet paid) pays the compounding realised
+    from `overnight_fixings` (`{ORE.Date: rate}`, the index's daily fixings) times the forecast
+    from the first day not yet fixed, `split`:
+
+        N (C x P(split)/P(end) - 1) = N (C - 1)  +  N C (P(split)/P(end) - 1)
+
+    so it is replaced by two coupons paid on its payment date: one over `[start, split]` on
+    `N` with the known rate `(C - 1) / accrual`, and one over `[split, end]` on `N C`, which
+    forecasts as any other (`realised_compounding`). A spread is refused on such a coupon (its
+    amount would need a spread on `N` over the whole period, which one leg spread cannot carry)."""
     calendar, day_count = index.calendar, resolve_accrual_day_count(index.day_count)
     period = ORE.Period(index_tenor_months, ORE.Months)
     schedule = ORE.Schedule(effective_date, maturity_date, period, calendar, ORE.ModifiedFollowing,
@@ -258,22 +278,51 @@ def build_overnight_swap(notional: float, fixed_rate: float, effective_date: ORE
     floating = ORE.IborLeg([notional], schedule, term, day_count, ORE.ModifiedFollowing, [0], [1.0],
                            [floating_spread], paymentCalendar=calendar, paymentLag=index.payment_lag_days,
                            withIndexedCoupons=False)
-    return OvernightSwap(fixed, floating)
+    if today is None:
+        return OvernightSwap(fixed, floating)
+    coupons, fixings = [], {}
+    for c in map(ORE.as_floating_rate_coupon, floating):
+        start, end = c.accrualStartDate(), c.accrualEndDate()
+        if not start < today < c.date():
+            coupons.append(c)
+            continue
+        split, factor = realised_compounding(index, start, end, today, overnight_fixings or {})
+        if split < end and floating_spread != 0.0:
+            raise ValueError(f"an {index.currency} overnight coupon accruing {start.ISO()} to {end.ISO()} is in "
+                             f"progress on {today.ISO()}: a floating spread on it is not supported")
+        known = ORE.IborCoupon(c.date(), notional, start, split, 0, term, 1.0, floating_spread, start, split, day_count)
+        fixings[start] = (factor - 1.0) / day_count.yearFraction(start, split)
+        coupons.append(known)
+        if split < end:
+            coupons.append(ORE.IborCoupon(c.date(), notional * factor, split, end, 0, term, 1.0, 0.0, split, end,
+                                          day_count))
+    return OvernightSwap(fixed, ORE.Leg(coupons), fixings)
 
 
-def refuse_in_progress_overnight(cfg) -> None:
-    """An overnight coupon accruing on the evaluation date pays the realised compounding of the
-    days already past, which a single fixing cannot carry; refused, naming the trade."""
-    index = overnight_index(getattr(cfg, "overnight_index", None), cfg.currency)
-    if index is None:
-        return
-    swap = build_overnight_swap(1.0, 0.0, cfg.effective_date, cfg.maturity_date, cfg.index_tenor_months, 0.0, index)
-    for c in swap.floatingLeg():
-        c = ORE.as_floating_rate_coupon(c)
-        if c.accrualStartDate() < cfg.evaluation_date < c.date():
-            raise ValueError(f"trade {cfg.trade_id!r}: its {cfg.overnight_index} coupon accruing "
-                             f"{c.accrualStartDate().ISO()} to {c.accrualEndDate().ISO()} is in progress on "
-                             f"{cfg.evaluation_date.ISO()}; its realised compounding is not an input of this engine")
+def realised_compounding(index: OvernightIndex, start: ORE.Date, end: ORE.Date, today: ORE.Date,
+                         fixings) -> "tuple[ORE.Date, float]":
+    """`(split, C)`: the overnight compounding of `[start, end]` known on `today`, as QuantLib's
+    `OvernightIndexedCoupon` compounds it with no lookback or lockout. Each business day `d` of
+    the index's fixing calendar from `start` accrues its fixing to the next one (or `end`),
+    `C *= 1 + fixing(d) x yearFraction(d, next)`, while `known_fixing` takes the fixing as known
+    (before `today`: required, else `MissingFixingError`; on it: if supplied); `split` is the
+    first day not fixed, `end` once every day is."""
+    calendar, day_count = index.fixing_calendar, resolve_accrual_day_count(index.day_count)
+    # ponytail: `start` taken as a fixing-calendar business day, as every OIS schedule date is.
+    d, factor = start, 1.0
+    while d < end:
+        try:
+            rate = known_fixing(d, today, fixings)
+        except MissingFixingError:
+            raise MissingFixingError(f"missing overnight fixing for {d}: the coupon accruing {start.ISO()} to "
+                                     f"{end.ISO()} is in progress on {today}; supply every past day's fixing in "
+                                     f"the trade's overnight_fixings") from None
+        if rate is None:
+            break
+        following = min(calendar.advance(d, 1, ORE.Days), end)
+        factor *= 1.0 + rate * day_count.yearFraction(d, following)
+        d = following
+    return d, factor
 
 
 def par_coupon_forecast_period(coupon) -> "tuple[ORE.Date, ORE.Date, float]":

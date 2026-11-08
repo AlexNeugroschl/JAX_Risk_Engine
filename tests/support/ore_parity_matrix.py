@@ -410,7 +410,14 @@ _GRID_AD = Reason(NOT_ORES, "a grid-priced option's AD Greeks are its price's de
                             "central differences of the engine's own recalibrating price, and the result says so")
 
 #: `(analytic, product, setting, value)` -> why the cell has no test; "*" matches anything.
+#: The TraderX fork's day counts beyond a swap's npv (T41): ORE's accrual fractions, read as every other
+#: day count's are; the corporate bond's 30/360 npv is QuantLib's in tests/test_traderx_products.py.
+_FORK_DAY_COUNT = Reason(NOT_YET, "a TraderX fork day count: a swap's npv is compared with ORE, a bond's with "
+                                  "QuantLib (tests/test_traderx_products.py); its accrual fractions are ORE's own")
 REASONS: Dict[Tuple[str, str, str, str], Reason] = {
+    **{(analytic, product, f"{cls}.accrual_day_count", day_count): _FORK_DAY_COUNT
+       for analytic in TRADE_ANALYTICS for product, cls in (("swap", "SwapConfig"), ("bond", "BondConfig"))
+       for day_count in ("30/360", "ACT/360") if (analytic, product) != ("npv", "swap")},
     ("*", "*", "SwapConfig.currency", "≠ USD"): _SECOND_CURRENCY,
     ("*", "*", "SwaptionConfig.currency", "≠ USD"): _SECOND_CURRENCY,
     ("*", "*", "BermudanSwaptionConfig.currency", "≠ USD"): _SECOND_CURRENCY,
@@ -490,6 +497,8 @@ _TERM = "a trade term, drawn by the sweeps (tests/support/parity_sweep.py)"
 _IDENTITY = "identity: names the trade, or the date it is valued on (the market's as-of date)"
 _MARKET = "market data, drawn by the sweeps: sloped, inverted, negative, flat and steep first segments"
 _RUN = "what the request runs on, or which analytics and outputs it asks for: no number depends on it"
+_FORK = ("a TraderX fork term, compared with QuantLib in tests/test_traderx_products.py, not with an ORE analytic "
+         "(docs/instruments/traderx-fork.md)")
 
 #: `Class.field` -> why it is an input, not a setting.
 INPUTS: Dict[str, str] = {
@@ -518,6 +527,10 @@ INPUTS: Dict[str, str] = {
     "CamConfig.seed": "the engine's random numbers (X-1); on ORE's paths (L3) none are drawn",
     "CamConfig.ir": _RUN,
     "LgmConfig.calibration_terms": "the basket's terms, with its expiries (`LgmConfig.calibration_expiries`)",
+    **{f"{cls.__name__}.overnight_index": _FORK for cls in TRADE_CLASSES
+       if "overnight_index" in {f.name for f in dataclasses.fields(cls)}},
+    "SwapConfig.overnight_fixings": _FORK, "BondConfig.credit_spread": _FORK,
+    "LgmSwaptionEngineConfig.exercise_on_period_starts": _FORK, "LgmSwaptionEngineConfig.swap_index_from_trade": _FORK,
 }
 #: Classes whose every field has one reason.
 CLASS_REASONS: Dict[type, Reason] = {cls: _PRECISION for cls in

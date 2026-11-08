@@ -70,8 +70,8 @@ the reviewed records, all 127 precision-evidence/report checks pass with a print
 | [I-119](#i-119) | On a GPU, XLA cannot compile a reverse-mode derivative of a calibrated option's price | Low | OPEN | Scope | Fix what exists |
 | [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
-| [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | Medium | OPEN | Scope | Waiting |
-| [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | Waiting |
+| [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | Medium | CLOSED (TraderX fork) | Scope | Waiting |
+| [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | PARTIAL (TraderX fork) | Scope | Waiting |
 
 The rows are in the roadmap's order. *Clusters* is stage 1, accurate and fast on TPU and GPU
 clusters.
@@ -496,6 +496,13 @@ alone moves every accrual by 1.389%, about 46 times a 1bp DV01 on a 5Y fixed leg
 accepted against an ORE reference on the same terms. Do not start on guessed conventions.
 Basel's USD swaps need it ([F-05](features.md#f-05)).
 
+**TraderX fork (2026-11-07): closed.** TraderX supplied the convention set (its request R3).
+`overnight_index` (`USD-SOFR`, `EUR-ESTR`, `GBP-SONIA`, `JPY-TONA`) builds an OIS on the index's
+calendar, day count and payment lag, compounded in arrears with no lookback or lockout, on
+swaps and swaptions; a seasoned coupon takes the index's daily `overnight_fixings`. Accepted
+against QuantLib's `OvernightIndexedSwap` on each convention
+([the fork's products](../instruments/traderx-fork.md)).
+
 <a id="i-07"></a>
 ### I-07 — No corporate bond, equity or listed-option pricer
 
@@ -508,6 +515,12 @@ credit pricing, so corporates need a credit model. The simulation's equities
 and equity trades are [F-04](features.md#f-04).
 
 **To close.** Per instrument, on demand: a config, a pricer, and ORE parity tests.
+
+**TraderX fork (2026-11-07): partial.** Cash equities, listed equity options (American and
+European, finite differences) and corporate bonds with a flat credit spread price for `npv`
+and `market_risk`, each against QuantLib ([the fork's products](../instruments/traderx-fork.md)).
+TIPS and FRNs are still unpriced, and the new products are refused on simulated paths and as
+Greeks.
 
 ---
 

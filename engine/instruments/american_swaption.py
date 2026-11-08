@@ -27,7 +27,7 @@ from engine.instruments._validation import (
 )
 from engine.instruments.bermudan_swaption import ExerciseStyle
 from engine.instruments.schedules import (
-    book_swap_dates, is_live, overnight_index, refuse_in_progress_overnight, validate_fixings,
+    book_swap_dates, is_live, overnight_index, validate_fixings,
 )
 from engine.market_data.day_counts import time_from_reference
 
@@ -103,7 +103,6 @@ class AmericanSwaptionConfig:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
-        refuse_in_progress_overnight(self)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)
         for name in ("first_exercise_date", "last_exercise_date"):

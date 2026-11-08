@@ -572,10 +572,13 @@ class SwapTradeSchema(_SwapTerms):
     trade_type: Literal["swap"] = "swap"
     accrual_day_count: str = "ACT/365"
     fixings: Dict[str, float] = Field(default_factory=dict)
+    #: An `overnight_index` swap's daily index fixings by date (TraderX fork): every day before
+    #: the evaluation date of a coupon accruing on it.
+    overnight_fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, evaluation_date, trade_id) -> SwapConfig:
         return SwapConfig(**self._common(evaluation_date, trade_id), accrual_day_count=self.accrual_day_count,
-                          fixings=_parse_fixings(self.fixings))
+                          fixings=_parse_fixings(self.fixings), overnight_fixings=_parse_fixings(self.overnight_fixings))
 
 
 class _OptionTerms(_SwapTerms):
