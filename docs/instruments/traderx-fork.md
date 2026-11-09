@@ -23,6 +23,7 @@ TraderX class or field still refused or mapped lossily.
 | R5 American at least the Bermudan | `config.pricing.american.exercise_on_period_starts: true` | The American's exercise grid also holds every underlying period start in its window | The Bermudan on those dates bounds it from below (ORE's default grid stays the default) |
 | R6 compile time | none | Market risk assembles the `[scenario, trade]` P&L on the host; the exposure cube is filled column by column into a preallocated host buffer | See [R6 timings](#r6-timings) |
 | Batching (TraderX's own, not an R request) | none | On an accelerator, market risk revalues trades of one shape together: their terms stacked, each program mapped over them, one call and one host sync per group of up to `trades_per_call`; a CPU still takes one trade a call | See [Same-shape trades in one call](#same-shape-trades-in-one-call) |
+| Scenario draw (TraderX's own) | none | Monte Carlo scenarios are the Sobol normals times the covariance's symmetric root, so one request draws the same scenarios on every host | See [One draw on every host](#one-draw-on-every-host) |
 | — | `config.pricing.{bermudan,american}.swap_index_from_trade: true` | Each option calibrates on its own underlying's conventions | — |
 
 ACT/360 and 30/360 are accrual day counts of every product (`SUPPORTED_ACCRUAL_DAY_COUNTS`),
@@ -161,8 +162,8 @@ whole suite passes but `test_sharding` (4,339 passed, 18 skipped), which fails o
 **The A100's `VaR_99` of the sample is not the Mac's, and that is the scenarios, not the
 device.** The 1,136-trade sample gives `VaR_99` 59,274,718.60 on the A100 and 59,689,775.14 on
 the Mac, 0.7% apart. Every npv and every rates trade's P&L agree; every cash equity's and
-equity option's P&L differ, by 30–40% of their largest. The pod draws other equity shocks than
-the Mac from the same request: see the Monte Carlo draw under "Found on the way" below. On the
+equity option's P&L differ, by 30–40% of their largest. The pod drew other equity shocks than
+the Mac from the same request, fixed since: see [One draw on every host](#one-draw-on-every-host). On the
 A100, grouped and ungrouped agree within 2.5e-12 of each trade's largest P&L (`VaR_99` 2.4e-14
 apart); run to run, its Bermudans' and Americans' P&L move by up to 1.1e-15 (the GPU's
 summation order). On the Mac, grouping forced at the A100's group sizes reproduces the
@@ -174,6 +175,64 @@ every per-trade P&L agrees within 5e-11 of that trade's largest
 (Americans; Bermudans 3e-14, the linear classes 7e-16, cash equities and swaps bit for bit) and
 `VaR_99` within 2e-13. `TestGroupedRevaluation` checks a group against each trade revalued alone
 at float64 and float32, a short Bermudan among long ones.
+
+## One draw on every host
+
+**The defect** (upstream's, found 2026-11-09). `MonteCarloScenarios.draw` took the covariance's
+root as `V sqrt(L)` from `np.linalg.eigh`. That is a root for every choice of eigenvectors `V`,
+and the choice is not unique: each eigenvector's sign is free, and a repeated eigenvalue's
+eigenvectors are any basis of its space. TraderX's covariance (140 factors, its 50 equity spots
+equally correlated) has 48 pairs of eigenvalues within 1e-10 of each other. numpy's eigenvectors
+there differ by BLAS and by CPU: on the book's request the Mac (Accelerate), a Linux arm64
+container, a Linux amd64 container and the A100 pod (all OpenBLAS, numpy 2.4.6) drew four
+different sets of equity shocks, up to 0.29 apart, of one distribution. The sample's `VaR_99` was
+59,689,775 on the Mac and 59,274,719 on the pod.
+
+**The fix.** The draw is the Sobol normals times the covariance's symmetric root,
+`V sqrt(L) V^T` (`engine.risk.market.scenarios.symmetric_root`). A positive semi-definite matrix
+has exactly one symmetric positive semi-definite root, whatever `V` the decomposition returns,
+so the scenarios are a function of the request alone. On the book's covariance the three numpy
+builds above agree within 1.5e-15 on every shock.
+
+**Why this and not another mechanism.**
+
+| Mechanism | Why not |
+|---|---|
+| Cholesky | Unique only for a positive definite matrix. The engine accepts singular covariances (perfectly correlated pillars, `test_singular_covariance_is_accepted`); a jitter to admit them changes the distribution, and pivoting breaks ties by rounding, host by host |
+| Fixing the eigenvectors (signs, a canonical basis in each repeated eigenvalue's space) | Needs a tolerance to say which eigenvalues are equal, and the draw would jump where a gap crosses it; the book's pairs are 1e-10 apart, not equal |
+| Storing the drawn shocks with the run | Makes a replay of that run reproducible; a fresh run of the same request on another host still draws others. It can be added on top |
+
+**What changes.** The distribution does not: the scenarios have the requested covariance
+exactly as before (`R R^T = V L V^T`). The realizations do, on every factor, so every Monte
+Carlo figure moves once, by sampling noise; historical scenarios and scenarios given as shifts
+are untouched. Before, Sobol dimension `k` drove eigenvector `k` (smallest eigenvalue first, so
+the leading dimensions carried the least variance); now it is centred on factor `k`. Measured on
+the Mac:
+
+| Request | `VaR_99` before | after | `ES_97.5` before | after |
+|---|---|---|---|---|
+| TraderX's VaR/ES proof, 17 trades, 1,024 scenarios | 373,857.16 | 381,036.79 (+1.9%) | 381,254.68 | 379,224.28 (−0.5%) |
+| Every tenth trade of the book, 1,136 trades, 256 scenarios | 59,689,775.14 (Mac), 59,274,718.60 (pod) | 63,607,091.37 (+6.6%, +7.3%) | — | 58,760,256.65 |
+
+The proof's covariance (61 factors, one equity) has no repeated eigenvalue, which is why the
+Mac and the pods agreed on it before. No test and no TraderX check holds a Monte Carlo figure
+taken from the engine: the suite's expected values are closed forms and ORE's, and they pass
+unchanged.
+
+**The test** (`TestMonteCarloScenarios::test_the_draw_does_not_depend_on_the_eigenvectors`)
+needs one machine. On an equally correlated covariance it checks the draw against the normals
+times the symmetric root in closed form, then again with `np.linalg.eigh` returning a rotated
+basis of the repeated eigenvalue's space and a flipped sign. Both fail on the draw as it was.
+
+The fix is to rounding, not to the bit: hosts' roots differ in the last place (1.5e-15 here).
+
+**Open: one ORE-parity sweep case.** The whole suite passes but `test_sharding` (as before) and
+`test_ore_parity_sweep.py::test_market_risk_is_ores[seed-18]`: under the new draw's scenario 9
+of 32, a recalibrated American's P&L is 9.1e-5 off ORE's (3.3e-10 of its notional, 8.4e-8 of the
+P&L; the sweep allows 1e-11 of the notional). The pricing is untouched, so the same market move
+gives the same difference on the code before; the old sample did not reach it. Which side it is
+(ORE's optimiser stopping at its tolerance, as in the sweep's other recorded cases, or the
+engine) is not yet established.
 
 ## Remaining gaps
 
@@ -197,19 +256,11 @@ The extract's classes and fields not listed here price exactly as booked.
 
 ## Found on the way (upstream, not the fork)
 
-- **A Monte Carlo draw depends on the host's BLAS.** `MonteCarloScenarios.draw`
-  (`engine/risk/market/scenarios.py`, upstream) takes the covariance's root from
-  `np.linalg.eigh`. TraderX's covariance (140 factors, 50 of them equity spots) has 48 pairs of
-  eigenvalues equal to 1e-10 of the largest, all in its equity block, and there the
-  eigenvectors are any basis of their space: numpy on Accelerate (the Mac) and on OpenBLAS (the
-  engine's Linux image) return different ones. Every one of the 50 equity factors' shocks
-  differs, by up to 0.25 (2026-11-09, numpy 2.4.6, on the sample and on the whole book alike);
-  the rates factors' agree. Each draw has the requested covariance, so neither is wrong, but one
-  request gives another VaR on another host. A root that does not depend on the basis (the
-  symmetric square root, `V sqrt(L) V^T`, unique for a positive semi-definite matrix) would
-  make the draw the same everywhere, to rounding. The two Linux pods (c4d and A100) draw the
-  same shocks. The Mac's November 7 book run agreed with them to 1e-15 although its shocks would
-  differ by the same mechanism; which numpy that run used is not recorded.
+- **A Monte Carlo draw depends on the host's BLAS** on upstream `17ac757`
+  (`MonteCarloScenarios.draw`, `engine/risk/market/scenarios.py`): fixed in the fork, see
+  [One draw on every host](#one-draw-on-every-host). The two Linux pods (c4d and A100) drew the
+  same shocks as each other. The Mac's November 7 book run agreed with them to 1e-15 although
+  its shocks would differ by the same mechanism; which numpy that run used is not recorded.
 
 - **Two American swaption parity misses on upstream `17ac757`.** Letting the ORE-parity sweep
   draw ACT/360 and 30/360 reaches two cases, `seed-24` (Greeks, an index delta) and `seed-39`

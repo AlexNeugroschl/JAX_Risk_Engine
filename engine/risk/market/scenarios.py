@@ -131,17 +131,33 @@ class MonteCarloScenarios:
                                                                     self.num_scenarios, self.replicates))
 
     def draw(self, dtype=jnp.float64) -> ShockScenarios:
-        """The `ShockScenarios`: scrambled Sobol normals times a root of the covariance."""
-        eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
-        # Eigenvalues below round-off of the largest are zero: a rank-deficient
-        # covariance otherwise gains ~1e-10 of spurious noise per move from the
-        # square roots of its ~1e-21 numerical eigenvalues.
-        eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
-        root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
+        """The `ShockScenarios`: scrambled Sobol normals times the covariance's symmetric root
+        (`symmetric_root`), so one request draws the same scenarios on every host."""
         normals = np.asarray(generate_sobol_normals(self.num_scenarios, 1, self.factors.size, dtype,
                                                     seed=self.seed, replicates=self.replicates)[0])
-        return ShockScenarios(factors=self.factors, shifts=normals @ root.T, horizon_days=self.horizon_days,
-                              source=SOURCE_MONTE_CARLO, replicates=self.replicates)
+        return ShockScenarios(factors=self.factors, shifts=normals @ symmetric_root(self.covariance),
+                              horizon_days=self.horizon_days, source=SOURCE_MONTE_CARLO, replicates=self.replicates)
+
+
+def symmetric_root(covariance: np.ndarray) -> np.ndarray:
+    """The symmetric positive semi-definite `R` with `R @ R = covariance`: `V sqrt(L) V^T` of
+    its eigendecomposition `V L V^T`.
+
+    A positive semi-definite matrix has one such root, whatever eigenvectors the decomposition
+    returns (TraderX fork, 2026-11-09). `V sqrt(L)`, the root the draw used before, is a root for
+    every choice of `V`, and `V` is not unique: each eigenvector's sign is free, and a repeated
+    eigenvalue's eigenvectors are any basis of its space (equally correlated factors repeat one).
+    numpy's choice differs by BLAS, so one request drew other scenarios, of the same
+    distribution, on another host: every equity factor of TraderX's book by up to 0.25 between
+    Accelerate and OpenBLAS, 0.7% of its VaR. Singular covariances are still accepted; Cholesky,
+    unique too, would refuse them.
+    """
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    # Eigenvalues below round-off of the largest are zero: a rank-deficient
+    # covariance otherwise gains ~1e-10 of spurious noise per move from the
+    # square roots of its ~1e-21 numerical eigenvalues.
+    eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
+    return (eigenvectors * np.sqrt(eigenvalues)[None, :]) @ eigenvectors.T
 
 
 def shock_scenarios(scenarios, dtype=jnp.float64) -> ShockScenarios:

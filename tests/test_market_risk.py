@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from engine.market_data.market import ZeroCurveConfig
+from engine.market_simulation.sobol import generate_sobol_normals
 from engine.precision import Arithmetic, Precision, StagePrecision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import value_today
@@ -101,6 +102,31 @@ class TestMonteCarloScenarios:
         singular = np.full((FACTORS.size, FACTORS.size), vol ** 2)
         shifts = monte_carlo_scenarios(FACTORS, singular, 10, 64, seed=1).shifts
         np.testing.assert_allclose(shifts, np.repeat(shifts[:, :1], FACTORS.size, axis=1), atol=1e-15)
+
+    def test_the_draw_does_not_depend_on_the_eigenvectors(self, monkeypatch):
+        """Equally correlated factors (TraderX's equities) give the covariance a repeated
+        eigenvalue, whose eigenvectors are any basis of its space: numpy's differ by BLAS, so a
+        draw read off them differed by host (TraderX fork, 2026-11-09). The draw is the normals
+        times the covariance's symmetric root, which is unique: here in closed form, and the same
+        when the decomposition returns another basis and other signs."""
+        n, variance, rho = FACTORS.size, 0.003 ** 2, 0.4
+        covariance = variance * ((1 - rho) * np.eye(n) + rho * np.ones((n, n)))
+        low, high = np.sqrt(variance * (1 - rho)), np.sqrt(variance * (1 - rho + n * rho))
+        root = low * np.eye(n) + (high - low) / n * np.ones((n, n))
+        normals = np.asarray(generate_sobol_normals(64, 1, n, jnp.float64, seed=1, replicates=1)[0])
+        shifts = monte_carlo_scenarios(FACTORS, covariance, 10, 64, seed=1).shifts
+        np.testing.assert_allclose(shifts, normals @ root, rtol=0, atol=1e-12 * high)
+
+        eigh = np.linalg.eigh
+
+        def another_basis(matrix):
+            values, vectors = eigh(matrix)
+            rotation, _ = np.linalg.qr(np.random.default_rng(0).standard_normal((n - 1, n - 1)))
+            return values, np.concatenate([vectors[:, :-1] @ rotation, -vectors[:, -1:]], axis=1)
+
+        monkeypatch.setattr(np.linalg, "eigh", another_basis)
+        again = monte_carlo_scenarios(FACTORS, covariance, 10, 64, seed=1).shifts
+        np.testing.assert_allclose(again, shifts, rtol=0, atol=1e-12 * high)
 
     def test_labels_and_measure(self):
         scenarios = _scenarios()
