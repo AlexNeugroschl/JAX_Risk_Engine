@@ -11,7 +11,7 @@ as-of date, every curve sampled at the simulation tenors: where ORE's exposure s
 of pricers values them all.
 """
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Mapping, Sequence
+from typing import Callable, Dict, Mapping, Sequence, Tuple
 
 import jax.numpy as jnp
 import ORE
@@ -58,9 +58,25 @@ def floating_volatility_date(date: ORE.Date) -> ORE.Date:
     return VOL_CALENDAR.adjust(date, VOL_BUSINESS_DAY_CONVENTION)
 
 
+#: The last market's context per dtype (`from_market`, TraderX fork).
+_CONTEXTS: Dict[str, Tuple[Market, PricingContext]] = {}
+
+
 def from_market(market: Market, dtype=jnp.float64) -> PricingContext:
     """Today's market: the zero curves as given, the vol surfaces read as ORE reads them on
-    the as-of date."""
+    the as-of date. The last market's context is kept per dtype and returned for that market
+    object again (TraderX fork): a run builds every trade's price function on one market, and
+    built per trade its curves were 7 s of a 63 s warm run on an A100 (2026-11-08). `Market` and
+    `PricingContext` are frozen and no caller changes a context's curves."""
+    key = jnp.dtype(dtype).name
+    hit = _CONTEXTS.get(key)
+    if hit is not None and hit[0] is market:
+        return hit[1]
+    _CONTEXTS[key] = (market, _from_market(market, dtype))
+    return _CONTEXTS[key][1]
+
+
+def _from_market(market: Market, dtype) -> PricingContext:
     discount: Dict[str, ZeroCurve] = {}
     index: Dict[str, ZeroCurve] = {}
     for code, data in market.currencies.items():

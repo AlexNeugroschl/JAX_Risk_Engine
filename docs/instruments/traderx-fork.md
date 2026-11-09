@@ -147,6 +147,22 @@ pass values every equity option position by position (market risk values each li
 once), the recalibration's buckets are many small programs per trade, and each trade's price
 function rebuilds the market's curves.
 
+**Two of them fixed since** (fork `c0abc66` → this commit): the `npv` pass values each listed
+equity-option contract once, one share's value times each trade's shares, as market risk does
+(`engine.pricing.cube._equity_value`); and `engine.pricing.context.from_market` keeps the last
+market's context per dtype, so a run builds the market's curves once, not once per trade.
+Every npv, P&L and `VaR_99` of the 1,136-trade sample is the same bit for bit on the Mac, where
+the `npv` pass fell from 3.5 s to 2.1 s; the A100 is not yet measured with them. The engine's
+whole suite passes but `test_sharding` (4,339 passed, 18 skipped), which fails on upstream
+`17ac757` too (below).
+
+**Open: the A100's `VaR_99` of the sample.** On the A100 the 1,136-trade sample (fork `3e1d1d9`)
+gave `VaR_99` 59,274,718.60; the Mac gives 59,689,775.14, 0.7% apart. On the Mac, grouping
+forced at the A100's group sizes (up to 16 Bermudans or Americans a call, 64 of the others)
+reproduces the Mac's ungrouped P&L within 2.6e-12 of each trade's largest, so the grouping
+itself is not the cause on a CPU. The whole book agreed across the two devices to 1e-15. Not
+yet explained; it needs the sample's per-trade P&L from the A100.
+
 **Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
 seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),
 every per-trade P&L agrees within 5e-11 of that trade's largest

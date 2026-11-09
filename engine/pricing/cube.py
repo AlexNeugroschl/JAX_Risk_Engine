@@ -316,22 +316,33 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
     context = cast_floating(context, dtype)
     context = dataclasses.replace(context, calibration_dtype=calibration_dtype)
     spots = reporting_fx_spots(trades, market, base_currency, "base_currency")
-    return [float(jnp.asarray(_equity_value(cfg, market) if isinstance(cfg, EQUITY_PRODUCTS) else
+    contracts = {}
+    return [float(jnp.asarray(_equity_value(cfg, market, contracts) if isinstance(cfg, EQUITY_PRODUCTS) else
                               value_on(cfg, context, pricing), dtype=dtype) *
                   jnp.asarray(spot, dtype=dtype)) for cfg, spot in zip(trades, spots)]
 
 
-def _equity_value(cfg, market: Market) -> float:
+def _equity_value(cfg, market: Market, contracts: Optional[Dict] = None) -> float:
     """An equity's or equity option's NPV today on the market's spot and discount curve, by the
-    pricer its market-risk price function revalues it with (`engine.pricing.equity`)."""
+    pricer its market-risk price function revalues it with (`engine.pricing.equity`). An option
+    is valued once per listed contract (`contracts`, TraderX fork), one share's value times the
+    trade's shares, as market risk revalues it (`engine.risk.market.run._trade_pnls`): the same
+    number, the pricer's value being the shares times one share's."""
     spot = market.equities[cfg.symbol].spot
     if isinstance(cfg, EquityConfig):
         return cfg.units * spot
     if cfg.is_expired():
         return 0.0
-    pricer = OptionPrice(cfg.option_type == "Call", cfg.exercise == "American", intrinsic=cfg.expiry_date == market.asof)
-    disc = from_market(market).discount[cfg.currency]
-    return float(pricer(option_terms(cfg, market), (jnp.log(jnp.asarray([spot], jnp.float64)), disc), None))
+    key = (cfg.symbol, cfg.option_type, cfg.strike, cfg.expiry_date.serialNumber(), cfg.exercise, cfg.currency)
+    contracts = {} if contracts is None else contracts
+    if key not in contracts:
+        share = dataclasses.replace(cfg, quantity=1.0, multiplier=1.0)
+        pricer = OptionPrice(cfg.option_type == "Call", cfg.exercise == "American",
+                             intrinsic=cfg.expiry_date == market.asof)
+        disc = from_market(market).discount[cfg.currency]
+        contracts[key] = float(pricer(option_terms(share, market), (jnp.log(jnp.asarray([spot], jnp.float64)), disc),
+                                      None))
+    return contracts[key] * cfg.units
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
