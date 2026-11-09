@@ -55,7 +55,7 @@ import ORE
 from jax.scipy.stats import norm
 
 from engine.instruments.schedules import evaluation_date, ibor_index, par_coupon_forecast_period
-from engine.market_data.curves import curve_dtype, discount
+from engine.market_data.curves import curve_dtype, discount, with_node_deviation
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER, resolve_accrual_day_count
 from engine.market_data.market import (
     VOL_BUSINESS_DAY_CONVENTION, VOL_CALENDAR, SwaptionVolSurface, swap_length, swap_length_between,
@@ -551,6 +551,47 @@ def bootstrap(basket: Sequence[BasketInstrument], disc, index, vols, dt, reversi
         ceiling.append(hit)
     stack = lambda xs: jnp.stack(xs, axis=-1)  # noqa: E731
     return stack(values), stack(markets), stack(models), stack(ceiling)
+
+
+def bootstrap_group(basket: Sequence[BasketInstrument], curves, shifts, vols, dt, reversion: float,
+                    solver: str = DEFAULT_SOLVER, dtype: str = "float64"):
+    """`bootstrap` of a group of baskets of one shape under scenarios of their curves (TraderX
+    fork): `basket[i]` is helper i of every trade, its arrays stacked along a leading trade axis
+    `G`; `curves` the base `(disc, index)`, `shifts` each curve's node deviation `[S, K]`; `vols`
+    and `dt` `[G, n]`. Returns `(values, market, model, hit_ceiling)`, each `[G, S, n]`: each
+    trade's `bootstrap` on each scenario's curves, moved in the curves' dtype and then read in
+    `dtype` (float64: A-10).
+
+    Each bucket is one jitted program per helper shape, group size and batch
+    (`_bootstrap_bucket_group`), the trades and scenarios mapped inside it. Trade by trade, a
+    recalibration under 256 scenarios was about 200 kernel launches and 0.23 s on an A100 (a
+    program and a few eager steps per bucket, traced again each call), most of a Bermudan's
+    revaluation (2026-11-08)."""
+    vols = jnp.asarray(vols, dtype=dtype)
+    dt = jnp.asarray(dt, dtype=dtype)
+    zeta_before = jnp.zeros((vols.shape[0], shifts[0].shape[0]), dtype=dtype)
+    buckets = []
+    for i, instrument in enumerate(basket):
+        sigma, market, model, hit, zeta_before = _bootstrap_bucket_group(
+            instrument, curves, shifts, vols, dt, i, zeta_before, reversion, solver=solver, dtype=dtype)
+        buckets.append((sigma, market, model, hit))
+    return tuple(jnp.stack(field, axis=-1) for field in zip(*buckets))
+
+
+@partial(jax.jit, static_argnames=("solver", "dtype"))
+def _bootstrap_bucket_group(instrument: BasketInstrument, curves, shifts, vols, dt, i, zeta_before, reversion, *,
+                            solver: str, dtype: str):
+    """Bucket `i` of `bootstrap_group`: `_bucket` of each trade's helper under each scenario's
+    curves, `[G, S]` each."""
+    def of_trade(helper, vol, length, zetas):
+        def under(shift, zeta):
+            disc, index = (jax.tree_util.tree_map(lambda a: jnp.asarray(a, dtype=dtype), with_node_deviation(c, s))
+                           for c, s in zip(curves, shift))
+            return _bucket(helper, disc, index, vol, zeta, length, reversion=reversion, solver=solver)
+
+        return jax.vmap(under)(shifts, zetas)
+
+    return jax.vmap(of_trade)(instrument, vols[:, i], dt[:, i], zeta_before)
 
 
 @jax.jit

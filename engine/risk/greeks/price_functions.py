@@ -84,7 +84,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from engine.calibration.lgm import (
-    BasketInstrument, basket_expiries, bootstrap, calibrated_values, calibration_misses,
+    BasketInstrument, basket_expiries, bootstrap, bootstrap_group, calibrated_values, calibration_misses,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
@@ -705,6 +705,21 @@ class ScenarioCalibration:
 
         return jax.vmap(one, in_axes=(0, None if moves.quotes is None else 0))(moves.shifts,
                                                                                 moved_quotes(quotes, moves))
+
+    def group(self, terms: Positioned, curves, quotes, moves: Moves):
+        """`__call__` for the trades of one group at once (their terms stacked along a leading
+        trade axis, `engine.risk.greeks.scenario_pnl.price_function_pnls`), under scenarios that
+        hold the quotes (market risk's): `(values [S, G, n], misses [S, G])`. Each bucket is one
+        program for the group and the batch (`engine.calibration.lgm.bootstrap_group`), where
+        trade by trade the recalibration was most of a Bermudan's revaluation on a GPU (TraderX
+        fork)."""
+        calibration, model = terms.terms.calibration, self.model
+        # As `CalibratedModel.market`: each helper's volatility a weighted sum of the quotes.
+        vols = jnp.sum(calibration.weights * jnp.asarray(quotes, dtype=model.dtype)[None, None], axis=(-2, -1))
+        values, market, fitted, hit = bootstrap_group(calibration.basket, curves, moves.shifts, vols, calibration.dt,
+                                                      model.reversion, model.solver, model.dtype)
+        misses = calibration_misses(market, fitted, hit, jnp.asarray(calibration.tolerance)[:, None])
+        return jnp.swapaxes(values, 0, 1), jnp.swapaxes(misses, 0, 1)
 
 
 def recalibrated_pnl(terms: OptionTerms, curves, _quotes, moves: Moves, arithmetic: Arithmetic):

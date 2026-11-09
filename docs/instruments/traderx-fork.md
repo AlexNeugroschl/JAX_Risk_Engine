@@ -179,6 +179,24 @@ first process (792 programs written, 74 MB) and 212.5 s in a second (816 of 816 
 cache), against 40.9 s warm in one process. The cache skips XLA's compile, not the tracing
 (58 s), the lowering to MLIR (52 s) or the reads (52 s).
 
+**Recalibration is the group's too** (2026-11-09). Market risk recalibrates a group's trades
+under a batch of scenarios with one program per bucket (`ScenarioCalibration.group`,
+`engine.calibration.lgm.bootstrap_group`: the trades and the scenarios mapped inside
+`_bootstrap_bucket_group`), a group of one included, on a CPU as on an accelerator. Trade by
+trade it was `jax.vmap` called outside a jit on a program per bucket, traced again each call:
+about 200 kernel launches a trade and batch on an A100, 0.23 s, 10.5 s of the sample's 31.9 s
+of revaluation. Where the scenarios move the quotes (a Vega bump) it is still per trade.
+
+- Its volatilities are the per-trade path's within the root solver's resolution (2e-12 of a
+  bucket's; never bit for bit), and the 20-Bermudan sample's P&L within 5.9e-15 of each trade's
+  largest.
+- A run's second and third pass compile nothing (that sample, grouping forced, the compile
+  events counted): the map is inside the jit.
+- On a CPU a call costs what it did (0.010 s against 0.012 s for one Bermudan), so a CPU run's
+  recalibrated options are no longer `a5bd7c3`'s bit for bit, only within the solver's
+  resolution; every other class still is.
+- Not yet measured on a GPU.
+
 **The A100's `VaR_99` of the sample is not the Mac's, and that is the scenarios, not the
 device.** The 1,136-trade sample gives `VaR_99` 59,274,718.60 on the A100 and 59,689,775.14 on
 the Mac, 0.7% apart. Every npv and every rates trade's P&L agree; every cash equity's and

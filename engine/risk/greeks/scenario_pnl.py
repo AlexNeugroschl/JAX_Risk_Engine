@@ -133,35 +133,40 @@ def price_function_pnls(cfgs, fns, rates, moves: Moves, pricing: PricingConfig, 
     programs, unmapped: mapped over one trade, a recalibrated Bermudan's took twice the CPU time
     (an 11-core Mac, 2026-11-08).
 
-    A recalibrated option's price and recalibration stay per trade, as each trade's own: mapped
-    outside a jit (the recalibration is a program per bucket, never one program,
-    `ScenarioCalibration`), a group's programs compiled again on the run after the first (117 s on
-    an A100, 2026-11-08). They are the cheap part; its P&L, the induction, is mapped."""
+    A recalibrated option's price stays per trade, as each trade's own. Its recalibration is
+    the group's, a group of one included: each bucket one program for its trades and scenarios
+    (`ScenarioCalibration.group`), where the scenarios hold the quotes (market risk's); per trade
+    where they move them (a Vega bump). Mapped outside a jit (`jax.vmap` called on the
+    recalibration, a program per bucket), a group's programs compiled again on the run after the
+    first (117 s on an A100, 2026-11-08)."""
     cfg, fn = cfgs[0], fns[0]
     count = len(fns)
     curves = curves_on(fn.nodes, rates)
     quotes = None if fn.quotes is None else jnp.asarray(fn.quotes)
+    padded = list(fns) + [fns[-1]] * ((1 << (count - 1).bit_length()) - count)
     if count == 1:
         terms = fn.terms
         values = np.asarray([fn.pricer(terms, curves, quotes)], dtype=np.float64)
-        calibrated = lambda per: fn.calibration(terms, curves, quotes, per)  # noqa: E731
     else:
-        padded = list(fns) + [fns[-1]] * ((1 << (count - 1).bit_length()) - count)
         terms = _stacked(padded)
         if fn.calibration is None:
             values = np.asarray(_prices(fn.pricer, terms, curves, quotes), dtype=np.float64)[:count]
         else:
             values = np.asarray([f.pricer(f.terms, curves, quotes) for f in fns], dtype=np.float64)
-        calibrated = lambda per: jax.tree_util.tree_map(  # noqa: E731
-            lambda *a: jnp.stack(a, axis=1), *(f.calibration(f.terms, curves, quotes, per) for f in padded))
     batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
     moves = moves._replace(shifts=tuple(n.deviation(s) for n, s in zip(fn.nodes, moves.shifts)))
     if fn.calibration is not None:
-        models, misses = _map_scenarios(lambda per, _ids: calibrated(per), moves, batch)
-        misses = host_array(misses).reshape(misses.shape[0], -1)
+        if moves.quotes is None:
+            stacked = _stacked(padded) if count == 1 else terms
+            calibrated = lambda per: fn.calibration.group(stacked, curves, quotes, per)  # noqa: E731
+        else:
+            calibrated = lambda per: jax.tree_util.tree_map(  # noqa: E731
+                lambda *a: jnp.stack(a, axis=1), *(f.calibration(f.terms, curves, quotes, per) for f in padded))
+        models, misses = _map_scenarios(lambda per, _ids: calibrated(per), moves, batch)   # [S, G, n], [S, G]
+        misses = host_array(misses)
         for g, trade in enumerate(cfgs):
             _require_calibrated(trade, pricing, misses[:, g])
-        moves = moves._replace(models=models)
+        moves = moves._replace(models=models[:, 0] if count == 1 else models)
     pnl = _map_scenarios(
         lambda per, ids: _pnls(fn.pnl, terms, curves, quotes, per, dataclasses.replace(arithmetic, sample_ids=ids),
                                mapped=count > 1),
