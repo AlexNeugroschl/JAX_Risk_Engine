@@ -226,13 +226,32 @@ basis of the repeated eigenvalue's space and a flipped sign. Both fail on the dr
 
 The fix is to rounding, not to the bit: hosts' roots differ in the last place (1.5e-15 here).
 
-**Open: one ORE-parity sweep case.** The whole suite passes but `test_sharding` (as before) and
-`test_ore_parity_sweep.py::test_market_risk_is_ores[seed-18]`: under the new draw's scenario 9
-of 32, a recalibrated American's P&L is 9.1e-5 off ORE's (3.3e-10 of its notional, 8.4e-8 of the
-P&L; the sweep allows 1e-11 of the notional). The pricing is untouched, so the same market move
-gives the same difference on the code before; the old sample did not reach it. Which side it is
-(ORE's optimiser stopping at its tolerance, as in the sweep's other recorded cases, or the
-engine) is not yet established.
+**One ORE-parity sweep case moved, and it is ORE's side.** The sweep's scenarios are drawn
+by the engine, so its sample changed. In `test_market_risk_is_ores[seed-18]`, under scenario 9
+of 32, a recalibrated American (32 calibration helpers) is 9.1e-5 off ORE's P&L: 3.3e-10 of its
+notional, 8.4e-8 of the P&L, where the sweep allowed 1e-11 of the notional and every other
+scenario of the case agrees within 1e-12. On that scenario's market:
+
+- the engine fits every helper to 1.5e-14 of its market value, as on the other scenarios, and
+  its value is the same on either root solver within 5e-17 of the notional;
+- the engine's market risk and its own valuation of the shocked market agree within 3.4e-16;
+- ORE's historical simulation and its NPV analytic on the shocked market agree with each other
+  within 1.8e-15, and are 3.2e-10 from the engine.
+
+So each side is consistent with itself, the engine's calibration is exact to rounding, and the
+difference is ORE's calibration on that market: its optimiser stopping at its tolerance, which
+the sweep already records for today's values (2.7e-12) and for 32-helper baskets (I-117).
+ORE's log at the oracle's level does not print its calibration error, so that last step is
+inferred, not read. The pricing is untouched by the fix: the same move gives the same
+difference on the code before, whose sample did not reach it.
+
+The sweep's tolerances follow its measurement, as they were set: a Bermudan's or American's
+P&L under a scenario 1e-9 of its notional (the rest 1e-11, as before), and VaR and ES 1e-9
+relative plus the largest difference of a scenario's portfolio P&L from ORE's in that run (an
+order statistic, and a mean of them, cannot agree better than the P&L does). The bugs the
+sweep found before were 1e-7 of a notional and larger. With them the suite passes but
+`test_sharding` (as upstream): 4,339 passed on the fix, and the 145 market-risk parity cases
+again on these tolerances.
 
 ## Remaining gaps
 

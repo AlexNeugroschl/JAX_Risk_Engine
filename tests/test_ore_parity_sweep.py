@@ -20,8 +20,14 @@ tests/test_ore_parity_sweep.py -k seed-17` reruns it.
 **Tolerances**, each of the trade's notional (a face amount for a bond), set from the sweep's
 measured worst cases (2026-10-18, 40 seeds): today's values 2.7e-12 (options, ORE's calibration
 converging to its Levenberg-Marquardt tolerance) and 1.4e-13 (the rest); bump Greeks 3.4e-11
-(Bermudans and Americans, recalibrated under every shift) and 1.5e-13; market-risk P&L 5e-13. A
-relative tolerance would not do: a deep out-of-the-money option is worth 1e-40 of its notional.
+(Bermudans and Americans, recalibrated under every shift) and 1.5e-13; market-risk P&L 5e-13,
+and 3.3e-10 for a Bermudan or American recalibrated under a scenario (2026-11-09, TraderX fork:
+seed-18's 32-helper American in one of the scenarios its sample became when the Monte Carlo draw
+took the covariance's symmetric root; there the engine fits every helper to 1.5e-14 and is the
+same on either solver to 5e-17 of the notional, and ORE's historical simulation and its NPV on
+that market agree with each other, 3.2e-10 from the engine: ORE's optimiser at its tolerance,
+as on today's values). A relative tolerance would not do: a deep out-of-the-money option is
+worth 1e-40 of its notional.
 The AD Greeks are ORE's as the shift vanishes: ORE's forward-difference Delta less half its
 Gamma, and its Gamma, differ from the derivatives by the shift's third- and fourth-order terms,
 1.1e-2 of a curve's largest for a European days from expiry at a 2.5bp shift; extrapolated over
@@ -76,7 +82,7 @@ from tests.support.parity_sweep import fixed_sample, full_sweep
 #: Of the trade's notional (see the module docstring).
 TODAY = {"option": 2e-11, "linear": 1e-12}
 GREEKS = {"option": 1e-10, "linear": 1e-12}
-PNL = 1e-11
+PNL = {"option": 1e-9, "linear": 1e-11}
 #: Of each curve's largest AD Greek, and of the notional (see the module docstring).
 AD_RTOL, AD_ATOL = 1e-5, 1e-10
 SMOOTH = ("swap", "european_swaption", "bond")
@@ -178,7 +184,8 @@ def _market_risk_request(case):
 
 
 @pytest.mark.parametrize("case", _params(lambda c: cells("market_risk", market_risk=_market_risk_request(c)),
-                                         "each trade's P&L in every scenario 1e-11 of the notional; VaR 1e-9 "
+                                         "each trade's P&L in every scenario 1e-11 of the notional (1e-9 for "
+                                         "Bermudans and Americans, recalibrated under each); VaR 1e-9 (and the P&L's own gap) "
                                          "relative to ORE's report; ES to ORE's RiskStatistics on ORE's P&L"))
 def test_market_risk_is_ores(case):
     _, built = _built(case)
@@ -193,10 +200,13 @@ def test_market_risk_is_ores(case):
     pnl = np.asarray(result.pnl)
     assert pnl.shape == ore.pnl.shape, case.describe()
     for j, cfg in enumerate(built):
-        np.testing.assert_allclose(pnl[:, j], ore.pnl[:, j], rtol=0.0, atol=PNL * _scale(cfg),
+        np.testing.assert_allclose(pnl[:, j], ore.pnl[:, j], rtol=0.0, atol=PNL[_kind(cfg)] * _scale(cfg),
                                    err_msg=f"{cfg.trade_id}\n{case.describe()}")
     stats = ORE.RiskStatistics()
     stats.add(ORE.DoubleVector([float(v) for v in ore.portfolio_pnl]))
+    # A VaR or an ES agrees with ORE's as well as the P&L does: an order statistic, and a mean of
+    # them, moves by at most the largest move of a scenario's P&L (the trades' tolerances above).
+    gap = float(np.max(np.abs(np.asarray(result.portfolio_pnl) - np.asarray(ore.portfolio_pnl))))
     for q in risk.quantiles:
         label = f"{q * 100:g}"
         reported = -ore.quantile[1.0 - q]
@@ -204,11 +214,11 @@ def test_market_risk_is_ores(case):
         # `RiskStatistics` (X-12). The sweep's counts and levels never make N p whole, where the two
         # can read different scenarios (test_ore_parity_settings.py).
         if np.isfinite(reported):
-            assert result.risk[f"VaR_{label}"] == pytest.approx(max(reported, 0.0), rel=1e-9), \
+            assert result.risk[f"VaR_{label}"] == pytest.approx(max(reported, 0.0), rel=1e-9, abs=gap), \
                 f"VaR {label}\n{case.describe()}"
         else:  # fewer than 1 / p scenarios: ORE's report has no quantile, the engine the worst P&L's
             assert pnl.shape[0] * (1.0 - q) < 1.0
-        assert result.risk[f"VaR_{label}"] == pytest.approx(stats.valueAtRisk(q), rel=1e-9)
+        assert result.risk[f"VaR_{label}"] == pytest.approx(stats.valueAtRisk(q), rel=1e-9, abs=gap)
         if np.isfinite(result.risk[f"ES_{label}"]):  # else an empty tail, where RiskStatistics raises
-            assert result.risk[f"ES_{label}"] == pytest.approx(stats.expectedShortfall(q), rel=1e-9), \
+            assert result.risk[f"ES_{label}"] == pytest.approx(stats.expectedShortfall(q), rel=1e-9, abs=gap), \
                 f"ES {label}\n{case.describe()}"
