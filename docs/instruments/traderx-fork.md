@@ -195,7 +195,18 @@ of revaluation. Where the scenarios move the quotes (a Vega bump) it is still pe
 - On a CPU a call costs what it did (0.010 s against 0.012 s for one Bermudan), so a CPU run's
   recalibrated options are no longer `a5bd7c3`'s bit for bit, only within the solver's
   resolution; every other class still is.
-- Not yet measured on a GPU.
+- **On an A100** (2026-11-09, us-central1, fork `c0f5ab6`, the book at 1,024 scenarios, warm):
+  434.9 s against 558.3 s per trade, the revaluation 361.8 s against 481.1 s; `VaR_99` the same
+  to the last digit as the per-trade run's on that host.
+- **Its programs are a helper shape's, not a basket's or a group's.** As first committed
+  (`c0f5ab6`) the bucket program took the basket's whole `[G, n]` volatilities, so a helper
+  compiled again for every basket size and group size it appeared in: the book's first run on
+  the A100 compiled for 2,801 s where the per-trade run's whole compile was 1,245 s. Each bucket
+  is now given its own column, read on the host, and on an accelerator a recalibration is padded
+  to `CALIBRATION_GROUP` (16) trades (`calibration_group_size`; a CPU recalibrates a group at
+  its own size). On the Mac, 38 of the book's swaptions with grouping forced at 16 a call, a
+  first run compiled 355 programs in 68.7 s per trade, 520 in 128.7 s as first committed, and
+  370 in 59.3 s now. Not yet measured cold on a GPU.
 
 **The A100's `VaR_99` of the sample is not the Mac's, and that is the scenarios, not the
 device.** The 1,136-trade sample gives `VaR_99` 59,274,718.60 on the A100 and 59,689,775.14 on

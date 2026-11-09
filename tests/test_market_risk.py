@@ -28,6 +28,7 @@ from engine.risk.market import (
 )
 from engine.risk.market.revaluation import factor_indices, revalue, revalue_trade
 from engine.risk.greeks.price_functions import Moves
+from engine.risk.greeks import scenario_pnl
 from engine.risk.greeks.scenario_pnl import group_key, price_function_pnl, price_function_pnls
 from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from tests import market_risk_support as m
@@ -614,7 +615,11 @@ class TestGroupedRevaluation:
     @pytest.mark.parametrize("arithmetic", [Arithmetic(), Arithmetic.of(jnp.float32)], ids=["float64", "float32"])
     @pytest.mark.parametrize("make,pricing", [(m.swap, PricingConfig()), (m.bermudan, m.CALIBRATED)],
                              ids=["swap", "bermudan"])
-    def test_a_group_is_each_trade_alone(self, make, pricing, arithmetic):
+    @pytest.mark.parametrize("accelerator", [False, True], ids=["cpu", "as-accelerator"])
+    def test_a_group_is_each_trade_alone(self, make, pricing, arithmetic, accelerator, monkeypatch):
+        if accelerator:  # the recalibration padded to an accelerator's group size
+            monkeypatch.setattr(scenario_pnl, "calibration_group_size",
+                                lambda count: max(count, scenario_pnl.CALIBRATION_GROUP))
         cfgs = [dataclasses.replace(make(), trade_id=f"t{i}", notional=n, fixed_rate=k)
                 for i, (n, k) in enumerate(((1e6, 0.03), (2.5e6, 0.035), (4e6, 0.04)))]
         if hasattr(cfgs[-1], "long_short"):

@@ -72,6 +72,19 @@ def scenario_batch_size(cfg, pricing: PricingConfig, requested: int, itemsize: i
 MODELS_PER_CALL = 16384
 
 
+#: Trades a recalibration is padded to on an accelerator (`calibration_group_size`).
+CALIBRATION_GROUP = 16
+
+
+def calibration_group_size(count: int) -> int:
+    """How many trades a group of `count` (a power of two) is recalibrated as: on an accelerator
+    at least `CALIBRATION_GROUP`, padded with copies of the last, so a helper shape's bucket is
+    one program whatever the group's size; on a CPU the group's own size. A recalibration is
+    cheap on the device and dear to compile: with a program per group size the book's first run
+    on an A100 compiled for 2,800 s more (2026-11-09)."""
+    return count if jax.default_backend() == "cpu" else max(count, CALIBRATION_GROUP)
+
+
 def price_function_pnl(cfg, fn: TradePriceFunction, rates, moves: Moves, pricing: PricingConfig,
                        batch_size: int, arithmetic: Arithmetic) -> Tuple[float, jax.Array]:
     """The trade's value at the base `rates` and its P&L `[S]` under `moves` (see the module
@@ -157,8 +170,10 @@ def price_function_pnls(cfgs, fns, rates, moves: Moves, pricing: PricingConfig, 
     moves = moves._replace(shifts=tuple(n.deviation(s) for n, s in zip(fn.nodes, moves.shifts)))
     if fn.calibration is not None:
         if moves.quotes is None:
-            stacked = _stacked(padded) if count == 1 else terms
-            calibrated = lambda per: fn.calibration.group(stacked, curves, quotes, per)  # noqa: E731
+            size = calibration_group_size(len(padded))
+            stacked = terms if count > 1 and size == len(padded) else _stacked(padded + [fns[-1]] * (size - len(padded)))
+            calibrated = lambda per: tuple(a[:, :len(padded)] for a in  # noqa: E731
+                                           fn.calibration.group(stacked, curves, quotes, per))
         else:
             calibrated = lambda per: jax.tree_util.tree_map(  # noqa: E731
                 lambda *a: jnp.stack(a, axis=1), *(f.calibration(f.terms, curves, quotes, per) for f in padded))

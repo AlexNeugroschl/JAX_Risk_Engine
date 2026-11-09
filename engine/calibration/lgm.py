@@ -563,26 +563,29 @@ def bootstrap_group(basket: Sequence[BasketInstrument], curves, shifts, vols, dt
     `dtype` (float64: A-10).
 
     Each bucket is one jitted program per helper shape, group size and batch
-    (`_bootstrap_bucket_group`), the trades and scenarios mapped inside it. Trade by trade, a
-    recalibration under 256 scenarios was about 200 kernel launches and 0.23 s on an A100 (a
-    program and a few eager steps per bucket, traced again each call), most of a Bermudan's
-    revaluation (2026-11-08)."""
-    vols = jnp.asarray(vols, dtype=dtype)
-    dt = jnp.asarray(dt, dtype=dtype)
+    (`_bootstrap_bucket_group`), the trades and scenarios mapped inside it, and it is given its
+    own column of `vols` and `dt`, read on the host, so a helper's program serves baskets of every
+    size (given the whole `[G, n]` arrays it was a program per basket size too: the book's first
+    run on an A100 compiled for 2,800 s more, 2026-11-09). Trade by trade, a recalibration under
+    256 scenarios was about 200 kernel launches and 0.23 s on an A100 (a program and a few eager
+    steps per bucket, traced again each call), most of a Bermudan's revaluation (2026-11-08).
+    Not traceable: called on values."""
+    vols = np.asarray(jnp.asarray(vols, dtype=dtype))
+    dt = np.asarray(dt, dtype=dtype)
     zeta_before = jnp.zeros((vols.shape[0], shifts[0].shape[0]), dtype=dtype)
     buckets = []
     for i, instrument in enumerate(basket):
         sigma, market, model, hit, zeta_before = _bootstrap_bucket_group(
-            instrument, curves, shifts, vols, dt, i, zeta_before, reversion, solver=solver, dtype=dtype)
+            instrument, curves, shifts, vols[:, i], dt[:, i], zeta_before, reversion, solver=solver, dtype=dtype)
         buckets.append((sigma, market, model, hit))
     return tuple(jnp.stack(field, axis=-1) for field in zip(*buckets))
 
 
 @partial(jax.jit, static_argnames=("solver", "dtype"))
-def _bootstrap_bucket_group(instrument: BasketInstrument, curves, shifts, vols, dt, i, zeta_before, reversion, *,
+def _bootstrap_bucket_group(instrument: BasketInstrument, curves, shifts, vols, dt, zeta_before, reversion, *,
                             solver: str, dtype: str):
-    """Bucket `i` of `bootstrap_group`: `_bucket` of each trade's helper under each scenario's
-    curves, `[G, S]` each."""
+    """One bucket of `bootstrap_group`: `_bucket` of each trade's helper (`vols`, `dt` `[G]`)
+    under each scenario's curves, `[G, S]` each."""
     def of_trade(helper, vol, length, zetas):
         def under(shift, zeta):
             disc, index = (jax.tree_util.tree_map(lambda a: jnp.asarray(a, dtype=dtype), with_node_deviation(c, s))
@@ -591,7 +594,7 @@ def _bootstrap_bucket_group(instrument: BasketInstrument, curves, shifts, vols, 
 
         return jax.vmap(under)(shifts, zetas)
 
-    return jax.vmap(of_trade)(instrument, vols[:, i], dt[:, i], zeta_before)
+    return jax.vmap(of_trade)(instrument, vols, dt, zeta_before)
 
 
 @jax.jit
