@@ -113,7 +113,19 @@ sample's second run compiled for 28–39 s before the fix and not at all after. 
 do not reproduce it (the first build kept or freed), so no unit test guards it: the check is the
 20-trade run, `run` three times with the compile events counted.
 
-The book itself is not yet measured grouped on a GPU.
+**The book on an A100** (2026-11-08, fork `3e1d1d9`, TraderX's 11,360 trades at 256 scenarios,
+one process, `npv` + `market_risk`), against the same book ungrouped that morning (`a5bd7c3`):
+
+| Run | Ungrouped | Grouped |
+|---|---|---|
+| Cold | 1,571 s, about 983 s of it compile | 2,001 s, 1,444 s of it compile |
+| Second | 575 s | 530 s (1 s of compile) |
+| `VaR_99` | 73,560,770.0634258 | 73,560,770.0634258 (to 1e-15) |
+
+Grouped, the book is 8% faster warm and 27% slower cold: a group compiles a program per padded
+size as well as per shape, and the warm time left is mostly outside the grouped revaluation
+(the per-trade work around it: building each trade's price function, the `npv` pass, each
+column's storage and bounds). Where it goes is not yet broken down.
 
 **Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
 seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),
