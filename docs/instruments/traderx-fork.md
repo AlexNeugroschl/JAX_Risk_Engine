@@ -65,8 +65,10 @@ stack of T operands and is filled the same way now.
 `engine.risk.market.revaluation.revalue_trades` (and `run_market_risk`, through it) groups trades
 by `engine.risk.greeks.scenario_pnl.group_key`: one product, pricer, curves and arithmetic, and
 terms of one pytree structure and leaf shape. `price_function_pnls` stacks a group's terms on the
-host, padded to a power of two with copies of the last trade, and maps the price, the
-recalibration and the P&L program over the trades (`jax.vmap`). A Python-scalar term (a
+host, padded to a power of two with copies of the last trade, and maps the P&L program over the
+trades (`jax.vmap` inside its `jax.jit`), and the price too where the product does not
+recalibrate. A recalibrated option's price and recalibration stay per trade: see the A100
+measurement below. A Python-scalar term (a
 Bermudan's `float_spread`) is stacked weakly typed, so a float32 option stays float32. An equity
 option is still revalued once per listed contract. A trade with stochastic rounding is revalued
 alone (its key is its own).
@@ -85,9 +87,33 @@ one runs the trade's own programs, unmapped: mapped over one trade, a recalibrat
 P&L took twice the CPU time (2.5 s against 5.0 s, warm). So a CPU run's programs are the fork's
 before batching, and its answers are `a5bd7c3`'s bit for bit: every per-trade P&L, base value
 and `VaR_99` of 20 trades of each of the seven classes TraderX books, at 256 scenarios. On an accelerator a call takes up to `MODELS_PER_CALL` (16,384) trade-scenario
-pairs, or what the grid engine's per-device induction budget allows. Neither that cap nor
-whether a mapped induction pays on a GPU or TPU, given its doubled cost per model on a CPU, is
-measured yet.
+pairs, or what the grid engine's per-device induction budget allows (16 Bermudans or Americans,
+64 equity options a call on an A100 40 GB).
+
+**On an A100** (2026-11-08, fork `640a989`, warm, 256 scenarios). One trade revalued as a group
+against the same number of calls:
+
+| Product | Group of 4 | 4 calls | Group of 16 | 16 calls |
+|---|---|---|---|---|
+| Bermudan (recalibrated) | 0.19 s | 0.41 s | 0.43 s | 1.55 s |
+| American (recalibrated) | 1.99 s | 3.41 s | 6.67 s | 13.56 s |
+| Equity option | 0.16 s | 0.55 s | 0.39 s | 2.18 s |
+
+Three distinct Bermudans of one shape: 0.18 s as a group, 0.28 s as three calls. The mapped
+induction pays on the GPU, though not on a CPU.
+
+**A run's second pass compiled again,** fixed since. With the price and the recalibration
+mapped outside a jit (`jax.vmap` called eagerly, as the recalibration is a program per bucket,
+never one program), the 20 Bermudans' second `run` on the A100 compiled for 117 s (533 s cold,
+136 s second, 4.1 s third). The recompiled programs were exactly those the eager map reached
+(`_bootstrap_bucket`, `_induction`, `_misses`), with the signatures of the first run's. Now a
+recalibrated option prices and recalibrates per trade and its P&L alone is mapped; another
+product's price is mapped inside a jit (`_prices`). With grouping forced on the Mac, the
+sample's second run compiled for 28–39 s before the fix and not at all after. Three Bermudans
+do not reproduce it (the first build kept or freed), so no unit test guards it: the check is the
+20-trade run, `run` three times with the compile events counted.
+
+The book itself is not yet measured grouped on a GPU.
 
 **Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
 seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),

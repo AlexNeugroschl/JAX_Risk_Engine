@@ -131,7 +131,12 @@ def price_function_pnls(cfgs, fns, rates, moves: Moves, pricing: PricingConfig, 
     was its own (TraderX fork). The trades are padded to a power of two with copies of the last,
     so a group's programs are one per shape and power of two. A group of one runs the trade's own
     programs, unmapped: mapped over one trade, a recalibrated Bermudan's took twice the CPU time
-    (an 11-core Mac, 2026-11-08)."""
+    (an 11-core Mac, 2026-11-08).
+
+    A recalibrated option's price and recalibration stay per trade, as each trade's own: mapped
+    outside a jit (the recalibration is a program per bucket, never one program,
+    `ScenarioCalibration`), a group's programs compiled again on the run after the first (117 s on
+    an A100, 2026-11-08). They are the cheap part; its P&L, the induction, is mapped."""
     cfg, fn = cfgs[0], fns[0]
     count = len(fns)
     curves = curves_on(fn.nodes, rates)
@@ -141,9 +146,14 @@ def price_function_pnls(cfgs, fns, rates, moves: Moves, pricing: PricingConfig, 
         values = np.asarray([fn.pricer(terms, curves, quotes)], dtype=np.float64)
         calibrated = lambda per: fn.calibration(terms, curves, quotes, per)  # noqa: E731
     else:
-        terms = _stacked(list(fns) + [fns[-1]] * ((1 << (count - 1).bit_length()) - count))
-        values = np.asarray(jax.vmap(lambda t: fn.pricer(t, curves, quotes))(terms), dtype=np.float64)[:count]
-        calibrated = lambda per: jax.vmap(lambda t: fn.calibration(t, curves, quotes, per), out_axes=1)(terms)  # noqa: E731
+        padded = list(fns) + [fns[-1]] * ((1 << (count - 1).bit_length()) - count)
+        terms = _stacked(padded)
+        if fn.calibration is None:
+            values = np.asarray(_prices(fn.pricer, terms, curves, quotes), dtype=np.float64)[:count]
+        else:
+            values = np.asarray([f.pricer(f.terms, curves, quotes) for f in fns], dtype=np.float64)
+        calibrated = lambda per: jax.tree_util.tree_map(  # noqa: E731
+            lambda *a: jnp.stack(a, axis=1), *(f.calibration(f.terms, curves, quotes, per) for f in padded))
     batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
     moves = moves._replace(shifts=tuple(n.deviation(s) for n, s in zip(fn.nodes, moves.shifts)))
     if fn.calibration is not None:
@@ -173,6 +183,13 @@ def _require_calibrated(cfg, pricing: PricingConfig, misses: np.ndarray) -> None
         raise CalibrationError(
             f"{cfg.product} {cfg.trade_id!r}: the LGM recalibrated under {failed.size} of {misses.size} scenarios "
             f"misses its basket (ORE's LgmBuilder acceptance, tolerance {engine.bootstrap_tolerance:g}): scenarios {shown}")
+
+
+@partial(jax.jit, static_argnames="pricer")
+def _prices(pricer, terms, curves, quotes):
+    """`pricer(terms, curves, quotes)` of each of a group's trades `[G]`, for a pricer that does not
+    calibrate: one program per product, shape and padded group size."""
+    return jax.vmap(pricer, in_axes=(0, None, None))(terms, curves, quotes)
 
 
 @partial(jax.jit, static_argnames=("pnl", "mapped"))
