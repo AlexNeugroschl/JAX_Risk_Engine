@@ -125,7 +125,27 @@ one process, `npv` + `market_risk`), against the same book ungrouped that mornin
 Grouped, the book is 8% faster warm and 27% slower cold: a group compiles a program per padded
 size as well as per shape, and the warm time left is mostly outside the grouped revaluation
 (the per-trade work around it: building each trade's price function, the `npv` pass, each
-column's storage and bounds). Where it goes is not yet broken down.
+column's storage and bounds).
+
+**Where the warm time goes on an A100** (2026-11-08, fork `3e1d1d9`, every tenth trade of the
+book, 1,136 trades, warm 62.9 s; each part blocking on its own device work):
+
+| Part | Time | Share |
+|---|---|---|
+| `npv` pass (`base_npv`) | 30.6 s | 49% |
+| of it, equity options valued one trade at a time (348 grid runs, 38 ms each) | 17.7 s | |
+| of it, the curves read outside a jit (`log_discount`, 764 calls) | 8.4 s | |
+| Revaluation | 31.9 s | 51% |
+| of it, recalibration (46 calls, 0.23 s each; Bermudans 10.5 s of their 11.8 s) | 10.5 s | 17% |
+| of it, building price functions (the market's context rebuilt per trade, `from_market`, 1,007 calls, 7.0 s) | 7.8 s | 12% |
+| of it, the inductions of Americans and the equity options' grid runs | 10.0 s | |
+| of it, every linear class | 0.9 s | |
+
+The same sample on the Mac spends 97% of its 416.5 s in the P&L programs. What is slow on the
+GPU is the per-trade work outside a jit, each step a kernel launch and a sync: the `npv`
+pass values every equity option position by position (market risk values each listed contract
+once), the recalibration's buckets are many small programs per trade, and each trade's price
+function rebuilds the market's curves.
 
 **Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
 seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),
