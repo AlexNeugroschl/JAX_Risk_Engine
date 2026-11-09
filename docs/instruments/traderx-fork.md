@@ -152,16 +152,21 @@ equity-option contract once, one share's value times each trade's shares, as mar
 (`engine.pricing.cube._equity_value`); and `engine.pricing.context.from_market` keeps the last
 market's context per dtype, so a run builds the market's curves once, not once per trade.
 Every npv, P&L and `VaR_99` of the 1,136-trade sample is the same bit for bit on the Mac, where
-the `npv` pass fell from 3.5 s to 2.1 s; the A100 is not yet measured with them. The engine's
+the `npv` pass fell from 3.5 s to 2.1 s. On the A100 (fork `2a3bed2`, 2026-11-09) the sample's
+warm run fell from 62.9 s to 40.9 s: the `npv` pass from 30.6 s to 11.0 s, the revaluation from
+31.9 s to 29.5 s. The engine's
 whole suite passes but `test_sharding` (4,339 passed, 18 skipped), which fails on upstream
 `17ac757` too (below).
 
-**Open: the A100's `VaR_99` of the sample.** On the A100 the 1,136-trade sample (fork `3e1d1d9`)
-gave `VaR_99` 59,274,718.60; the Mac gives 59,689,775.14, 0.7% apart. On the Mac, grouping
-forced at the A100's group sizes (up to 16 Bermudans or Americans a call, 64 of the others)
-reproduces the Mac's ungrouped P&L within 2.6e-12 of each trade's largest, so the grouping
-itself is not the cause on a CPU. The whole book agreed across the two devices to 1e-15. Not
-yet explained; it needs the sample's per-trade P&L from the A100.
+**The A100's `VaR_99` of the sample is not the Mac's, and that is the scenarios, not the
+device.** The 1,136-trade sample gives `VaR_99` 59,274,718.60 on the A100 and 59,689,775.14 on
+the Mac, 0.7% apart. Every npv and every rates trade's P&L agree; every cash equity's and
+equity option's P&L differ, by 30–40% of their largest. The pod draws other equity shocks than
+the Mac from the same request: see the Monte Carlo draw under "Found on the way" below. On the
+A100, grouped and ungrouped agree within 2.5e-12 of each trade's largest P&L (`VaR_99` 2.4e-14
+apart); run to run, its Bermudans' and Americans' P&L move by up to 1.1e-15 (the GPU's
+summation order). On the Mac, grouping forced at the A100's group sizes reproduces the
+ungrouped P&L within 2.6e-12.
 
 **Same answers in a group.** Against fork `a5bd7c3`, on 20 trades of each class at 256 scenarios (the
 seven classes TraderX books) revalued in groups on the CPU (before it took one trade a call),
@@ -191,6 +196,20 @@ engine still refuses or holds fixed.
 The extract's classes and fields not listed here price exactly as booked.
 
 ## Found on the way (upstream, not the fork)
+
+- **A Monte Carlo draw depends on the host's BLAS.** `MonteCarloScenarios.draw`
+  (`engine/risk/market/scenarios.py`, upstream) takes the covariance's root from
+  `np.linalg.eigh`. TraderX's covariance (140 factors, 50 of them equity spots) has 48 pairs of
+  eigenvalues equal to 1e-10 of the largest, all in its equity block, and there the
+  eigenvectors are any basis of their space: numpy on Accelerate (the Mac) and on OpenBLAS (the
+  engine's Linux image) return different ones. Every one of the 50 equity factors' shocks
+  differs, by up to 0.25 (2026-11-09, numpy 2.4.6, on the sample and on the whole book alike);
+  the rates factors' agree. Each draw has the requested covariance, so neither is wrong, but one
+  request gives another VaR on another host. A root that does not depend on the basis (the
+  symmetric square root, `V sqrt(L) V^T`, unique for a positive semi-definite matrix) would
+  make the draw the same everywhere, to rounding. The two Linux pods (c4d and A100) draw the
+  same shocks. The Mac's November 7 book run agreed with them to 1e-15 although its shocks would
+  differ by the same mechanism; which numpy that run used is not recorded.
 
 - **Two American swaption parity misses on upstream `17ac757`.** Letting the ORE-parity sweep
   draw ACT/360 and 30/360 reaches two cases, `seed-24` (Greeks, an index delta) and `seed-39`
