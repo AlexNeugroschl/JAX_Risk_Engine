@@ -77,8 +77,8 @@ alone (its key is its own).
 **Why.** On the A100 (2026-11-08, fork `a5bd7c3`), the warm book spent its time in a per-trade
 loop: a program call and a host sync for each of about 8,100 revaluations, with each
 swaption's induction a few milliseconds on the device. Grouped, TraderX's 11,360-trade book
-is 486 groups (Bermudans 75, Americans 55, swaps 90, bonds 29, cash equities 50, Europeans
-50, equity-option contracts 39).
+is 388 groups revalued in 486 calls (groups: Bermudans 75, Americans 55, swaps 90, bonds 29,
+cash equities 50, Europeans 50, equity-option contracts 39).
 
 **A CPU takes one trade a call** (`trades_per_call`). On an 11-core Mac, four Bermudans
 recalibrated under 256 scenarios in one call took 2.4 times the CPU time of four calls, and
@@ -197,7 +197,15 @@ of revaluation. Where the scenarios move the quotes (a Vega bump) it is still pe
   resolution; every other class still is.
 - **On an A100** (2026-11-09, us-central1, fork `c0f5ab6`, the book at 1,024 scenarios, warm):
   434.9 s against 558.3 s per trade, the revaluation 361.8 s against 481.1 s; `VaR_99` the same
-  to the last digit as the per-trade run's on that host.
+  to the last digit as the per-trade run's on that host. Of the 434.9 s: Americans 220.6 s,
+  Bermudans 76.2 s, the `npv` pass 68.8 s, equity options 13.6 s, every linear class 2.6 s, the
+  rest of the revaluation (building price functions, storage) about 49 s.
+- **Scaling with the scenarios, the same process** (the new draw): 4,096 scenarios in 1,308.5 s
+  (`VaR_99` 78,792,436.82, `ES_97.5` 78,812,711.12, 102 in the tail) and 16,384 in 4,640.1 s
+  (77,724,100.77 and 77,264,140.79, 409 in the tail): about 145 s a run and 70 s per 256
+  scenarios, four fifths of it the Americans and Bermudans (3,288.8 s and 975.5 s of the 16,384
+  run; equity options 199.2 s). GPU memory peaked at 13.5 GiB of 40 at every count. The c4d CPU
+  pod's 1,024-scenario run (14,961 s) extrapolates to about 66 h at 16,384; not measured.
 - **Its programs are a helper shape's, not a basket's or a group's.** As first committed
   (`c0f5ab6`) the bucket program took the basket's whole `[G, n]` volatilities, so a helper
   compiled again for every basket size and group size it appeared in: the book's first run on
