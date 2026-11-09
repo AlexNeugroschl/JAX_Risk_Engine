@@ -159,6 +159,26 @@ warm run fell from 62.9 s to 40.9 s: the `npv` pass from 30.6 s to 11.0 s, the r
 whole suite passes but `test_sharding` (4,339 passed, 18 skipped), which fails on upstream
 `17ac757` too (below).
 
+**The whole book on an A100 with both** (2026-11-09, fork `2a3bed2`, 11,360 trades, one
+process), against the c4d-standard-32 CPU pod on fork `a5bd7c3` (November 8):
+
+| Run | c4d CPU | A100 | Faster |
+|---|---|---|---|
+| 256 scenarios, cold | — | 1,698 s, 1,417 s of it compile | |
+| 256 scenarios, warm | 3,926 s | 251.5 s (`npv` 69 s, revaluation 179 s) | 15.6x |
+| 1,024 scenarios, same process | 14,961 s | 558.3 s (`npv` 68 s, revaluation 481 s, 24 s compile) | 26.8x |
+
+`VaR_99` is the CPU pod's to 1e-15 at both counts (73,560,770.0634258; 77,759,354.61007; the
+old draw on both, so the figures compare). More scenarios reuse the programs compiled at 256:
+a scenario count is a number of 256-scenario batches. The revaluation is about 78 s a run plus
+101 s per 256 scenarios, so at 1,024 scenarios four fifths of the run scales with the count.
+
+**A new process, with JAX's persistent compilation cache** (`JAX_COMPILATION_CACHE_DIR`, every
+program cached, as the engine's HTTP worker sets it): the 1,136-trade sample took 848.6 s in a
+first process (792 programs written, 74 MB) and 212.5 s in a second (816 of 816 read from the
+cache), against 40.9 s warm in one process. The cache skips XLA's compile, not the tracing
+(58 s), the lowering to MLIR (52 s) or the reads (52 s).
+
 **The A100's `VaR_99` of the sample is not the Mac's, and that is the scenarios, not the
 device.** The 1,136-trade sample gives `VaR_99` 59,274,718.60 on the A100 and 59,689,775.14 on
 the Mac, 0.7% apart. Every npv and every rates trade's P&L agree; every cash equity's and
@@ -223,6 +243,17 @@ unchanged.
 needs one machine. On an equally correlated covariance it checks the draw against the normals
 times the symmetric root in closed form, then again with `np.linalg.eigh` returning a rotated
 basis of the repeated eigenvalue's space and a flipped sign. Both fail on the draw as it was.
+
+**End to end, the Mac against the A100 pod** (2026-11-09, fork `4b2fd3a`; Accelerate against
+OpenBLAS, CPU against GPU), the same requests:
+
+| Request | `VaR_99`, Mac | A100 pod | Apart | `ES_97.5` apart |
+|---|---|---|---|---|
+| The proof, 17 trades, 1,024 scenarios | 381,036.79285857355 | 381,036.79285857925 | 1.5e-14 | 1.2e-15 |
+| The sample, 1,136 trades, 256 scenarios | 63,607,091.3670907 | 63,607,091.367090955 | 4.0e-15 | 1.9e-14 |
+
+The sample is the request whose `VaR_99` was 0.7% apart before. Its shocks on the two hosts are
+within 2.0e-15 of each other, the proof's within 6.6e-17.
 
 The fix is to rounding, not to the bit: hosts' roots differ in the last place (1.5e-15 here).
 
