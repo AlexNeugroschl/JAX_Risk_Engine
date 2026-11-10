@@ -62,7 +62,7 @@ from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
 from engine.pricing.options import bound_option_pnl, position_sign
 from engine.pricing.cube import (
-    DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, validate_trades,
+    DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, stack_in_blocks, validate_trades,
 )
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.greeks.scenario_pnl import scenario_batch_size
@@ -241,12 +241,22 @@ def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic, execution):
 
 
 @jax.jit
+def _stacked(columns):
+    return jnp.stack(columns, axis=-1)
+
+
+@jax.jit
+def _converted(pnl, spots):
+    pnl = pnl * spots
+    return pnl, jnp.sum(pnl, axis=-1)
+
+
 def _in_reporting_currency(columns, spots):
     """Each trade's decoded P&L column `[S]` times its FX spot into the reporting currency:
     the `[S, N]` P&L and its sum over trades `[S]`. A spot of 1.0 leaves a column's bits as
-    they are. One program per scenario and trade count."""
-    pnl = jnp.stack(columns, axis=-1) * spots
-    return pnl, jnp.sum(pnl, axis=-1)
+    they are. The columns are stacked in blocks (`stack_in_blocks`): a stack's compile time grows
+    faster than the square of the trade count."""
+    return _converted(stack_in_blocks(_stacked, columns), spots)
 
 
 def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfolio_pnl, paired: int, execution) -> Dict:

@@ -115,6 +115,7 @@ def _assert_split_runs(runs: dict) -> None:
     for name in ("lgm", "lgm-blocked", "fp8-stochastic", "compute-stochastic"):
         one, split = runs[name]["one"], runs[name]["split"]
         cube_one, cube_split = np.asarray(one["cube"]), np.asarray(split["cube"])
+        assert np.isfinite(cube_one).all(), f"{name}: NaN on both sides would compare equal"
         scale = np.max(np.abs(cube_one))
         if name == "compute-stochastic":
             np.testing.assert_allclose(cube_split, cube_one, rtol=0, atol=2e-6 * scale)

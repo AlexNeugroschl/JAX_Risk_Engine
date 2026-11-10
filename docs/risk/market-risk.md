@@ -106,7 +106,7 @@ priced on). The run refuses either, naming the trade or the factor.
 
 | Function | Source | Notes |
 |---|---|---|
-| `monte_carlo_scenarios(factors, covariance, horizon_days, num_scenarios, seed)` | Zero-mean Gaussian with the given horizon covariance | Scrambled Sobol normals; different seeds are independent randomized-QMC replicates. The covariance may be singular: it is factorized by eigendecomposition, not Cholesky. |
+| `monte_carlo_scenarios(factors, covariance, horizon_days, num_scenarios, seed)` | Zero-mean Gaussian with the given horizon covariance | Scrambled Sobol normals; different seeds are independent randomized-QMC replicates. The covariance may be singular: it is factorized by eigendecomposition, not Cholesky, into its unique symmetric root, so one request draws the same scenarios on every host. |
 | `historical_scenarios(factors, history, horizon_days, dates=None)` | Overlapping `horizon_days` moves of a `[dates, factors]` history of levels | Each scenario records its window when `dates` are given. |
 | `covariance_from_history(history, horizon_days)` | Sample covariance of those moves | Draws Monte Carlo scenarios from the same distribution a historical run samples. |
 

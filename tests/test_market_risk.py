@@ -10,9 +10,10 @@ import numpy as np
 import pytest
 
 from engine.market_data.market import ZeroCurveConfig
+from engine.market_simulation.sobol import generate_sobol_normals
 from engine.precision import Arithmetic, Precision, StagePrecision
 from engine.pricing.config import PricingConfig
-from engine.pricing.cube import value_today
+from engine.pricing.cube import STACK_BLOCK, PortfolioValuation, value_today
 from engine.risk.greeks.price_functions import trade_price_function
 from engine.risk.market import (
     MarketRiskRequest,
@@ -25,6 +26,7 @@ from engine.risk.market import (
     monte_carlo_scenarios,
     run_market_risk,
 )
+from engine.risk.market import run as market_risk_run
 from engine.risk.market.revaluation import revalue, revalue_trade
 from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from tests import market_risk_support as m
@@ -100,6 +102,29 @@ class TestMonteCarloScenarios:
         shifts = monte_carlo_scenarios(FACTORS, singular, 10, 64, seed=1).shifts
         np.testing.assert_allclose(shifts, np.repeat(shifts[:, :1], FACTORS.size, axis=1), atol=1e-15)
 
+    def test_the_draw_does_not_depend_on_the_eigenvectors_lapack_returns(self, monkeypatch):
+        """Eigenvectors are free up to sign and, inside a repeated eigenvalue's space, up to any
+        rotation, and LAPACK builds choose differently: the draw is the symmetric root, which is
+        unique. An equicorrelated covariance has that repeated eigenvalue and a closed-form root."""
+        n, variance, correlation = FACTORS.size, 4e-4, 0.4
+        covariance = variance * ((1 - correlation) * np.eye(n) + correlation * np.ones((n, n)))
+        small, large = np.sqrt(variance * (1 - correlation)), np.sqrt(variance * (1 - correlation + correlation * n))
+        root = small * np.eye(n) + (large - small) / n * np.ones((n, n))
+        normals = np.asarray(generate_sobol_normals(64, 1, n, jnp.float64, seed=1)[0])
+        drawn = monte_carlo_scenarios(FACTORS, covariance, 10, 64, seed=1).shifts
+        np.testing.assert_allclose(drawn, normals @ root, rtol=0, atol=1e-15)
+
+        eigh, rotation = np.linalg.eigh, np.linalg.qr(np.random.default_rng(1).normal(size=(n - 1, n - 1)))[0]
+
+        def another_basis(a):
+            values, vectors = eigh(a)
+            vectors[:, :n - 1] = vectors[:, :n - 1] @ rotation
+            return values, vectors * np.where(np.arange(n) % 2, -1.0, 1.0)[None, :]
+
+        monkeypatch.setattr(np.linalg, "eigh", another_basis)
+        np.testing.assert_allclose(monte_carlo_scenarios(FACTORS, covariance, 10, 64, seed=1).shifts, drawn,
+                                   rtol=0, atol=1e-15)
+
     def test_labels_and_measure(self):
         scenarios = _scenarios()
         assert scenarios.source == "monte-carlo"
@@ -114,6 +139,33 @@ class TestMonteCarloScenarios:
     def test_rejects_an_invalid_covariance(self, mutate, match):
         with pytest.raises(ValueError, match=match):
             monte_carlo_scenarios(FACTORS, mutate(m.covariance()), 10, 64)
+
+
+class TestLargePortfolioStacks:
+    """XLA's compile time of an N-operand stack grows faster than N squared, so no program stacks
+    more than `STACK_BLOCK` trades; the assembled result is the plain stack's."""
+    N = 2 * STACK_BLOCK + 3
+
+    def columns(self):
+        return tuple(jnp.asarray([i, 2.0 * i, 0.5 * i + 1.0], dtype=jnp.float64) for i in range(self.N))
+
+    def test_the_market_risk_pnl_is_stacked_in_blocks(self, monkeypatch):
+        sizes = []
+        stacked = market_risk_run._stacked
+        monkeypatch.setattr(market_risk_run, "_stacked", lambda block: sizes.append(len(block)) or stacked(block))
+        spots = jnp.linspace(0.5, 1.5, self.N, dtype=jnp.float64)
+        pnl, total = market_risk_run._in_reporting_currency(self.columns(), spots)
+        assert sizes == [STACK_BLOCK, STACK_BLOCK, 3]
+        expected = np.stack([np.asarray(c) for c in self.columns()], axis=-1) * np.asarray(spots)
+        np.testing.assert_array_equal(pnl, expected)
+        np.testing.assert_allclose(total, expected.sum(axis=-1), rtol=1e-14)
+
+    @pytest.mark.parametrize("assemble", [lambda v: v.cube, lambda v: v.float64_cube(),
+                                          lambda v: v.output_cube("float64")], ids=["cube", "float64", "output"])
+    def test_the_exposure_cube_is_the_plain_stack(self, assemble):
+        columns = [jnp.tile(c[:, None], (1, 2)) for c in self.columns()]
+        valuation = PortfolioValuation(today=[], columns=columns, num_paths=3, num_dates=2)
+        np.testing.assert_array_equal(assemble(valuation), np.stack([np.asarray(c) for c in columns], axis=-1))
 
 
 class TestHistoricalScenarios:

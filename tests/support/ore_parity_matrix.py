@@ -711,9 +711,13 @@ def published() -> str:
 
 
 def write(declared: Sequence[Declared]) -> None:
-    text = DOC.read_text(encoding="utf-8")
+    """The matrix between the markers, the rest of the document and its line endings as they are."""
+    with DOC.open(encoding="utf-8", newline="") as f:
+        text = f.read()
     start, end = text.index(BEGIN), text.index(END) + len(END)
-    DOC.write_text(text[:start] + render(declared) + text[end:], encoding="utf-8")
+    eol = "\r\n" if "\r\n" in text else "\n"
+    with DOC.open("w", encoding="utf-8", newline="") as f:
+        f.write(text[:start] + render(declared).replace("\n", eol) + text[end:])
 
 
 def main(argv: Sequence[str]) -> int:

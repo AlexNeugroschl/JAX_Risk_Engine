@@ -69,6 +69,18 @@ OPTIONS = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 #: `Precision.by_product`.
 PRODUCTS: Tuple[str, ...] = tuple(t.product for t in get_args(Trade))
 
+#: The most columns one program stacks. XLA's compile time of an N-operand stack grows faster than
+#: N squared (CPU, 2026-11-09: 10 s at 2,000 operands, 112 s at 4,000; blocks of 256, 0.5 s).
+STACK_BLOCK = 256
+
+
+def stack_in_blocks(stack, columns: Sequence) -> jax.Array:
+    """`stack` (a tuple of columns to `[..., n]`) of at most `STACK_BLOCK` columns at a time, joined
+    along the last axis, in column order. Up to `STACK_BLOCK` columns it is one call of `stack`."""
+    parts = [stack(tuple(columns[i:i + STACK_BLOCK])) for i in range(0, len(columns), STACK_BLOCK)]
+    return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=-1)
+
+
 @dataclass
 class PortfolioValuation:
     """t=0 NPVs `[T]` (float64) and the cube, both in the base currency, in trade order.
@@ -96,10 +108,11 @@ class PortfolioValuation:
         dtypes = {c.dtype for c in self.columns}
         shared = len(dtypes) == 1 and not any(isinstance(c, Stored) for c in self.columns)
         dtype = dtypes.pop() if shared else jnp.float64
-        return jnp.stack([load(c, dtype) for c in self.columns], axis=-1)
+        return stack_in_blocks(lambda block: jnp.stack([load(c, dtype) for c in block], axis=-1), self.columns)
 
     def float64_cube(self) -> jax.Array:
-        """The requested output cube, decoded and assembled in one compiled program.
+        """The requested output cube, decoded and assembled in one compiled program per block
+        of columns (`stack_in_blocks`; a portfolio of up to `STACK_BLOCK` trades is one block).
 
         Unlike `load(self.cube, float64)`, this allocates neither a stack at the stored
         dtype nor a list of separately decoded columns beside the final array (I-105).
@@ -107,13 +120,14 @@ class PortfolioValuation:
         """
         if not self.columns:
             return jnp.zeros((self.num_paths, self.num_dates, 0), dtype=jnp.float64)
-        return _float64_cube(tuple(self.columns))
+        return stack_in_blocks(_float64_cube, self.columns)
 
     def output_cube(self, dtype) -> jax.Array:
         """Decode directly into the requested output dtype in one compiled program."""
         if not self.columns:
             return jnp.zeros((self.num_paths, self.num_dates, 0), dtype=dtype)
-        return _output_cube(tuple(self.columns), jnp.dtype(dtype).name)
+        name = jnp.dtype(dtype).name
+        return stack_in_blocks(lambda block: _output_cube(block, name), self.columns)
 
 
 @jax.jit

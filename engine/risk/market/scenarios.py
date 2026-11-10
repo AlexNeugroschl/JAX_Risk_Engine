@@ -131,13 +131,18 @@ class MonteCarloScenarios:
                                                                     self.num_scenarios, self.replicates))
 
     def draw(self, dtype=jnp.float64) -> ShockScenarios:
-        """The `ShockScenarios`: scrambled Sobol normals times a root of the covariance."""
+        """The `ShockScenarios`: scrambled Sobol normals times the symmetric root of the covariance.
+
+        `V sqrt(L) V^T`, not `V sqrt(L)`: eigenvectors are free up to sign and, inside a repeated
+        eigenvalue's space, up to any rotation, and LAPACK builds choose differently, so a root
+        built on them draws different scenarios from one request on different hosts. The
+        symmetric root of a positive semi-definite matrix is unique."""
         eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
         # Eigenvalues below round-off of the largest are zero: a rank-deficient
         # covariance otherwise gains ~1e-10 of spurious noise per move from the
         # square roots of its ~1e-21 numerical eigenvalues.
         eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
-        root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
+        root = (eigenvectors * np.sqrt(eigenvalues)[None, :]) @ eigenvectors.T   # cov = root @ root.T
         normals = np.asarray(generate_sobol_normals(self.num_scenarios, 1, self.factors.size, dtype,
                                                     seed=self.seed, replicates=self.replicates)[0])
         return ShockScenarios(factors=self.factors, shifts=normals @ root.T, horizon_days=self.horizon_days,

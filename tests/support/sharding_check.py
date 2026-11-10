@@ -18,8 +18,11 @@ import sys
 
 
 def _portfolio_runs():
+    import dataclasses
+
     import ORE
 
+    from engine.precision.options import ProductOptions
     from engine.run import price_portfolio
     from engine.run.run_request import portfolio_request
     from tests.support import portfolio as shared
@@ -32,10 +35,15 @@ def _portfolio_runs():
         "lgm": {"simulation": {"samples": 64, "seed": 5}, "precision": {"paired_fraction": 0.25}},
         "fp8-stochastic": {"simulation": {"samples": 64, "seed": 5},
                            "precision": {"market": fp8, "pricing": fp8, "rounding": "stochastic"}},
+        # A CPU has no native FP8 product, so this run asks for the emulation by name, and for the
+        # scaled profile: unscaled, an operand above FP8's largest value (448) is a NaN.
         "compute-stochastic": {"simulation": {"samples": 128, "seed": 5, "replicates": 4},
-                               "precision": {s: {"storage": "float32", "compute": "float8_e4m3fn",
-                                                  "accumulate": "float32", "compute_rounding": "stochastic"}
-                                             for s in ("simulation", "market", "pricing")}},
+                               "precision": {"execution": {"mode": "allow_emulation"},
+                                             **{s: {"storage": "float32", "compute": "float8_e4m3fn",
+                                                    "accumulate": "float32", "compute_rounding": "stochastic",
+                                                    "product": dataclasses.asdict(
+                                                        ProductOptions.compensated("float8_e4m3fn"))}
+                                                for s in ("simulation", "market", "pricing")}}},
     }
     for name, extra in bodies.items():
         body = {"market": shared.market_json(), "portfolio": trades, "analytics": ["npv", "exposure"],

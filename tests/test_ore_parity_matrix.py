@@ -17,6 +17,17 @@ def declared():
     return matrix.collect()
 
 
+def test_writing_the_matrix_keeps_the_documents_line_endings(tmp_path, monkeypatch):
+    """The published document is CRLF: a rewrite on Linux or macOS must not flatten all of it."""
+    begin, end = matrix.BEGIN.encode(), matrix.END.encode()
+    doc = tmp_path / "ore-parity.md"
+    doc.write_bytes(b"\xef\xbb\xbf# Title\r\n\r\n" + begin + b"\r\nold\r\n" + end + b"\r\nafter\r\n")
+    monkeypatch.setattr(matrix, "DOC", doc)
+    monkeypatch.setattr(matrix, "render", lambda declared: f"{matrix.BEGIN}\nnew\n{matrix.END}")
+    matrix.write([])
+    assert doc.read_bytes() == b"\xef\xbb\xbf# Title\r\n\r\n" + begin + b"\r\nnew\r\n" + end + b"\r\nafter\r\n"
+
+
 def test_every_field_of_the_public_requests_is_a_setting_an_input_or_has_a_reason():
     """A field added to a request, a trade or a configuration fails here until it is a setting
     of the matrix (`SETTINGS`), an input (`INPUTS`) or in a class with one reason."""

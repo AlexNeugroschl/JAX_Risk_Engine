@@ -40,6 +40,7 @@ import numpy as np
 from engine.market_data.market import Market
 from engine.precision import Arithmetic
 from engine.pricing.config import PricingConfig
+from engine.pricing.cube import stack_in_blocks
 from engine.risk.greeks.price_functions import Moves, curve_keys, trade_price_function
 from engine.risk.greeks.scenario_pnl import price_function_pnl
 from engine.risk.market.factors import RateRiskFactors, curve_name
@@ -71,7 +72,8 @@ def revalue(
     execution = _prepare_revaluation(moves, arithmetic)
     values = [_revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic, execution) for cfg in trades]
     return (np.asarray([base for base, _ in values]),
-            jnp.stack([jnp.asarray(base, dtype=pnl.dtype) + pnl for base, pnl in values], axis=-1))
+            stack_in_blocks(lambda block: jnp.stack(block, axis=-1),
+                            [jnp.asarray(base, dtype=pnl.dtype) + pnl for base, pnl in values]))
 
 
 def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing: PricingConfig = PricingConfig(),

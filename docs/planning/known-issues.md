@@ -760,6 +760,9 @@ or the register's text at commit `8306073`). The test named guards the fix.
 
 | ID | Fixed | Regression test |
 |---|---|---|
+| <a id="i-125"></a>I-125 | The four-device sharding check was refused on a CPU (FP8 now asks for emulation and the scaled profile by name, and NaN cubes no longer compare equal); `ore_parity_matrix --write` flattened the document's CRLF off Windows (2026-11-09) | `tests/test_sharding.py::test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers`, `tests/test_ore_parity_matrix.py::test_writing_the_matrix_keeps_the_documents_line_endings` |
+| <a id="i-124"></a>I-124 | A portfolio of thousands of trades spent minutes to hours compiling one stack of its P&L or cube columns (now stacked in blocks of 256, 2026-11-09) | `tests/test_market_risk.py::TestLargePortfolioStacks` |
+| <a id="i-123"></a>I-123 | One Monte Carlo request drew different scenarios on different hosts: the covariance root depended on LAPACK's choice of eigenvectors (now the unique symmetric root; every Monte Carlo figure moved once by sampling noise, 2026-11-09) | `tests/test_market_risk.py::TestMonteCarloScenarios::test_the_draw_does_not_depend_on_the_eigenvectors_lapack_returns` |
 | <a id="i-104"></a>I-104 | Zero-volatility live Europeans, delayed bond principal/coupon payment and small-reversion H(t), including zero-reversion derivatives, corrected; eight boundary checks failed before the fixes, all nine pass and golden arrays stay within existing margins (2026-10-20) | `tests/test_numerical_boundaries.py` |
 | <a id="i-01"></a>I-01 | Swap Delta/Gamma/Theta were silently absent from portfolio results | `tests/test_portfolio_gap_fixes.py::TestSwapGreeksReachThePortfolioPath` |
 | <a id="i-02"></a>I-02 | Bermudan Vega was never computed | `tests/test_portfolio_gap_fixes.py::TestBermudanVegaReachesThePortfolioPath` |
