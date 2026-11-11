@@ -310,7 +310,7 @@ def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: s
     for i, cfg in enumerate(trades):
         with trade_pricing_phase(i, cfg):
             stage = precision.precision_for(cfg)
-            arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+            arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}", precision.stage_label(cfg))
             if arithmetic.dtype not in loaded:
                 at_dtype = scenarios.map_arrays(lambda a: load(a, arithmetic.dtype), grid=lambda grid: grid)
                 loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)

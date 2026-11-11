@@ -25,6 +25,11 @@ run's precision was, read from what it did, and how far its figures are from flo
                                                    with a paired sample (`paired_fraction`),
                                                    per figure: "netting_set/EPE",
                                                    "trades/<trade id>/PFE_95", "portfolio/VaR_99"
+      product_ranges {stage: {operand: {count: n}}}
+                                                   with `ProductOptions.diagnostics="counts"`, how
+                                                   many operand values each stage's products could
+                                                   not hold (`engine.precision.diagnostics`); empty
+                                                   without
 
 `realized` and `devices` are read from the arrays, not the configuration, so the report says
 what ran even if a cast point were wrong. Built in the process that ran the job, so an HTTP
@@ -66,6 +71,7 @@ class PrecisionReport:
     resolved_policy: Mapping[str, Any] = field(default_factory=dict)
     replicates: int = 1
     uncertainty_method: str = "unavailable"
+    product_ranges: Mapping[str, Any] = field(default_factory=dict)
     #: Applies to every figure/entry, including zero empirical SEs and unpaired runs.
     #: Standard errors above remain raw variance diagnostics, never nominal bounds.
     interval: IntervalAvailability = field(default_factory=IntervalAvailability)

@@ -1238,7 +1238,7 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 - **T16** `tests/test_ore_parity_settings.py::test_the_sensitivity_settings_are_ores`: 1e-12 of the notional
 - **T17** `tests/test_ore_parity_settings.py::test_theta_across_a_weekend_reads_the_volatilities_from_the_monday_as_ore`: 1e-12 of the notional
 - **T18** `tests/test_ore_parity_settings.py::test_theta_onto_a_coupon_adds_nothing_back_as_ores`: 1e-12 of the notional
-- **T19** `tests/test_ore_parity_sweep.py::test_market_risk_is_ores`: each trade's P&L in every scenario 1e-11 of the notional; VaR 1e-9 relative to ORE's report; ES to ORE's RiskStatistics on ORE's P&L
+- **T19** `tests/test_ore_parity_sweep.py::test_market_risk_is_ores`: each trade's P&L in every scenario 1e-11 of the notional, against ORE's own calibration where it stops short; VaR 1e-9 relative to ORE's report; ES to ORE's RiskStatistics on ORE's P&L
 - **T20** `tests/test_ore_parity_sweep.py::test_the_greeks_are_ores`: bump Greeks 1e-10 of the notional (Bermudans, Americans), 1e-12 (the rest); AD as the shift vanishes (Richardson), 1e-5 of each curve's largest
 - **T21** `tests/test_ore_parity_sweep.py::test_todays_values_are_ores`: 2e-11 of the notional (Bermudans, Americans), 1e-12 (the rest); a trade ORE refuses to build refused
 - **T22** `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option`: each cell 1e-10 of the trade's largest value

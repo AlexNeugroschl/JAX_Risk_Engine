@@ -59,8 +59,8 @@ from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, PRODUCTS
 from engine.risk.market import MonteCarloScenarios, RateRiskFactors, historical_scenarios
 from engine.risk.greeks.bump import SensitivityConfig
 from engine.run import (
-    ANALYTICS, ExposureConfig, GreeksConfig, MarketRiskConfig, ModelsConfig, RunRequest, RunRequestConfig,
-    SimulationParameters, validate_run,
+    ANALYTICS, ExposureConfig, GreeksConfig, MarketRiskConfig, ModelsConfig, ResultChecks, RunRequest,
+    RunRequestConfig, SimulationParameters, validate_run,
 )
 from engine.solvers.roots import DEFAULT_SOLVER, SOLVERS
 
@@ -156,6 +156,7 @@ class ProductOptionsSchema(_Strict):
     bf16_padding: Literal["none", "gemm8"] = "none"
     subnormals: Literal["native", "normalize_fp16"] = "native"
     implementation: Literal["auto", "emulated_fp32"] = "auto"
+    diagnostics: Literal["off", "counts"] = "off"
 
     def to_dataclass(self) -> ProductOptions:
         return ProductOptions(**self.model_dump())
@@ -520,6 +521,16 @@ class SensitivitySchema(_Strict):
         return _named("config.sensitivity", lambda: GreeksConfig(method=self.method, sensitivity=settings))
 
 
+class ChecksSchema(_Strict):
+    """`engine.run.ResultChecks`: what the run does with NaN or infinite values in its results
+    (`engine.run.checks`): `raise` fails the run (the default), `warn` returns the results with a
+    warning, `allow` returns them. The result's `nonfinite` counts them per array either way."""
+    nonfinite: Literal["raise", "warn", "allow"] = "raise"
+
+    def to_dataclass(self) -> ResultChecks:
+        return ResultChecks(nonfinite=self.nonfinite)
+
+
 class ExposureSchema(_Strict):
     """`engine.run.ExposureConfig`: the PFE quantiles, each in (0, 1) and given once."""
     pfe_quantiles: List[float] = Field(default_factory=lambda: list(ExposureConfig().pfe_quantiles))
@@ -751,6 +762,7 @@ class RunRequestConfigSchema(_Strict):
     market_risk: Optional[MarketRiskSchema] = None
     precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
     execution: Optional[ExecutionPolicySchema] = None
+    checks: ChecksSchema = Field(default_factory=ChecksSchema)
 
     def to_dataclass(self, market: Market) -> RunRequestConfig:
         sections = dict(
@@ -760,7 +772,8 @@ class RunRequestConfigSchema(_Strict):
             exposure=_named("config.exposure", self.exposure.to_dataclass),
             market_risk=self.market_risk.to_dataclass(market) if self.market_risk else None,
             precision=self.precision.to_dataclass("config.precision"),
-            execution=self.execution.to_dataclass() if self.execution else None)
+            execution=self.execution.to_dataclass() if self.execution else None,
+            checks=self.checks.to_dataclass())
         return RunRequestConfig(base_currency=self.base_currency, **sections)
 
 

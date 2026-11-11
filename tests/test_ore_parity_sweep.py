@@ -29,6 +29,17 @@ the shift (Richardson: ORE's Greeks at the case's shift and the bump Greeks at h
 latter shown equal to ORE's at the case's shift), they are the AD Greeks to 2.5e-6 of each curve's
 largest, the tolerance 1e-5 of it or 1e-10 of the notional, whichever is larger.
 
+**Where ORE's calibration stops short** (I-126). ORE's Levenberg-Marquardt can stop a few 1e-6
+from a helper of a recalibrated option's basket (its finite-difference step straddling the
+root), which moves the option's P&L by up to ~2e-6 of its notional, where the engine's fit is
+exact. Where a calibrated option's P&L misses in a scenario, the market-risk test reruns ORE on
+the trade alone at its debug log level, reads where each of its calibrations ended, and adds to
+the engine's P&L what ending there moves it by (tests/support/ore_calibration_replay.py); the
+comparison is then at the same tolerance, VaR and ES the engine's statistics on the corrected
+P&L, and the test warns, naming each scenario. Only ORE's own misses change the engine's
+targets, so an engine error still fails. Seed 18's scenario 9 is one (1.8e-6 on one helper,
+3.3e-10 of the notional; 4e-13 against ORE's calibration).
+
 **Refusals.** Where ORE refuses a trade (its NPV analytic leaves it out) or fails an analytic on
 a calibration that misses its basket under a shift or a scenario, the engine refuses it too, a
 `CalibrationError` (decision A-24); the test asserts that.
@@ -56,7 +67,9 @@ averages the tail with the VaR scenario included, `RiskStatistics` (and the engi
 scenarios, `N p` not whole, a loss), the test asserting it.
 """
 import dataclasses
+import warnings
 
+import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
@@ -66,8 +79,10 @@ from engine.pricing.cube import value_today
 from engine.risk.greeks.ad import portfolio_greeks
 from engine.risk.greeks.bump import portfolio_sensitivities
 from engine.risk.market import MarketRiskRequest, run_market_risk
+from engine.risk.market.var_es import compute_risk_metrics
 from engine.run import GreeksConfig
-from tests.support.ore_market_risk_oracle import ore_market_risk_run
+from tests.support.ore_calibration_replay import calibration_tables, ores_fit_correction
+from tests.support.ore_market_risk_oracle import ore_market_risk_run, ore_trade_pnl_with_log
 from tests.support.ore_npv_oracle import ore_npv_run
 from tests.support.ore_parity_matrix import cells
 from tests.support.ore_sensitivity_oracle import ore_sensitivity_run
@@ -178,8 +193,9 @@ def _market_risk_request(case):
 
 
 @pytest.mark.parametrize("case", _params(lambda c: cells("market_risk", market_risk=_market_risk_request(c)),
-                                         "each trade's P&L in every scenario 1e-11 of the notional; VaR 1e-9 "
-                                         "relative to ORE's report; ES to ORE's RiskStatistics on ORE's P&L"))
+                                         "each trade's P&L in every scenario 1e-11 of the notional, against ORE's "
+                                         "own calibration where it stops short; VaR 1e-9 relative to ORE's report; "
+                                         "ES to ORE's RiskStatistics on ORE's P&L"))
 def test_market_risk_is_ores(case):
     _, built = _built(case)
     risk = case.market_risk
@@ -190,11 +206,21 @@ def test_market_risk_is_ores(case):
     if ore is None:
         return
     result = run_market_risk(request)
-    pnl = np.asarray(result.pnl)
+    pnl = np.array(result.pnl)
     assert pnl.shape == ore.pnl.shape, case.describe()
+    replayed = []
     for j, cfg in enumerate(built):
+        missed = np.flatnonzero(np.abs(pnl[:, j] - ore.pnl[:, j]) > PNL * _scale(cfg))
+        if missed.size and _kind(cfg) == "option":
+            pnl[missed, j] += _on_ores_calibrations(case, cfg, missed, ore.pnl[:, j], replayed)
         np.testing.assert_allclose(pnl[:, j], ore.pnl[:, j], rtol=0.0, atol=PNL * _scale(cfg),
                                    err_msg=f"{cfg.trade_id}\n{case.describe()}")
+    figures = result.risk
+    if replayed:
+        # The engine's own statistics, on its P&L corrected to ORE's calibrations.
+        figures = {key: float(np.asarray(value).reshape(())) for key, value in compute_risk_metrics(
+            jnp.asarray(pnl)[:, None, :], jnp.asarray(0.0), percentiles=risk.quantiles, include_diagnostics=False).items()}
+        warnings.warn("compared against ORE's calibrations where they stopped short (I-126): " + "; ".join(replayed))
     stats = ORE.RiskStatistics()
     stats.add(ORE.DoubleVector([float(v) for v in ore.portfolio_pnl]))
     for q in risk.quantiles:
@@ -204,11 +230,25 @@ def test_market_risk_is_ores(case):
         # `RiskStatistics` (X-12). The sweep's counts and levels never make N p whole, where the two
         # can read different scenarios (test_ore_parity_settings.py).
         if np.isfinite(reported):
-            assert result.risk[f"VaR_{label}"] == pytest.approx(max(reported, 0.0), rel=1e-9), \
+            assert figures[f"VaR_{label}"] == pytest.approx(max(reported, 0.0), rel=1e-9), \
                 f"VaR {label}\n{case.describe()}"
         else:  # fewer than 1 / p scenarios: ORE's report has no quantile, the engine the worst P&L's
             assert pnl.shape[0] * (1.0 - q) < 1.0
-        assert result.risk[f"VaR_{label}"] == pytest.approx(stats.valueAtRisk(q), rel=1e-9)
-        if np.isfinite(result.risk[f"ES_{label}"]):  # else an empty tail, where RiskStatistics raises
-            assert result.risk[f"ES_{label}"] == pytest.approx(stats.expectedShortfall(q), rel=1e-9), \
+        assert figures[f"VaR_{label}"] == pytest.approx(stats.valueAtRisk(q), rel=1e-9)
+        if np.isfinite(figures[f"ES_{label}"]):  # else an empty tail, where RiskStatistics raises
+            assert figures[f"ES_{label}"] == pytest.approx(stats.expectedShortfall(q), rel=1e-9), \
                 f"ES {label}\n{case.describe()}"
+
+
+def _on_ores_calibrations(case, cfg, scenarios, ore_pnl, replayed) -> np.ndarray:
+    """How `cfg`'s P&L moves in `scenarios` with its calibrations ending where ORE's did
+    (tests/support/ore_calibration_replay.py, I-126), read from ORE's debug log of the trade's run
+    alone, whose P&L must be the portfolio run's; the replay's description joins `replayed`."""
+    risk = case.market_risk
+    alone, log = ore_trade_pnl_with_log(case.market, cfg, risk.history, risk.dates, risk.horizon_days, case.pricing)
+    np.testing.assert_allclose(alone, ore_pnl, rtol=0.0, atol=PNL * _scale(cfg),
+                               err_msg=f"{cfg.trade_id}: ORE alone is not ORE in the portfolio\n{case.describe()}")
+    replay = ores_fit_correction(cfg, case.market, case.pricing, risk.scenarios.factors, risk.scenarios.shifts,
+                                 scenarios, calibration_tables(log))
+    replayed.append(replay.describe(cfg.trade_id))
+    return replay.correction

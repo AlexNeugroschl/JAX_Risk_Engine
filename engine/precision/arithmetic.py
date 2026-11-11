@@ -83,6 +83,9 @@ class Arithmetic:
     product: ProductOptions = ProductOptions()
     levels: str = "float64"
     calibration: str = "float64"
+    #: The stage the products' range diagnostics are reported under (`ProductOptions.diagnostics`,
+    #: `engine.precision.diagnostics`); set by `Precision.arithmetic_for` only when they are on.
+    stage: str = ""
 
     def __post_init__(self):
         for role in ("levels", "calibration"):
@@ -112,13 +115,13 @@ class Arithmetic:
 
     def tree_flatten(self):
         return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding, self.execution, self.product,
-                                            self.levels, self.calibration)
+                                            self.levels, self.calibration, self.stage)
 
     @classmethod
     def tree_unflatten(cls, meta, data):
-        compute, accumulate, rounding, execution, product, levels, calibration = meta
+        compute, accumulate, rounding, execution, product, levels, calibration, stage = meta
         return cls(compute, accumulate, rounding, *data, execution=execution, product=product,
-                   levels=levels, calibration=calibration)
+                   levels=levels, calibration=calibration, stage=stage)
 
     def fold_in(self, data):
         """Derive a date/step/product stream; the key remains traced data."""

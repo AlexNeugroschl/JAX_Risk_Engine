@@ -18,6 +18,7 @@ an explicit dtype of the run's own arrays (`engine.precision`) and `jax_enable_x
 when `engine` is imported, never per run; the pipeline keeps no module-level state and never
 reads ORE's global evaluation date (trades carry their own, I-64). The lock that serialized runs while the flag was switched per precision went on 2026-10-01.
 """
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -30,6 +31,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
 from engine.market_data.market import Market
 from engine.precision import PrecisionReport
+from engine.precision.diagnostics import collecting
 from engine.pricing.cube import require_unique_ids
 from engine.risk.counterparty.exposure import ExposureProfile
 from engine.run.config import RunConfig
@@ -126,7 +128,12 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
 
 
 def _price_portfolio(request, execution):
+    """The pipeline's run, with its products' range counts in the precision report when a stage
+    asks for them (`engine.precision.diagnostics`)."""
     from engine.run.pipeline import _price_on_market
-    result = _price_on_market(request, execution)
+    with collecting(request.config.precision.counts_ranges) as ranges:
+        result = _price_on_market(request, execution)
+    if ranges is not None and result.precision is not None:
+        result.precision = dataclasses.replace(result.precision, product_ranges=ranges.counts)
     result.trade_ids = [cfg.trade_id for cfg in request.trades]
     return result

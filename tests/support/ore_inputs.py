@@ -660,15 +660,21 @@ def inputs(asof: ORE.Date, index: str, curves: OreCurves, vols: SwaptionVolSurfa
     return parameters
 
 
+#: ORE's log mask: alerts to notices (31), and with debug (63), which writes every LGM
+#: calibration's helpers (`getCalibrationDetails`; tests/support/ore_calibration_replay.py).
+LOG_MASK, DEBUG_LOG_MASK = 31, 63
+
+
 def run_app(parameters, evaluation_date: ORE.Date, market: Sequence[str], fixings: Sequence[str],
-            required_report: str) -> "ORE.OREApp":
+            required_report: str, log_mask: int = LOG_MASK) -> "ORE.OREApp":
     """Run `OREApp` over `parameters`, ORE's evaluation date restored afterwards; raises
-    `RuntimeError` with ORE's errors and the log's alerts if `required_report` was not written."""
+    `RuntimeError` with ORE's errors and the log's alerts if `required_report` was not written.
+    `log_mask` is ORE's (`LOG_MASK`, `DEBUG_LOG_MASK`); `log_lines` reads the log."""
     previous = ORE.Settings.instance().evaluationDate
     log_file = f"{_scratch_dir()}/log.txt"
     try:
         ORE.Settings.instance().evaluationDate = evaluation_date
-        app = ORE.OREApp(parameters, log_file, 31, False)
+        app = ORE.OREApp(parameters, log_file, log_mask, False)
         app.run(ORE.StrVector(list(market)), ORE.StrVector(list(fixings)))
         if required_report not in app.getReportNames():
             alerts = [line.strip() for line in log_lines() if "ALERT" in line or "ERROR" in line]
@@ -718,8 +724,8 @@ class PortfolioInputs:
     market: Sequence[str]
     fixings: Sequence[str]
 
-    def run(self, required_report: str) -> "ORE.OREApp":
-        return run_app(self.parameters, self.asof, self.market, self.fixings, required_report)
+    def run(self, required_report: str, log_mask: int = LOG_MASK) -> "ORE.OREApp":
+        return run_app(self.parameters, self.asof, self.market, self.fixings, required_report, log_mask)
 
 
 def _option_engines(trades, pricing: PricingConfig):

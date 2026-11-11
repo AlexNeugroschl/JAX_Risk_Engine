@@ -286,12 +286,15 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
         carrier = (jnp.float32 if _explicit_emulation(fmt) or options.implementation == "emulated_fp32"
                    or default_device().platform == "tpu"
                    else _CARRIERS.get(fmt.base, fmt.dtype))
+    counted = options.diagnostics == "counts"
     qa, ka = _terms(a, held if shared == "left" else fmt, axis=-1, count=terms if shared == "left" else 1,
                     uniforms=uniforms if shared == "right" else None, carrier=carrier,
-                    scaling=options.scaling == "power_of_two")
+                    scaling=options.scaling == "power_of_two",
+                    counted=(arithmetic.stage, "shared" if shared == "left" else "per_path") if counted else None)
     qb, kb = _terms(b, held if shared == "right" else fmt, axis=-2, count=terms if shared == "right" else 1,
                     uniforms=uniforms if shared == "left" else None, carrier=carrier,
-                    scaling=options.scaling == "power_of_two")
+                    scaling=options.scaling == "power_of_two",
+                    counted=(arithmetic.stage, "shared" if shared == "right" else "per_path") if counted else None)
     product = (_normalized_fp16_product(qa, qb, precision) if options.subnormals == "normalize_fp16"
                else _matmul32(qa, qb, precision))
     product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)
@@ -302,15 +305,19 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
     return total
 
 
-def _terms(x, fmt: Format, axis: int, count: int, uniforms=None, *, carrier=None, scaling=True):
+def _terms(x, fmt: Format, axis: int, count: int, uniforms=None, *, carrier=None, scaling=True, counted=None):
     """`x` as `count` terms of `fmt`, each rounded and scaled along `axis` by `_quantize`, the
     first `x`'s rounding and each next one the rounding of what the terms before leave, stacked
     along the other matrix axis; and their scale exponents, stacked alike. What a term leaves is
     exact in `x`'s dtype (float32 or float64), being a rounding error onto a coarser grid.
-    `carrier` overrides only the final dtype, retaining `fmt`'s grid and scale rules."""
+    `carrier` overrides only the final dtype, retaining `fmt`'s grid and scale rules. `counted`,
+    `(stage, operand)`, reports the first term's range counts (`engine.precision.diagnostics`)."""
     terms, exponents, rest = [], [], x
     for i in range(count):
         term, k = _quantize(rest, fmt, axis, uniforms, carrier=carrier, scaling=scaling)
+        if counted is not None and i == 0:
+            from engine.precision import diagnostics
+            diagnostics.report(*counted, diagnostics.operand_counts(rest, term, fmt.min_exponent))
         terms.append(term)
         exponents.append(k)
         if i + 1 < count:

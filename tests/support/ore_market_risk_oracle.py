@@ -69,7 +69,8 @@ from engine.market_data.market import Market
 from engine.pricing.config import PricingConfig
 from engine.risk.market import RateRiskFactors
 from tests.support.ore_inputs import (
-    CCY, DISCOUNT_INDEX, curve_dates, iso, portfolio_inputs, report_columns, sim_market_xml,
+    CCY, DEBUG_LOG_MASK, DISCOUNT_INDEX, LOG_MASK, curve_dates, iso, log_lines, portfolio_inputs, report_columns,
+    sim_market_xml,
 )
 
 #: The calendar of the history and of ORE's windows (`mporCalendar`).
@@ -140,6 +141,18 @@ def ore_market_risk_run(market: Market, trades: Sequence, history, dates: Sequen
     return OreMarketRiskRun(ids, windows, pnl, np.asarray([v for _, _, _, v in portfolio]), quantiles, shortfalls)
 
 
+def ore_trade_pnl_with_log(market: Market, trade, history, dates: Sequence[ORE.Date], horizon_days: int,
+                           pricing: PricingConfig = PricingConfig()) -> Tuple[np.ndarray, list]:
+    """One trade's P&L per window `[S]` from ORE's historical simulation of it alone (as
+    `ore_market_risk_run`'s trade-level run, the windows in its order), and that run's log at
+    ORE's debug level, which writes every LGM calibration's helpers
+    (tests/support/ore_calibration_replay.py)."""
+    levels = np.asarray(history, dtype=np.float64)
+    reports = _run(market, [trade], levels, dates, horizon_days, [0.01], pricing, True, log_mask=DEBUG_LOG_MASK)
+    rows = _rows(reports["historical_PnL"])
+    return np.asarray([value for _, _, name, value in rows if name == trade.trade_id]), log_lines()
+
+
 def _probability(label: str, probabilities: Sequence[float]) -> float:
     """The requested probability ORE's column label (`std::to_string`, six decimals) names."""
     matches = [p for p in probabilities if abs(p - float(label)) < 5e-7]
@@ -157,7 +170,7 @@ def _rows(report) -> list:
 
 
 def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, tail_probabilities, pricing,
-         trade_pnl: bool, *, include_npv: bool = False) -> dict:
+         trade_pnl: bool, *, include_npv: bool = False, log_mask: int = LOG_MASK) -> dict:
     run = portfolio_inputs(market, trades, pricing, "the market-risk oracle")
     factors = RateRiskFactors.from_market(market)
     keys = {f"discount:{CCY}": (f"DiscountCurve/{CCY}", f"IndexCurve/{DISCOUNT_INDEX}"),
@@ -200,7 +213,7 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
         parameters.setScenarioReader(str(path))
         app = None
         try:
-            app = run.run("historical_PnL" if trade_pnl else "var")
+            app = run.run("historical_PnL" if trade_pnl else "var", log_mask)
             names = ("historical_PnL",) + (() if trade_pnl else ("var",)) + (("npv",) if include_npv else ())
             reports = {name: report_columns(app, name) for name in names}
         except BaseException as error:

@@ -92,6 +92,9 @@ class PrecisionReportSchema(BaseModel):
     uncertainty_method: str = "unavailable"
     interval: IntervalAvailability = Field(default_factory=IntervalAvailability)
     qualification_scope: str = PrecisionReport.__dataclass_fields__["qualification_scope"].default
+    #: With `product.diagnostics="counts"`: per stage and operand, the operand values its products
+    #: rounded and how many were non-finite, overflowed, underflowed or became subnormal.
+    product_ranges: Dict[str, Dict[str, Dict[str, int]]] = Field(default_factory=dict)
 
     @classmethod
     def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
@@ -102,7 +105,9 @@ class PrecisionReportSchema(BaseModel):
                    backend=report.backend, jax_version=report.jax_version, paths=report.paths,
                    paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()},
                    replicates=report.replicates, uncertainty_method=report.uncertainty_method,
-                   interval=report.interval, qualification_scope=report.qualification_scope)
+                   interval=report.interval, qualification_scope=report.qualification_scope,
+                   product_ranges={stage: {operand: dict(counts) for operand, counts in operands.items()}
+                                   for stage, operands in report.product_ranges.items()})
 
 
 class RiskMetricsSchema(BaseModel):
@@ -357,7 +362,9 @@ class EngineIdentitySchema(BaseModel):
 class RunResultSchema(BaseModel):
     """`engine.run.RunResult` on the wire (see the module docstring): one section per requested
     analytic, null for the others; `npv` the portfolio's value today, the sum of the rows';
-    every amount in `base_currency`; `warnings` every analytic's."""
+    every amount in `base_currency`; `warnings` every analytic's and the run's own; `nonfinite`
+    the count of NaN and infinite values per computed array that has any (`config.checks`,
+    `engine.run.checks`), empty when all are finite."""
     run_id: str
     analytics: List[str]
     asof: str
@@ -372,6 +379,7 @@ class RunResultSchema(BaseModel):
     market_risk: Optional[MarketRiskSectionSchema] = None
     calibration: Optional[CalibrationSectionSchema] = None
     warnings: List[str] = Field(default_factory=list)
+    nonfinite: Dict[str, int] = Field(default_factory=dict)
 
 
 def run_result_document(result: RunResult, schema: RunRequestSchema, run_id: str,
@@ -415,7 +423,7 @@ def run_result_document(result: RunResult, schema: RunRequestSchema, run_id: str
         run_id=run_id, analytics=list(request.analytics), asof=request.market.asof.ISO(),
         base_currency=request.config.base_currency, engine=EngineIdentitySchema.from_dataclass(result.engine),
         config=schema.config, numerics=result.numerics, trades=rows, npv=float(portfolio.base_npv) if portfolio is not None else None,
-        warnings=list(dict.fromkeys(warnings)), **sections)
+        warnings=list(dict.fromkeys(warnings + list(result.warnings))), nonfinite=dict(result.nonfinite), **sections)
     return document, chunks
 
 

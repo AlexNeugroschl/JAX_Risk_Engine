@@ -19,6 +19,8 @@ the engine's one way in, from Python and, through `engine.api`, over HTTP.
         market_risk     the shock scenarios, VaR/ES quantiles and batch size (`MarketRiskConfig`)
         precision       storage, compute and accumulate formats per stage (`Precision`; not ORE's,
                         the research axis)
+        checks          what the run does with NaN or infinite values in its results
+                        (`ResultChecks`, `engine.run.checks`; not ORE's): refuse them by default
       include_npv_cube  whether the exposure analytic assembles its float64 cube
 
 **What runs.** `npv`, `exposure` and `sensitivities` are one `price_portfolio` (today's values
@@ -64,6 +66,7 @@ from engine.risk.market import MarketRiskRequest, MarketRiskResult
 from engine.risk.market.run import validate_portfolio, validate_scenarios, _run_market_risk
 from engine.risk.market.scenarios import MonteCarloScenarios, ShockScenarios, shock_scenarios
 from engine.risk.market.var_es import validate_quantiles
+from engine.run.checks import ResultChecks, check_results
 from engine.run.config import GreeksConfig, RunConfig
 from engine.run.identity import EngineIdentity, engine_identity
 from engine.run.request import PortfolioRequest, PortfolioResult, TradeConfig, _price_portfolio
@@ -167,6 +170,7 @@ class RunRequestConfig:
     market_risk: Optional[MarketRiskConfig] = None
     precision: Precision = field(default_factory=Precision)
     execution: Optional[ExecutionPolicy] = None
+    checks: ResultChecks = field(default_factory=ResultChecks)
 
     def __post_init__(self):
         for name, expected in (("models", ModelsConfig), ("simulation", SimulationParameters),
@@ -175,7 +179,7 @@ class RunRequestConfig:
             if value is not None and not isinstance(value, expected):
                 raise TypeError(f"config.{name} must be a {expected.__name__}; got {type(value).__name__}")
         for name, expected in (("pricing", PricingConfig), ("sensitivity", GreeksConfig),
-                               ("exposure", ExposureConfig)):
+                               ("exposure", ExposureConfig), ("checks", ResultChecks)):
             if not isinstance(getattr(self, name), expected):
                 raise TypeError(f"config.{name} must be a {expected.__name__}; got {type(getattr(self, name)).__name__}")
         require_precision("config.precision", self.precision)
@@ -236,6 +240,10 @@ class RunResult:
         values always; the cube and exposure with `exposure`; the Greeks with `sensitivities`).
     market_risk: `run_market_risk`'s, with `market_risk`.
     calibration: `calibrate_cam`'s per calibrated currency, with `calibration`.
+    nonfinite: `{array: count}` of the NaN and infinite values in each computed array that has any
+        (`engine.run.checks`); empty when every value is finite.
+    warnings: the run's own warnings (the analytics' are in their results), e.g. non-finite
+        values under `config.checks.nonfinite="warn"`.
     """
     request: RunRequest
     engine: EngineIdentity
@@ -243,6 +251,8 @@ class RunResult:
     market_risk: Optional[MarketRiskResult] = None
     calibration: Optional[Dict[str, CamCalibration]] = None
     numerics: dict = field(default_factory=dict)
+    nonfinite: Dict[str, int] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def trade_ids(self) -> List[str]:
@@ -253,7 +263,9 @@ class RunResult:
 def run(request: RunRequest) -> RunResult:
     """Run every analytic of `request` (see the module docstring), each by the engine's entry
     point, after `validate_run`; on several hosts (a pod slice) every array of the result whole on
-    each (`engine.market_simulation.sharding.whole_on_every_host`)."""
+    each (`engine.market_simulation.sharding.whole_on_every_host`). The results are then checked
+    for NaN and infinite values (`config.checks`, `engine.run.checks`): by default a run with any
+    raises `NonFiniteResultError`."""
     execution = validate_run(request, execution=True)
     result = RunResult(request=request, engine=engine_identity(), numerics=execution.report_policy())
     if request.wants(*PORTFOLIO_ANALYTICS):
@@ -269,7 +281,10 @@ def run(request: RunRequest) -> RunResult:
             result.calibration = _calibrate_cam(request.market, models.ir, models.bootstrap_tolerance, execution)
         from engine.precision.prepare import cast_floating
         result.calibration = cast_floating(result.calibration, request.config.precision.internal.dtype("output"), scalars=True)
-    return whole_on_every_host(result)
+    # Whole on every host first, so every host counts the same values and ends the job alike.
+    result = whole_on_every_host(result)
+    check_results(result, request.config.checks)
+    return result
 
 
 def portfolio_request(request: RunRequest) -> PortfolioRequest:
@@ -304,6 +319,7 @@ _READERS = {
     "exposure": ("exposure",),
     "market_risk": ("market_risk",),
     "precision": ANALYTICS,
+    "checks": ANALYTICS,
 }
 
 
@@ -437,6 +453,6 @@ def _check_calibration(request: RunRequest) -> None:
 
 
 __all__ = [
-    "ANALYTICS", "ExposureConfig", "MarketRiskConfig", "ModelsConfig", "RunRequest", "RunRequestConfig", "RunResult",
-    "SimulationParameters", "market_risk_request", "portfolio_request", "run", "validate_run",
+    "ANALYTICS", "ExposureConfig", "MarketRiskConfig", "ModelsConfig", "ResultChecks", "RunRequest", "RunRequestConfig",
+    "RunResult", "SimulationParameters", "market_risk_request", "portfolio_request", "run", "validate_run",
 ]

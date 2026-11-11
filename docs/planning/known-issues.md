@@ -57,6 +57,7 @@ the reviewed records, all 127 precision-evidence/report checks pass with a print
 | [I-121](#i-121) | Never run on a TPU or an H100: no TPU install, float64 emulation and the device check unverified there | Medium | OPEN | Validation | Clusters |
 | [I-97](#i-97) | Local XLA FP8/BF16 faults need explicit workarounds; H100 remains unchecked | Medium | PARTIAL | Performance | Clusters |
 | [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Clusters |
+| [I-128](#i-128) | On an accelerator, market risk revalues one trade per program call | Medium | OPEN | Performance | Clusters |
 | [I-122](#i-122) | FP16/FP8 accuracy qualification remains narrow; expanded comparison and campaign tools implemented | Medium | PARTIAL | Validation | Precision research |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-120](#i-120) | The retired TraderX path (`/eod`) still ships, with its own pricers and its own defects | Medium | OPEN | API | Fix what exists |
@@ -67,6 +68,7 @@ the reviewed records, all 127 precision-evidence/report checks pass with a print
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-117](#i-117) | ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations | Low | OPEN | Validation | Fix what exists |
 | [I-118](#i-118) | A run of several analytics repeats the work they share | Low | OPEN | Performance | Fix what exists |
+| [I-129](#i-129) | Each trade's price function builds today's market context again | Low | OPEN | Performance | Fix what exists |
 | [I-119](#i-119) | On a GPU, XLA cannot compile a reverse-mode derivative of a calibrated option's price | Low | OPEN | Scope | Fix what exists |
 | [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
@@ -263,6 +265,37 @@ recorded as a difference by decision.
 
 ## Performance
 
+<a id="i-128"></a>
+### I-128 — On an accelerator, market risk revalues one trade per program call
+
+**Severity:** Medium (a stated goal: fast on GPU and TPU clusters) · **Status:** OPEN ·
+**Category:** Performance · **Found:** 2026-11-09, reviewing the TraderX fork (branch
+`traderx/engine-fork`)
+
+**What is wrong.** `run_market_risk` revalues the trades one by one (`_trade_pnl`): a program call
+per trade and scenario batch, and an option's recalibration per trade. On a GPU each call is
+small, so a portfolio of many trades of one shape spends its time launching programs. The fork
+measured on an A100, grouping trades of one shape into one call: 16 Bermudans 3.7x faster than 16
+calls, Americans 2.0x; its 1,136-trade book warm in 435 s against 558 s trade by trade. Its own
+measurements, not reproduced here.
+
+**Reach.** Market risk's wall time on accelerators for portfolios with many trades of one shape,
+such as the 100-American-swaption experiment. No number. On a CPU grouping is slower (the fork:
+four Bermudans x 256 scenarios in one call cost 2.4x four calls' CPU time).
+
+**Current handling.** None.
+
+**To close.** Group as an explicit setting, the same on every backend (owner, 2026-11-10: no
+behaviour that switches on by device): `config.market_risk.trade_batch`, the trades revalued per
+call, 1 by default (today's behaviour). Trades of one product, pricer, curves, arithmetic and
+terms shape in one call, padded to the batch so a shape is one program; a recalibrated option's
+buckets grouped alike. The result stays split along the scenarios across the devices (the fork
+gathered it onto one with `np.asarray`/`jnp.asarray`), and no private JAX API. Tests: grouped P&L
+equals trade by trade within the float64 margin; the four-device check
+(`tests/support/sharding_check.py`) keeps every array on its four devices; a repeated grouped
+run compiles nothing. Timed on the RTX 5060, old and new interleaved. Starting point: the fork's
+commits `640a989`, `3e1d1d9`, `c0f5ab6`, `17e4590`.
+
 <a id="i-53"></a>
 ### I-53 — On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch
 
@@ -395,6 +428,25 @@ cross-asset model's calibration handed from `calibration` to `exposure`
 schedules built once per run. A test that the combined run still equals each analytic alone, bit
 for bit, and that each shared stage runs once (a call count), timed against the code before.
 
+<a id="i-129"></a>
+### I-129 — Each trade's price function builds today's market context again
+
+**Severity:** Low · **Status:** OPEN · **Category:** Performance · **Found:** 2026-11-09, reviewing
+the TraderX fork
+
+**What is wrong.** `trade_price_function` builds the market's pricing context (its curves at their
+nodes, the volatility surface; `base_context`, `engine.pricing.context.from_market`) for every
+trade, as do today's values per call. The fork measured 7 s of a 63 s warm run of 1,136 trades on
+an A100 (its commit `2a3bed2`, a process-wide cache of the last market's context per dtype).
+
+**Reach.** Wall time of portfolios with many trades. Not measured on this code. No number.
+
+**Current handling.** None.
+
+**To close.** Measure on this code first; if it matters, build the context once per run and pass
+it down, not a process-wide cache (state kept between runs; owner, 2026-11-10). A test that the
+numbers are unchanged bit for bit and that a run builds one context per market and dtype.
+
 ---
 
 ## API
@@ -496,6 +548,12 @@ alone moves every accrual by 1.389%, about 46 times a 1bp DV01 on a 5Y fixed leg
 accepted against an ORE reference on the same terms. Do not start on guessed conventions.
 Basel's USD swaps need it ([F-05](features.md#f-05)).
 
+**Starting point.** The TraderX fork (branch `traderx/engine-fork`, 2026-11-09) has seasoned OIS
+and ACT/360 term swaps, checked against QuantLib, not ORE, and no lookback or lockout. Its
+ACT/360 and 30/360 American swaptions miss ORE by 6e-5 relative, unexplained (the fork took those
+day counts out of its sweep). Port it product by product, each with an ORE parity test (owner,
+2026-11-10).
+
 <a id="i-07"></a>
 ### I-07 — No corporate bond, equity or listed-option pricer
 
@@ -508,6 +566,11 @@ credit pricing, so corporates need a credit model. The simulation's equities
 and equity trades are [F-04](features.md#f-04).
 
 **To close.** Per instrument, on demand: a config, a pricer, and ORE parity tests.
+
+**Starting point.** The TraderX fork (branch `traderx/engine-fork`, 2026-11-09) prices equity
+options on listed contracts, checked against QuantLib, not ORE; its pricer is float64 only, which
+the precision policy refuses on a TPU. Port it product by product, each with an ORE parity test
+(owner, 2026-11-10).
 
 ---
 
@@ -760,6 +823,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 
 | ID | Fixed | Regression test |
 |---|---|---|
+| <a id="i-127"></a>I-127 | A run request returned NaN or infinite figures without a word (an unscaled FP8 market-risk run of a swap: every P&L NaN, VaR NaN, no warning; a P&L partly NaN gives a finite VaR and ES that are too small): every run now counts them per array (`RunResult.nonfinite`) and refuses them by default, `config.checks.nonfinite` "raise", "warn" or "allow" (2026-11-10) | `tests/test_result_checks.py` |
+| <a id="i-126"></a>I-126 | The ORE parity sweep's market-risk test failed on seed 18, the engine right: ORE's Levenberg-Marquardt stopped 1.8e-6 short of one helper in one of its 1,024 calibrations, 3.3e-10 of the notional against 1e-11. Where a calibrated option misses, the test now reads ORE's calibrations from its debug log and compares against the engine calibrated to where ORE's ended, at the same tolerance (4e-13 on seed 18; 2026-11-10) | `tests/test_ore_parity_sweep.py::test_market_risk_is_ores[seed-18]`, `tests/test_ore_calibration_replay.py` |
 | <a id="i-125"></a>I-125 | The four-device sharding check was refused on a CPU (FP8 now asks for emulation and the scaled profile by name, and NaN cubes no longer compare equal); `ore_parity_matrix --write` flattened the document's CRLF off Windows (2026-11-09) | `tests/test_sharding.py::test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers`, `tests/test_ore_parity_matrix.py::test_writing_the_matrix_keeps_the_documents_line_endings` |
 | <a id="i-124"></a>I-124 | A portfolio of thousands of trades spent minutes to hours compiling one stack of its P&L or cube columns (now stacked in blocks of 256, 2026-11-09) | `tests/test_market_risk.py::TestLargePortfolioStacks` |
 | <a id="i-123"></a>I-123 | One Monte Carlo request drew different scenarios on different hosts: the covariance root depended on LAPACK's choice of eigenvectors (now the unique symmetric root; every Monte Carlo figure moved once by sampling noise, 2026-11-09) | `tests/test_market_risk.py::TestMonteCarloScenarios::test_the_draw_does_not_depend_on_the_eigenvectors_lapack_returns` |

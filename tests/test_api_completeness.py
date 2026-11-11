@@ -46,7 +46,7 @@ from engine.risk.market import MonteCarloScenarios, RateRiskFactors, ShockScenar
 from engine.run import (
     CamConfig, ExposureConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig,
     LgmSwaptionEngineConfig, MarketRiskConfig, ModelsConfig, PortfolioRequest, PricingConfig, RunConfig, RunRequest,
-    RunRequestConfig, SensitivityConfig, SimulationParameters,
+    ResultChecks, RunRequestConfig, SensitivityConfig, SimulationParameters,
 )
 from engine.run.run_request import market_risk_request, portfolio_request
 from engine.risk.market import MarketRiskRequest
@@ -75,6 +75,7 @@ MIRRORS = {
     GreeksConfig: (wire.SensitivitySchema, {"sensitivity": "flattened: SensitivityConfig's fields are the section's"}),
     SensitivityConfig: (wire.SensitivitySchema, {}),
     ExposureConfig: (wire.ExposureSchema, {}),
+    ResultChecks: (wire.ChecksSchema, {}),
     MarketRiskConfig: (wire.MarketRiskSchema, {}),
     MonteCarloScenarios: (wire.MonteCarloScenariosSchema, {}),
     ShockScenarios: (wire.HistoricalScenariosSchema, {
@@ -235,6 +236,7 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
     wire.PricingConfigSchema: ({}, lambda s: s.to_dataclass()),
     wire.SensitivitySchema: ({}, lambda s: s.to_dataclass()),
     wire.ExposureSchema: ({}, lambda s: s.to_dataclass()),
+    wire.ChecksSchema: ({}, lambda s: s.to_dataclass()),
     wire.StagePrecisionSchema: ({}, lambda s: s.to_dataclass()),
     wire.ProductOptionsSchema: ({}, lambda s: s.to_dataclass()),
     wire.PrecisionSchema: ({}, lambda s: s.to_dataclass()),
@@ -261,6 +263,7 @@ SCHEMAS: Dict[type, Tuple[dict, Any]] = {
 #: (schema, field) -> a value other than the default, where the field's type does not give one.
 NON_DEFAULT = {
     (wire.RunRequestConfigSchema, "execution"): {"backend": "cpu"},
+    (wire.RunRequestConfigSchema, "checks"): {"nonfinite": "warn"},
     (wire.PrecisionSchema, "internal"): {"reductions": "float32"},
     (wire.StagePrecisionSchema, "product"): With({"shared_terms": 2},
         compute="float16", accumulate="float32", storage="float32"),

@@ -431,6 +431,7 @@ Every section is optional; `GET /config/defaults` returns them all with ORE's de
 | `exposure` | the exposure analytic | `pfe_quantiles`, each in (0, 1) and given once; default `[0.95, 0.99]` | `exposure` |
 | `market_risk` | the market-risk analytic | `scenarios` ([below](#market-risk-scenarios)), `quantiles` (VaR/ES confidence levels in (0, 1), each once; default `[0.99, 0.975]`), `batch_size` (scenarios revalued at once per trade, lowered automatically for a large Bermudan; default 256) | `market_risk` |
 | `precision` | not ORE's: the research axis | storage, compute and accumulate formats per stage ([below](#precision-control-precisionschema)) | `exposure`, `market_risk` (each only the settings it reads) |
+| `checks` | not ORE's | `nonfinite`: what the run does when a computed value is NaN or infinite (today's values, the NPV cube, the exposure profiles, the Greeks, the market-risk base values and P&L): `"raise"` (the default) fails the run as a numerical failure naming each array and its count, `"warn"` returns the result with the message in `warnings`, `"allow"` returns it. The result's `nonfinite` counts them either way. One cause is an unscaled FP8 compute format, whose largest value is 448 ([range diagnostics](numerical-experiments.md#range-diagnostics)). A P&L partly NaN would otherwise give a finite VaR and ES that are too small | every analytic |
 
 Every `solver` is [the root solver](calibration.md#the-root-solver) (decision A-21).
 
@@ -660,15 +661,18 @@ beside it (I-87; the project audit's AUD-39). Mirrors `engine.run.RunResult`:
 | `sensitivities` | With `sensitivities`: `method` (`Bump` or `AD`), `factors` (each Greek's factor labels in its row's flattened order: the curve tenors for `delta:<curve>` and `gamma:<curve>`, `"<option tenor>x<swap tenor>"` for `vega:<ccy>`), `pricing_settings` (`model=recalibrated`: a calibrated option recalibrated under every shift). See [Greeks](../risk/greeks.md) |
 | `market_risk` | With `market_risk`: `base_npv` and `trades` (each trade's value on today's curves, as revalued), `risk` (`VaR_<q>`, `ES_<q>` as positive losses, `ES_<q>_tailCount`, `ES_<q>_standardError`, per quantile label, the level's percentage exactly: `99`, `97.5`, `95.00000001`; NaN as `null`), `measure` (`historical-forecast`), `source`, `horizon_days`, `num_scenarios`, `risk_factors` (the factors shocked, in the scenarios' order), `pnl` (as `outputs` asked; the portfolio P&L the statistics use is each scenario's sum), `precision`, `uncertainty` (Monte Carlo: `method` `"replicate_jackknife"` or `"unavailable"` and `replicates`; historical: `"moving_block_bootstrap"`, `replicates`, `block_length` and `seed`), `pricing_settings` (`model=recalibrated`: a calibrated option recalibrated under every scenario, I-112). See [Market Risk](../risk/market-risk.md) |
 | `calibration` | With `calibration`: per calibrated currency, `model`, the `reversion` it was calibrated with, the volatility in its model's parametrization (the LGM's alpha, or the Hull-White short rate's sigma: `sigma_values[i]` on bucket `i` of `[0, sigma_times[0]), ..., [sigma_times[-1], inf)`), each helper's `expiry`, `term`, `market_value` (Bachelier on the ATM volatility) and `model_value`, and the calibration's `error` as ORE measures it against `config.models.bootstrap_tolerance` (the root mean square of the helpers' relative price errors). The calibration a run's exposure analytic simulates with. See [Calibration](calibration.md) |
-| `warnings` | Every analytic's: at a precision below float64, each figure without a passing row in the precision evidence table (with what is validated for it and up to how many paths); the AD Greeks of a grid-priced option; market risk's held volatilities and FX, a thin tail, unavailable or conditional uncertainty |
+| `warnings` | Every analytic's: at a precision below float64, each figure without a passing row in the precision evidence table (with what is validated for it and up to how many paths); the AD Greeks of a grid-priced option; market risk's held volatilities and FX, a thin tail, unavailable or conditional uncertainty. And the run's own: NaN or infinite values under `config.checks.nonfinite="warn"` |
+| `nonfinite` | The count of NaN and infinite values per computed array that has any, e.g. `{"market_risk.pnl[swap-1]": 64, "market_risk.portfolio_pnl": 64}` (`npv[<id>]`, `exposure.npv_cube[<id>]`, `exposure.netting_set.<profile>`, `exposure[<id>].<profile>`, `sensitivities[<id>].<greek>`, `market_risk.base_npv[<id>]`, `market_risk.pnl[<id>]`, `market_risk.portfolio_pnl`); `{}` when every value is finite. Statistics that are undefined by design (an ES standard error with one scramble) are not counted |
 
 **The precision report** (`precision` of `exposure` and `market_risk`) is built in the worker
 that ran the run, so its `devices` and `backend` are the worker's, not those `/version` names
 ([I-12](../planning/known-issues.md#i-12), closed): `policy` (the request's `precision`, defaults
 filled in), `trades`, `realized` (the format of every stored array), `products`, `devices`,
 `backend`, `jax_version`, `paths`, `paired_paths`, `figures` (each with `"kind": "mean"` or
-`"quantile"`; NaN as `null`), `replicates`, `uncertainty_method`, `interval`. See [The Portfolio
-Entry Point](portfolio-entrypoint.md#precision).
+`"quantile"`; NaN as `null`), `replicates`, `uncertainty_method`, `interval`, and with a stage's
+`product.diagnostics: "counts"` its `product_ranges` ([range
+diagnostics](numerical-experiments.md#range-diagnostics)). See [The Portfolio Entry
+Point](portfolio-entrypoint.md#precision).
 
 ## Example: a Python `requests` session
 

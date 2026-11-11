@@ -58,6 +58,7 @@ from engine.precision import (
     Arithmetic, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load,
     paired_quantile, require_precision,
 )
+from engine.precision.diagnostics import collecting
 from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
 from engine.pricing.options import bound_option_pnl, position_sign
@@ -153,7 +154,17 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
 
 
 def _run_market_risk(request, execution):
-    """Internal market-risk pipeline under the job's validated execution context."""
+    """Internal market-risk pipeline under the job's validated execution context, with its
+    products' range counts in the precision report when a stage asks for them
+    (`engine.precision.diagnostics`)."""
+    with collecting(request.precision.counts_ranges) as ranges:
+        result = _market_risk(request, execution)
+    if ranges is not None:
+        result.precision = dataclasses.replace(result.precision, product_ranges=ranges.counts)
+    return result
+
+
+def _market_risk(request, execution):
     scenarios = request.scenarios
     precision = request.precision
     spots = reporting_fx_spots(request.trades, request.market, request.base_currency, "base_currency")
@@ -168,7 +179,7 @@ def _run_market_risk(request, execution):
         for i, (cfg, spot) in enumerate(zip(request.trades, spots)):
             with trade_pricing_phase(i, cfg):
                 stage = precision.precision_for(cfg)
-                arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+                arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}", precision.stage_label(cfg))
                 value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic, execution)
                 base.append(value * spot)
                 stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))

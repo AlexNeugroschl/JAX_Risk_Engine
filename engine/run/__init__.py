@@ -8,6 +8,7 @@ prices and risk out).
     pipeline.py     the pipeline: calibration, simulation, pricing on every path, exposure, Greeks
     config.py       price_portfolio's run configuration (RunConfig and its components)
     identity.py     the engine's identity every run result carries (revision, library versions)
+    checks.py       what a run checks in its results before returning them (NaN and infinities)
     trace.py        the phases of a run: labels for profiler traces, the boundaries a run can
                     stop at, and a written trace's summary
 
@@ -19,6 +20,7 @@ from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfi
 from engine.precision import Precision, StagePrecision  # noqa: F401
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig  # noqa: F401
 from engine.risk.greeks.bump import SensitivityConfig  # noqa: F401
+from engine.run.checks import NonFiniteResultError, ResultChecks  # noqa: F401
 from engine.run.config import GreeksConfig, RunConfig  # noqa: F401
 from engine.run.identity import EngineIdentity, engine_identity  # noqa: F401
 from engine.run.request import (  # noqa: F401
@@ -52,10 +54,12 @@ __all__ = [
     "LgmSwaptionEngineConfig",
     "MarketRiskConfig",
     "ModelsConfig",
+    "NonFiniteResultError",
     "PortfolioRequest",
     "PortfolioResult",
     "Precision",
     "PricingConfig",
+    "ResultChecks",
     "RunConfig",
     "RunRequest",
     "RunRequestConfig",

@@ -1,4 +1,8 @@
-"""Immutable numerical experiments. Defaults select a single, unmodified product."""
+"""Immutable numerical experiments. Defaults select a single, unmodified product.
+
+`diagnostics="counts"` measures instead of changing anything: how many operand values each
+product of the stage could not hold (overflow, underflow, subnormal), reported per stage in the
+analytic's `PrecisionReport.product_ranges` (`engine.precision.diagnostics`)."""
 from dataclasses import asdict, dataclass
 
 from engine.precision.formats import format_of
@@ -13,11 +17,13 @@ class ProductOptions:
     bf16_padding: str = "none"
     subnormals: str = "native"
     implementation: str = "auto"
+    diagnostics: str = "off"
 
     def __post_init__(self):
         choices = {"algorithm": ("format", "fp8_full"), "scaling": ("none", "power_of_two"),
                    "shared_format": ("same", "e4m3"), "bf16_padding": ("none", "gemm8"),
-                   "subnormals": ("native", "normalize_fp16"), "implementation": ("auto", "emulated_fp32")}
+                   "subnormals": ("native", "normalize_fp16"), "implementation": ("auto", "emulated_fp32"),
+                   "diagnostics": ("off", "counts")}
         for name, values in choices.items():
             if getattr(self, name) not in values:
                 raise ValueError(f"ProductOptions.{name} must be one of {values}")
@@ -46,6 +52,9 @@ class ProductOptions:
             raise ValueError("algorithm='fp8_full' requires FP8 compute")
         if self.implementation == "emulated_fp32" and (self.algorithm != "format" or self.subnormals != "native"):
             raise ValueError("emulated_fp32 cannot request a native FP8 algorithm or native FP16 normalization")
+        if self.diagnostics != "off" and fmt.product == "bfloat16_3x":
+            raise ValueError("diagnostics='counts' counts operands rounded to a format's grid; bfloat16_3x splits "
+                             "float32 operands exactly, with float32's range")
 
     @classmethod
     def compensated(cls, compute):

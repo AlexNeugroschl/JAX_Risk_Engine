@@ -69,7 +69,7 @@ The 32/64 shape retired on 2026-10-01 (`PrecisionConfig`) is refused, not transl
 import math
 from dataclasses import asdict, dataclass, field, fields, replace
 from numbers import Real
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Iterable, Iterator, Mapping, Optional, Sequence
 
 from engine.precision.arithmetic import Arithmetic, arithmetic_refusal
 from engine.precision.formats import format_of
@@ -364,6 +364,18 @@ class Precision:
             ) if enabled]
         return result
 
+    def stage_label(self, trade) -> str:
+        """The name of `trade`'s pricing stage (`precision_for`): "by_trade[<trade id>]",
+        "by_product[<product>]" or "pricing"."""
+        if trade.trade_id in self.by_trade:
+            return f"by_trade[{trade.trade_id}]"
+        return f"by_product[{trade.product}]" if trade.product in self.by_product else "pricing"
+
+    @property
+    def counts_ranges(self) -> bool:
+        """Whether any stage's products count their range (`ProductOptions.diagnostics`)."""
+        return any(stage.product.diagnostics != "off" for stage in self._stages())
+
     def precision_for(self, trade) -> StagePrecision:
         """The pricing stage of `trade` (any object with `trade_id` and `product`):
         `by_trade`, else `by_product`, else `pricing` (decision A-15)."""
@@ -380,10 +392,14 @@ class Precision:
                          scaling=self.storage_scaling)
         return store(x, storage, axis=axis, offset=self.offset, scaling=self.storage_scaling)
 
-    def arithmetic_for(self, stage: StagePrecision, stream: str) -> Arithmetic:
-        """The stage's arithmetic with its own traced rounding stream (stage or trade)."""
+    def arithmetic_for(self, stage: StagePrecision, stream: str, label: Optional[str] = None) -> Arithmetic:
+        """The stage's arithmetic with its own traced rounding stream (stage or trade). With the
+        stage's range diagnostics on (`ProductOptions.diagnostics`), its products report under
+        `label` (`stage_label`), else under `stream` ("simulation", "market")."""
         arithmetic = replace(stage.arithmetic, execution=self.execution.mode, levels=self.internal.levels,
                              calibration=self.internal.calibration)
+        if stage.product.diagnostics != "off":
+            arithmetic = replace(arithmetic, stage=label or stream)
         return (replace(arithmetic, key=rounding_key(self.rounding_seed, "compute/" + stream))
                 if arithmetic.rounding == "stochastic" else arithmetic)
 

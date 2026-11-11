@@ -20,6 +20,7 @@ correction when an input triggers a known compiler problem.
 | `subnormals` | `"native"` | `"normalize_fp16"` preserves quantized FP16 subnormals by splitting and normalizing them before native dots. Adds input checks and a conditional; uses one dot for normal inputs and four when subnormals occur. Requires a capable GPU. |
 | `algorithm` | `"format"` | `"fp8_full"` explicitly requests `ANY_F8_ANY_F8_F32`. Requires a capable GPU. A compiler may reject this algorithm. |
 | `implementation` | `"auto"` | `"emulated_fp32"` preserves the requested low-format operand grids but performs software products using FP32 operands. Requires research mode. It cannot be combined with native-only algorithm/normalization requests. |
+| `diagnostics` | `"off"` | `"counts"` changes no number: it counts, per stage and operand, the values each product rounded and how many were already non-finite, overflowed, underflowed to zero or became subnormal ([below](#range-diagnostics)). Recompiles the stage's programs and sends five integers to the host per product call: a measurement setting. Not for `bfloat16_3x`, which has float32's range. |
 
 `"auto"` dispatch follows the selected backend's capabilities, subject to the
 execution policy. `mode="native"` refuses software fallback. `"allow_emulation"`
@@ -56,7 +57,7 @@ The equivalent HTTP fragment, inside the request's `config`, is:
       "product": {
         "algorithm": "format", "shared_terms": 1, "scaling": "none",
         "shared_format": "same", "bf16_padding": "none",
-        "subnormals": "normalize_fp16", "implementation": "auto"
+        "subnormals": "normalize_fp16", "implementation": "auto", "diagnostics": "off"
       }
     }
   }
@@ -124,6 +125,45 @@ The API worker captures these settings at startup. Subsequent environment edits
 do not change the recorded worker contract. The legacy
 `JAX_RISK_EMULATE_PRODUCTS` setting remains available for process-level diagnostics;
 use `implementation="emulated_fp32"` for experiments configured through the API.
+
+<a id="range-diagnostics"></a>
+## Range diagnostics: why a format fails
+
+Unscaled FP8 (`scaling="none"`, the default) is the format as it is: E4M3 holds magnitudes from
+2^-9 (subnormal; 2^-6 normal) to 448, E5M2 up to 57,344. An operand beyond the largest becomes
+NaN in E4M3 (it has no infinity) and infinite in E5M2; one below half the smallest becomes 0.
+Money amounts are far beyond 448, so an unscaled FP8 product of notional-sized values is NaN,
+and every figure computed from it with it. A run request refuses NaN results by default
+(`config.checks.nonfinite`, see [the HTTP API](http-api.md#config-one-section-per-ore-file)).
+
+`ProductOptions(diagnostics="counts")` says where and how much. The analytic's precision report
+gains `product_ranges`, per stage (`"pricing"`, `"simulation"`, `"market"`, or an override's
+`"by_product[<product>]"` / `"by_trade[<trade id>]"`) and operand (`"per_path"`, `"shared"`):
+
+```json
+"product_ranges": {"pricing": {"per_path": {"values": 4352, "nonfinite": 0, "overflow": 1904,
+                                            "underflow": 37, "subnormal": 210},
+                               "shared":   {"values": 68, "nonfinite": 0, "overflow": 12,
+                                            "underflow": 0, "subnormal": 3}}}
+```
+
+Counts are of each operand's own rounding (the first term), after the stage's scaling: with
+`scaling="power_of_two"` nothing finite overflows, and the underflow and subnormal counts say how
+much of each row's range below its largest the format loses. Products are counted inside the
+compiled kernels; a batch under `vmap` is summed before its one transfer to the host, a product
+inside a scan reports once per step. Only one collection runs per process at a time: an analytic
+with diagnostics on refuses to start while another run in the process is collecting.
+
+```python
+from engine.precision import ExecutionPolicy, Precision, ProductOptions, StagePrecision
+
+precision = Precision(
+    pricing=StagePrecision(storage="float32", compute="float8_e4m3fn", accumulate="float32",
+                           product=ProductOptions(diagnostics="counts")),
+    execution=ExecutionPolicy(mode="allow_emulation"),
+)
+# result.market_risk.precision.product_ranges["pricing"]["per_path"]["overflow"]
+```
 
 ## Reading results and limits
 
