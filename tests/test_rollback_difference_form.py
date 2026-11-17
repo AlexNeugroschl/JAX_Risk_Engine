@@ -1,6 +1,6 @@
 """
 The Bermudan/American induction as matrix products in difference form (F-07, I-83;
-`engine.pricing.lgm_grid`, docs/planning/details/precision.md §8.2): its building blocks against
+`engine.pricing.lgm_grid`, docs/internal/planning/details/precision.md §8.2): its building blocks against
 independent references, each path's value against the induction run on that path's own curves,
 the padding that gives a cube's dates one program, its memory and the blocks of paths that bound
 it, and its compute formats below float32. ORE parity is tests/test_ore_lgm_parity.py (today)

@@ -1,6 +1,6 @@
 """
 `price_bundle` end to end without market inputs (the W0 exit criterion of
-docs/planning/details/traderx-integration.md), plus the capability
+docs/internal/planning/details/traderx-integration.md), plus the capability
 document.
 
 Exit criterion: the SOFR case returns `CONVENTION_NOT_SUPPORTED` naming all 13 missing

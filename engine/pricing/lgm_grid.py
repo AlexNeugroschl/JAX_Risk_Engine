@@ -34,7 +34,7 @@ is with the Grid solver; ORE's FD solver is not reproduced (F-01). It rests on m
    it is precomputed as masks. A closed-form exercise value converges to the same limit but
    differs by up to ~1e-4 at a 48-point grid.
 
-**The induction as matrix products** (F-07, I-83; docs/planning/details/precision.md §8.2). In
+**The induction as matrix products** (F-07, I-83; docs/internal/planning/details/precision.md §8.2). In
 the numeraire's units every quantity the induction rolls back is a function on the state grid,
 and neither the grid nor the rollback depends on the curves: the grid `x_k = k sqrt(zeta(t))/nx`
 and the Gaussian kernel between two times are the model's alone. So each step's rollback is one

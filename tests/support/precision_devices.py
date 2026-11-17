@@ -1,6 +1,6 @@
 """
 Whether a device's matrix products give each compute format's numbers (F-07;
-docs/planning/details/precision.md §8.3): every arithmetic a stage accepts (each compute format
+docs/internal/planning/details/precision.md §8.3): every arithmetic a stage accepts (each compute format
 with each accumulate format it allows) multiplied on the device, against the same product
 emulated on the CPU, and against the exact product. Native dispatch follows device capability;
 run this check to qualify the actual compiler/device, and after a JAX or driver upgrade:

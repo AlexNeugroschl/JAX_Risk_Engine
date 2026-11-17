@@ -6,7 +6,7 @@ campaigns and timing workers; its collection retains snapshots, failures, unavai
 hardware, exact settings and empirical reference uncertainty in one report.
 
 What the timing harness (`tests/support/precision_timing.py`; method:
-[docs/planning/details/precision.md §19](../../docs/planning/details/precision.md#19-the-research-timing-wall-time-per-figure-at-equal-accuracy-f-07-2026-10-19))
+[docs/internal/planning/details/precision.md §19](../../docs/internal/planning/details/precision.md#19-the-research-timing-wall-time-per-figure-at-equal-accuracy-f-07-2026-10-19))
 measured: per campaign of record and device, `<campaign>-<device>.json.gz` holds every number (each
 case's cold and warm whole-job times, compile seconds, peak device memory, how its products ran,
 every seed's figures, the speedups at equal accuracy) and `<campaign>-<device>.md` its summary.

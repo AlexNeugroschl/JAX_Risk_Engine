@@ -222,8 +222,7 @@ variants, which allow exercise on multiple dates rather than just one, also exis
 an offline script. Two integrations exist: the general portfolio API
 ([HTTP API](../reference/http-api.md)), and the stricter **end-of-day (EOD)** contract,
 which accepts a hash-pinned overnight snapshot of TraderX's book and returns an identified
-result per position ([The TraderX Path](../reference/traderx-path.md)). See also the
-[TraderX integration](../planning/details/traderx-integration.md).
+result per position ([The TraderX Path](../reference/traderx-path.md)).
 
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
 loss such that we expect to lose *more* than that only X% of the time?" E.g. 95% VaR of

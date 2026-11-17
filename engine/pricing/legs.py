@@ -18,7 +18,7 @@ On valuation date d, a floating coupon with fixing date f is:
   * projected if f is on or after d: the at-par forecast over its par period
     (`schedules.par_coupon_forecast_period`) off the index curve of date d.
 
-`leg_values` values one date, in difference form (F-07; docs/planning/details/precision.md
+`leg_values` values one date, in difference form (F-07; docs/internal/planning/details/precision.md
 §8.2): the level, every flow valued off a curve no path depends on (today's, or a scenario
 date's `ScenarioCurves.level`), with ORE's arithmetic; and, given each path's deviation from it
 (`Deviations`), the path's deviation from the level, the flows' amounts times each path's

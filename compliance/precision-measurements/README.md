@@ -1,7 +1,7 @@
 # Precision measurements
 
 The precision harness's measurements of record (I-75;
-[docs/planning/details/precision.md §15.4](../../docs/planning/details/precision.md#154-the-storage-harness-2026-10-09)):
+[docs/internal/planning/details/precision.md §15.4](../../docs/internal/planning/details/precision.md#154-the-storage-harness-2026-10-09)):
 how far each storage and compute format, per stage, moves every figure of a run from float64,
 on the run's own paths, per product and path count, over independent Sobol seeds. The precision
 evidence table ([../precision-evidence.md](../precision-evidence.md), I-55) is generated from
@@ -15,7 +15,7 @@ them.
 The campaigns are `linear` (the shared portfolio's swaps, Europeans and bond), `options` (its
 Bermudans and American) and `market_risk`, which store in each format, and `compute` and
 `compute_market_risk` (2026-10-10), which compute in each format below float32
-([precision.md §15.5](../../docs/planning/details/precision.md#155-compute-below-float32-2026-10-10)):
+([precision.md §15.5](../../docs/internal/planning/details/precision.md#155-compute-below-float32-2026-10-10)):
 each such format by its name, the operand every path shares in two terms, and as its single
 pass, `<format>_1x` (decision A-23); `tests/support/precision_campaigns.py` defines them. All
 five were measured on one revision on 2026-10-11 for the evidence table. Rerun one after any

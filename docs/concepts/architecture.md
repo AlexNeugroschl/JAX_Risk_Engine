@@ -38,9 +38,9 @@ yet is refused before any work, naming the field (`engine.precision.policy`, `va
 
 **History.** Until 2026-10-01 the Hull-White model was a second pipeline, chosen by passing
 a `SimulationConfig` instead of a `Market`, with its own simulation, pricers and Greeks and
-the defects listed in the closed ledger ([I-42](../planning/known-issues.md#i-42) to
-[I-47](../planning/known-issues.md#i-47)); it is now one model option of the configuration
-([configurable engine](../planning/details/configurable-engine.md)). Owner decisions
+the defects listed in the closed ledger (I-42 to
+I-47); it is now one model option of the configuration
+(the configurable engine). Owner decisions
 (2026-09-30, [compliance/decisions.md](../../compliance/decisions.md)): new models,
 instruments and methods are added as options, and none that works is removed.
 
@@ -70,7 +70,7 @@ JAX_Risk_Engine/
 ├── engine/                             Subpackages only (I-92; tests/test_import_layering.py),
 │   │                                     each importing only the layers listed above it here
 │   ├── __init__.py                       Enables jax_enable_x64 once, at import; no other code
-│   ├── precision/                        The precision of a run (details/precision.md):
+│   ├── precision/                        The precision of a run:
 │   │   ├── formats.py                    the format table, the only name -> dtype map
 │   │   ├── policy.py                     Precision / StagePrecision and their validation
 │   │   ├── storage.py                    store / load, the only casts between stages
@@ -416,7 +416,7 @@ the Hull-White model's old simulation hid a 4-9% bias (I-42).
 The engine never imports it. The demos, run as scripts from `demos/`, import it as
 `demo_scenarios`; the tests as `demos.demo_scenarios`. `tests/test_import_layering.py` keeps
 `__main__` blocks and imports of `demos`/`tests` out of `engine/`
-([I-65](../planning/known-issues.md#i-65)).
+(I-65).
 
 ## ORE as a dependency
 
@@ -445,8 +445,7 @@ A-16, D-9).** Which precision each calculation needs is what the project studies
 is part of the run configuration: any combination may be run, the default is float64
 everywhere and carries ORE parity, and a combination not yet shown adequate for a figure
 carries a warning (since 2026-10-11: the evidence table,
-[compliance/precision-evidence.md](../../compliance/precision-evidence.md), I-55). The full design,
-down to FP8 storage, is [details/precision.md](../planning/details/precision.md).
+[compliance/precision-evidence.md](../../compliance/precision-evidence.md), I-55).
 
 **The policy.** `engine.precision.Precision` (on `RunConfig.precision` and
 `MarketRiskRequest.precision`) gives each adjustable stage a `StagePrecision` of three format
@@ -489,8 +488,7 @@ table, since 2026-10-10 the four below float32 and the product formats `tensorfl
 float32. Calibration, t=0 values, Greeks and every reduction over paths (exposure, VaR/ES) are
 float64 by decision (A-10).
 
-**Compute below float32** (2026-10-10, F-07; [details/precision.md
-§8](../planning/details/precision.md#8-compute-below-float32)). The path kernels are in
+**Compute below float32** (2026-10-10, F-07). The path kernels are in
 difference form: each value is a level no path depends on, computed in float64 (the model's
 mean path; the market at the mean state; every flow valued off the level curves), plus each
 path's deviation from it, joined in two terms of the accumulate format so each path is rounded
@@ -554,7 +552,7 @@ sign and whose farthest from zero is at most three times its nearest, is stored 
 deviations from its midpoint, a float32 offset kept beside the scale, so the format's bits go
 to the block's spread instead of its level: a bond's cube column near 1e6 with a spread near
 1e4 kept about one bit of its spread in FP8 without it, and every path of a block rounded the
-same way, a bias ([I-75](../planning/known-issues.md#i-75), closed). The deviations are
+same way, a bias (I-75, closed). The deviations are
 symmetric about zero, so nearest rounding moves as many up as down; no value changes sign; the
 error bound is never worse than without an offset; and every other block (shocks, states, P&L,
 an option's values reaching zero) is stored exactly as without one. `"none"`
@@ -562,8 +560,7 @@ stores the values themselves, the OCP MX layout. FP8 holds a column in an eighth
 memory plus an eighth for the scales and, with offsets, another for the offsets. Compute stays
 float32 or float64: `load` reads the stored values back at the next stage's compute dtype.
 What each format costs in accuracy is measured by the storage harness
-(`tests/support/precision_harness.py`; [details/precision.md
-§15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
+(`tests/support/precision_harness.py`).
 Continuous integration runs the fast tier with JAX's strict dtype promotion, under
 which any accidental float32/float64 mix is an error.
 
@@ -590,8 +587,7 @@ NVIDIA GPU, bfloat16 passes on a TPU. So every matrix product of the engine's JA
 through `engine.precision.matmul`, which states its operands' format's precision in the
 program (full precision for float32 and float64); no process-wide setting is set or read, and
 importing `engine` changes nothing but the x64 flag. A test traces the pipelines and fails on
-a product without it ([coding style](coding-style.md#core-constraints),
-[details/precision.md §6.7](../planning/details/precision.md#67-matrix-products-2026-10-06)).
+a product without it ([coding style](coding-style.md#core-constraints)).
 
 ### Concurrency
 
@@ -628,8 +624,7 @@ Measured on this project's CPU backend (`jax==0.10.2`): `jnp.linalg.cholesky` an
 `jax.scipy.stats.norm.ppf` have no kernel below float32, and computing the inverse normal CDF
 in a low format overflows. Storage below float32 needs neither, since values are loaded to a
 float32-or-wider compute dtype; compute below float32 needs the heavy kernels rewritten in
-difference form with explicit accumulators. The measurements and the plan are in
-[details/precision.md §8 and §15](../planning/details/precision.md#8-compute-below-float32).
+difference form with explicit accumulators.
 
 ## Typed configuration
 

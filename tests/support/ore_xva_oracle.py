@@ -1,7 +1,7 @@
 """
 ORE's exposure simulation of a portfolio, run in-process: the reference the engine's assembled
 simulation, NPV cube and exposure are validated against (tests/test_ore_xva_parity.py;
-I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4).
+I-50; docs/internal/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4).
 
 Test tooling, not a pricer: the engine never imports it. One `OREApp` run of ORE's `EXPOSURE`
 and `PFE` analytics (`XvaAnalytic`) over in-memory inputs (`tests.support.ore_inputs`): the

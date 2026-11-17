@@ -5,23 +5,20 @@ machinery, Treasuries that return **real numbers**, an equity case resolved to a
 refusal* rather than a guess, a versioned contract served over HTTP, and a crash-safe
 durable store behind it. Everything else still refuses.
 
-Implements W0, W1.2, W1.3, W1.4 and W1.6 of the
-[TraderX integration](../planning/details/traderx-integration.md).
-
 | | |
 |---|---|
 | **Prices today** | `npv` for **both Treasury shapes** in a **v2** bundle, against an explicitly requested curve — zero-coupon ([W1.2](#w12--the-bill-pricer)) and coupon-bearing ([W1.3](#w13--the-note-pricer)) |
-| **Plus one sensitivity** | `rateSensitivity` for a **note only**, as a labelled 1bp parallel bump ([I-16](../planning/known-issues.md#i-16)) |
+| **Plus one sensitivity** | `rateSensitivity` for a **note only**, as a labelled 1bp parallel bump (I-16) |
 | **Answers without a model** | `accruedInterest` — a unit conversion of an exported value, not a model output |
-| **Refuses, naming what it needs** | A cash equity, for want of a spot/FX source ([W1.4](#w14--the-equity-position-pricer-which-refuses), [I-18](../planning/known-issues.md#i-18)) |
+| **Refuses, naming what it needs** | A cash equity, for want of a spot/FX source ([W1.4](#w14--the-equity-position-pricer-which-refuses), I-18) |
 | **Reachable over HTTP** | Six routes under `/eod`, returning plain dicts governed by a published JSON Schema ([W1.6](#w16--the-contract-interface)) |
-| **Durable** | Completed and failed attempts survive a restart; a lost pointer never loses a result ([W0.8](#w08--crash-safe-publication-and-the-durable-result-store), [I-08](../planning/known-issues.md#i-08)) |
+| **Durable** | Completed and failed attempts survive a restart; a lost pointer never loses a result ([W0.8](#w08--crash-safe-publication-and-the-durable-result-store), I-08) |
 | **Still refuses** | Everything else: corporate bonds, listed options, `rateGamma`/`theta`, a bill's sensitivity, and any unsupported convention |
 
 > **One thing to know before reading further.** `capabilities()` currently reports
 > `deliveryStage: "W1.6"` and lists `knownLimitations` `I-04`/`I-05`/`I-07`/`I-18`. Neither
 > has been updated for W0.8, so the published capability document understates what landed
-> and omits [I-08](../planning/known-issues.md#i-08). That is a
+> and omits I-08. That is a
 > gap in `engine/traderx/capabilities.py`, not in this page.
 
 ---
@@ -146,7 +143,7 @@ What has *not* changed is the guarantee the ban exists for. Both pricers are clo
 discounted cashflows — dates, a day count, some `exp()`s. Neither touches the Monte Carlo
 simulation, the JAX kernels, or `build_vanilla_swap`, the last of which is precisely what
 W0.4's refusal path keeps away from a booking with unsupported conventions
-([I-05](../planning/known-issues.md#i-05)). Refusal must still happen *before* any such pricing object
+(I-05). Refusal must still happen *before* any such pricing object
 is constructed, because constructing one is what applies the wrong conventions.
 
 **W1.3 tested this ban rather than theorising about it.** The note pricer needs the ACT/ACT
@@ -277,7 +274,7 @@ Multiplying by the *signed* face does sign and scaling in one step, so there is 
 
 ---
 
-## W0.4 — Convention allowlist and refusal · closes part of [I-05](../planning/known-issues.md#i-05)
+## W0.4 — Convention allowlist and refusal · closes part of I-05
 
 ### The bug this prevents
 
@@ -374,7 +371,7 @@ FX rates, and inventing them would be exactly the silent approximation this desi
 
 ---
 
-## W0.6 — Market input selection · closes part of [I-11](../planning/known-issues.md#i-11)
+## W0.6 — Market input selection · closes part of I-11
 
 **Explicit mode; no silent fallback.** A job says where its market data comes from:
 
@@ -528,7 +525,7 @@ trust.
 
 ---
 
-## W0.7 — Identity · closes [I-10](../planning/known-issues.md#i-10) at this boundary
+## W0.7 — Identity · closes I-10 at this boundary
 
 Two things travel on every row — **both, not either**:
 
@@ -772,7 +769,7 @@ than differentiating a closed form:
 **It is a parallel shift, not a per-pillar decomposition, and the label says so.** The plan
 asked for "per-pillar `rateSensitivity`", but every registered assumed profile is a *flat
 constant* — one rate, no pillar structure to shift independently. A per-pillar vector against
-it would be arithmetic theatre. This is recorded as **[I-16](../planning/known-issues.md#i-16)** and
+it would be arithmetic theatre. This is recorded as **I-16** and
 closes when `mode: "package"` lands a bootstrapped curve (W2).
 
 ### What it refuses
@@ -813,7 +810,7 @@ Collapsing them into one list would advertise a bill sensitivity that does not e
 The note needs ACT/ACT (ICMA), which lived in `engine/instruments/schedules.py` — a module
 `engine/traderx/` is **forbidden** to import, because it is where `build_vanilla_swap`
 lives, the exact object W0.4's refusal keeps unreachable
-([I-05](../planning/known-issues.md#i-05)).
+(I-05).
 
 The guard caught the import. Rather than relax it, the day-count vocabulary moved to a new
 leaf module that imports only `ORE`, today **`engine/market_data/day_counts.py`**. Since
@@ -827,7 +824,7 @@ so it would have missed `integration → leaf → engine.models`.
 after importing `engine.traderx` in a clean interpreter, the model and simulation
 modules are not loaded.
 
-### A bug this found — [I-17](../planning/known-issues.md#i-17)
+### A bug this found — I-17
 
 Reusing `bill._parse_date` in `note.py` meant a malformed note date raised
 `BillPricingError`, which the pipeline's `except NotePricingError` never caught — so **one
@@ -858,7 +855,7 @@ equities (`CamConfig.equity_volatilities`) are not a substitute — it drives co
 share count, returns no position value, and lives in `engine.market_simulation`, which this package
 may not import.
 
-So W1.4 delivers a **refusal**, and [I-18](../planning/known-issues.md#i-18) records it.
+So W1.4 delivers a **refusal**, and I-18 records it.
 
 ### Why not just use `closingMark`?
 
@@ -996,7 +993,7 @@ settlement basis silently inheriting the synthetic fixture's same-day semantics,
 accrued interest with no error anywhere. Widening a tuple later is a one-line change; recovering
 from months of optimistically-parsed wrong accruals is not.
 
-> **⚠ This rule is an assumption, and it is registered as one — [I-23](../planning/known-issues.md#i-23).**
+> **⚠ This rule is an assumption, and it is registered as one — I-23.**
 > The question is still unanswered. If TraderX adds values **in place**, this engine will
 > **refuse bundles they consider valid**, starting the day they first export a real settlement
 > calendar. That fails safe — a loud refusal, not a wrong number — but it is an operational
@@ -1168,7 +1165,7 @@ Idempotency means *"this exact request, again"*; it cannot mean *"whatever I sen
 under this name"*. Four regression tests, verified to fail against the pre-fix code — plus a
 fifth that passes both ways by design, confirming the guard did not break idempotency itself.
 
-#### The binding comes before the cache ([I-57](../planning/known-issues.md#i-57), fixed 2026-10-10)
+#### The binding comes before the cache (I-57, fixed 2026-10-10)
 
 That guard sat in `AttemptStore.start`, and the route read the cache *before* calling it. So
 with `reuseExistingResult: true` (the default) a reused id still got another workload's result
@@ -1194,7 +1191,7 @@ for steps 1 and 2. The attempt is reported as it stands, so a retry that arrives
 attempt is still pricing gets `200 {"state": "running", "reused": true}` and is not priced a
 second time. Before this change the attempt was priced again, and the second call to finish
 failed with a `500`. Two submissions of one workload under *different* ids (or none) still
-both price ([I-58](../planning/known-issues.md#i-58)).
+both price (I-58).
 
 An id binds to the **attempt**, not to "the latest result", so a retry gets exactly what the
 lost response held, even after a newer attempt of the same workload completes. That includes
@@ -1406,7 +1403,7 @@ serializes bindings).
 
 And it is **EOD-only**. The portfolio path has its own durable store since 2026-10-04 (the
 SQLite job queue, [HTTP API](http-api.md#runs-the-queue-and-the-engine-worker)); a *running*
-EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.md#i-08) is
+EOD attempt is still memory-only, which is why I-08 is
 `PARTIAL` rather than closed.
 
 ---
@@ -1415,10 +1412,10 @@ EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.m
 
 | Task | Status | Why |
 |---|---|---|
-| **W0.8** crash-safe publication | Done (2026-09-17) | The four lookup states, the workload key and attempt immutability landed in W1.6.4; the durable store, the four-step publication protocol and manifest-scan recovery landed in W0.8's second half. Still EOD-only, and *running* state is deliberately not published ([I-08](../planning/known-issues.md#i-08)). |
-| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** at the time — a deterministic bond had no scenario column, refused rather than broadcast ([I-24](../planning/known-issues.md#i-24), closed on 2026-10-01: bonds are priced on every path). No effect on this boundary. |
-| Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
-| Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../planning/known-issues.md#i-16)). |
+| **W0.8** crash-safe publication | Done (2026-09-17) | The four lookup states, the workload key and attempt immutability landed in W1.6.4; the durable store, the four-step publication protocol and manifest-scan recovery landed in W0.8's second half. Still EOD-only, and *running* state is deliberately not published (I-08). |
+| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** at the time — a deterministic bond had no scenario column, refused rather than broadcast (I-24, closed on 2026-10-01: bonds are priced on every path). No effect on this boundary. |
+| Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source (I-18). |
+| Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 (I-16). |
 
 Unblocked — sequencing, not dependency.
 
@@ -1491,7 +1488,7 @@ implementations were patched in and confirmed to fail:
 | The measure vocabulary drifting between `var_es.py` and `market_inputs.py` | 2 failed, incl. `TestMeasureVocabularyMatchesVarEs` — which is what makes the deliberate duplication safe |
 | ES standard error promoting float32 → float64 (**a real bug this caught**) | 2 failed in `TestDiagnosticsRespectInputPrecision`, float32 only — float64 passes either way, which is why it hid |
 | Pricing the note on **ACT/365** instead of ACT/ACT (ICMA) | Caught by the accrual reconciliation itself — the error is $5.09 on $100k against a $0.06 derived tolerance, ~85× |
-| A note's refusal raised as a **`BillPricingError`** (**a real bug this caught** — [I-17](../planning/known-issues.md#i-17)) | 4 failed in `TestRefusalsAreNotePricingErrors`; the one that mattered asserts a malformed row does not take the whole bundle down |
+| A note's refusal raised as a **`BillPricingError`** (**a real bug this caught** — I-17) | 4 failed in `TestRefusalsAreNotePricingErrors`; the one that mattered asserts a malformed row does not take the whole bundle down |
 | **Echoing `closingMark` as an equity `npv`** | **20 of 60** failed, incl. the dedicated `TestDoesNotEchoTheExportedMark` — patched in at both the pricer and the pipeline level. The dangerous one: it reconciles perfectly against TraderX because it *is* TraderX's number |
 | Parsing `accrualBasis` enums **optimistically** instead of refusing unknown values (W1.6.1) | 6 failed across `TestUnrecognizedValuesAreRefused` — every `dateBasis`/`settlementAdjustment`/`rounding` case |
 | **`accrualBasis` parsed, validated, then ignored** (W1.6.1) — *the decorative-field bug* | **0 failed at first — this found a real gap in my own suite.** See the note below |

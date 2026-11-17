@@ -1,5 +1,5 @@
 """
-The layout of `engine/` (I-92, docs/planning/details/package-layout.md): nothing at the root of
+The layout of `engine/` (I-92, docs/internal/planning/details/package-layout.md): nothing at the root of
 `engine/` or of `engine/risk/` but `__init__.py`, and the packages in layers, each importing
 only the layers below it (audit A-5). An inversion once forced a lazy `__getattr__` into the
 run's `__init__.py` to break the resulting cycle.

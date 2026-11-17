@@ -1,6 +1,6 @@
 """
 Trades are defined by absolute dates, not relative to the evaluation date
-(audit M-4, closed; docs/planning/known-issues.md).
+(audit M-4, closed; docs/internal/planning/known-issues.md).
 
 A trade config holds its booked schedule -- `effective_date`/`maturity_date`,
 and a European swaption's `exercise_date` -- so the same config is the same

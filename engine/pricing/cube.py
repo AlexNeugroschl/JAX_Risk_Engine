@@ -296,7 +296,7 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
              decay: str, precision: Precision) -> Tuple[List[Union[jax.Array, Stored]], Dict[str, jax.Array]]:
-    """Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market
+    """Cast point 4 of docs/internal/planning/details/precision.md §6.3, per trade: the scenario market
     is loaded at the accumulate format of `precision.precision_for(trade)` (once per format, with
     its path fixings), the trade priced in its arithmetic, and its cube column stored at its
     storage format, named by the trade's id (`Precision.store`); and each option's exercise state

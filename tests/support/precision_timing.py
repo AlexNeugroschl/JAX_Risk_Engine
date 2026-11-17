@@ -1,6 +1,6 @@
 """
 The timing harness: wall time per figure at equal accuracy (F-07's research result; I-61's
-scaling; docs/planning/details/precision.md §19), on whatever devices the process has:
+scaling; docs/internal/planning/details/precision.md §19), on whatever devices the process has:
 
     python -m tests.support.precision_timing CAMPAIGN [--paths N ...] [--seeds K] [--cases TEXT ...]
         [--budget-divisors D ...] [--out DIR]

@@ -1,6 +1,6 @@
 """
 Matrix products at the policy's compute format, accumulated in its accumulate format
-(decisions A-16, A-22; docs/planning/details/precision.md §6.7, §8.3).
+(decisions A-16, A-22; docs/internal/planning/details/precision.md §6.7, §8.3).
 
 XLA leaves a product's precision to the device unless the program states it: by default a
 float32 product runs in TensorFloat-32 (a 10-bit mantissa) on an NVIDIA GPU and in bfloat16

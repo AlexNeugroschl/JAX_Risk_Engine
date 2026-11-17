@@ -1,5 +1,5 @@
 """
-The precision harness (I-75; docs/planning/details/precision.md §15.4), built as the storage
+The precision harness (I-75; docs/internal/planning/details/precision.md §15.4), built as the storage
 harness and measuring compute formats too since the kernel rewrite (F-07, 2026-10-10): how far
 each precision policy moves every figure of a run from float64, measured on the run's own
 paths, per case, product and path count, over independent Sobol seeds. Rerunnable on any kernel

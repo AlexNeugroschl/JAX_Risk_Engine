@@ -1,5 +1,5 @@
 """
-The storage harness (`tests/support/precision_harness.py`, I-75; docs/planning/details/
+The storage harness (`tests/support/precision_harness.py`, I-75; docs/internal/planning/details/
 precision.md §15.4) and the closure of I-75 on it.
 
   * Fast: the case grid; on a tiny portfolio and a tiny market-risk run, every figure is

@@ -1,6 +1,6 @@
 """
 The engine worker behind the HTTP API (decision A-14;
-docs/planning/details/precision.md §11 and §13.8): the durable job queue
+docs/internal/planning/details/precision.md §11 and §13.8): the durable job queue
 (`engine.api.job_queue`), the single-threaded worker (`engine.api.worker`) and its supervisor
 (`engine.api.supervisor`).
 

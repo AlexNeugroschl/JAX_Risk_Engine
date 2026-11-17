@@ -1,5 +1,5 @@
 """
-The precision of a run (docs/planning/details/precision.md §3, §4; decisions A-10, A-12, D-9).
+The precision of a run (docs/internal/planning/details/precision.md §3, §4; decisions A-10, A-12, D-9).
 
     Precision
       simulation   StagePrecision   the Sobol shocks and the model states

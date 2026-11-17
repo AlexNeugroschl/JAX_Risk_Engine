@@ -1,5 +1,5 @@
 """
-The hosts an engine worker runs a job on (I-61; docs/planning/details/precision.md §11.3): its
+The hosts an engine worker runs a job on (I-61; docs/internal/planning/details/precision.md §11.3): its
 own host alone, or every host of a TPU pod slice (or any `jax.distributed` cluster), one worker
 per host, all running the same job at the same time.
 

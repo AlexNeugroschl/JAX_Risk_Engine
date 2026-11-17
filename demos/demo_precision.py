@@ -28,7 +28,7 @@ both on one portfolio.
     FP8 compute    the same with FP8 (e4m3) products and storage
 
 Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
-block uses the format's whole range; see docs/planning/details/precision.md §6.2. A block whose
+block uses the format's whole range; see docs/internal/planning/details/precision.md §6.2. A block whose
 values sit close together against their level (one sign, the farthest at most three times the
 nearest) is also stored as its deviations from its midpoint, an offset kept beside the scale
 (`Precision.offset="block"`, the default), so its bits go to its spread. Every block of P&L or shifts holds both signs, so offsets change nothing in this
@@ -56,7 +56,7 @@ the same scenarios. The last section prints one.
 
 The precision of every stage, figure and path count is measured systematically, over many
 seeds, by the storage harness (tests/support/precision_harness.py, with its campaigns in
-tests/support/precision_campaigns.py; docs/planning/details/precision.md §15.4); this demo is
+tests/support/precision_campaigns.py; docs/internal/planning/details/precision.md §15.4); this demo is
 one portfolio and one look.
 
 Compute below float32 (2026-10-10) runs the products in the format and everything else in

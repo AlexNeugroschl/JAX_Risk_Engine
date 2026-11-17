@@ -1,6 +1,6 @@
 """
 The durable job queue between the HTTP API and the engine worker (decision A-14;
-docs/planning/details/precision.md §11).
+docs/internal/planning/details/precision.md §11).
 
 One SQLite file, one row per job: a run request (`RUN`) as `POST /runs` received it.
 

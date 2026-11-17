@@ -258,7 +258,7 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     pass a calibrated one to use it.
 
     `precision` sets the simulation and market stages (`engine.precision`; cast points 1 to
-    3 of docs/planning/details/precision.md §6.3), each computing in its arithmetic (its compute
+    3 of docs/internal/planning/details/precision.md §6.3), each computing in its arithmetic (its compute
     format for the matrix products, its accumulate format for the rest, `StagePrecision.
     arithmetic`): the normals are generated in the simulation's accumulate format, bridged by one
     product and stored; the states are evolved from the loaded shocks in difference form

@@ -1,5 +1,5 @@
 """
-`engine.precision` (I-55, F-07; docs/planning/details/precision.md): the
+`engine.precision` (I-55, F-07; docs/internal/planning/details/precision.md): the
 format table, the `Precision` policy and its refusals, `store`/`load`, the dtype discipline of
 the pipeline built on them, the pricing stage per product and per trade, and storage below
 32 bits.

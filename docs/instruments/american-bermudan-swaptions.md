@@ -91,7 +91,7 @@ accrualStart), 0, 1)` of its value (`lag` is the notice period, zero here). So a
 exercised in the middle of a period enters that broken period and is credited the unexpired
 share of its coupons; a Bermudan exercised on the same day enters the next whole period.
 Treating the American as a Bermudan dropped the broken coupon, which overstated payers by up
-to 6x and understated receivers down to 0.09x against ORE ([I-06](../planning/known-issues.md#i-06)).
+to 6x and understated receivers down to 0.09x against ORE (I-06).
 The engine now carries the rule as `ExerciseStyle` and applies ORE's `couponRatio`.
 
 Both `BermudanSwaptionConfig` and `AmericanSwaptionConfig` are priced by the same engine
@@ -130,12 +130,12 @@ and is worth exactly minus the long one, today and on every path: the engine val
 option, and the position multiplies the wrapped value as ORE's `OptionWrapper` does, the
 holder deciding the exercise. A negative notional is refused: it would be the long option on
 the reversed swap, not the short (+15,018 where ORE's short is -35,713 on the shared test
-portfolio, [I-101](../planning/known-issues.md#i-101)).
+portfolio, I-101).
 
 The underlying swap is booked with absolute dates, exactly as a
 [`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig) is (`effective_date`/`maturity_date`,
 or `swap_tenor` resolved once at booking), so one config is one trade on every evaluation
-date (audit [M-4](../planning/known-issues.md#m-4)). On a later date:
+date (audit M-4). On a later date:
 
 - exercise dates on or before it are gone, and after the last one the option has expired and
   is worth exactly 0 (`is_expired()`). ORE builds such a trade as a zero cashflow;
@@ -180,7 +180,7 @@ The index period matters because ORE's LGM engine projects an Ibor rate over it
 but not always: the schedule is generated backward from maturity, while an index period is
 rolled forward from its own start date, and they can end a business day apart. Projecting
 over the accrual period, as this engine once did, was worth about 2e-4 of the price on
-ordinary trades ([I-31](../planning/known-issues.md#i-31)).
+ordinary trades (I-31).
 
 ### 3. The model: ORE's LGM
 
@@ -412,7 +412,7 @@ starts at the date itself (`max(0, t(first))`), which is an exercise opportunity
 cube on ORE's own paths to 2e-11 (`tests/test_ore_xva_parity.py`); before 2026-10-12 the shift
 horizon and the window were measured from the path date, 1.1e-3 of an American's largest value
 from ORE (I-32), and the LGM was recalibrated on every path, 0.5–4% above ORE
-([I-49](../planning/known-issues.md#i-49)). No ORE analytic recalibrates on a path, so the engine
+(I-49). No ORE analytic recalibrates on a path, so the engine
 does not offer it (decision A-24).
 
 ## Delta, Gamma, Theta, and Vega
@@ -432,7 +432,7 @@ Two methods, the run configuration's `GreeksConfig.method` ([Greeks](../risk/gre
 
 Theta is the same function for both: the trade repriced on the market rolled one day, its
 exercise and schedule *dates* fixed and every time re-derived from the new date, as ORE does
-(audit [M-5](../planning/known-issues.md#m-5)).
+(audit M-5).
 
 ## Which coupons an exercise enters
 
@@ -453,7 +453,7 @@ the trade: up for a payer (a payment dropped), down for a receiver (a receipt dr
 > fixed by prorating Bermudan coupons. Against ORE's own engine (2026-09-23) it is neither:
 > it is what ORE prices, and prorating would have moved the engine away from ORE. The
 > mispricing that did exist was the **American**, which the engine used to price with the
-> Bermudan rule ([I-06](../planning/known-issues.md#i-06)).
+> Bermudan rule (I-06).
 
 ORE also supports `midCouponExercise=true` Bermudans (coupons belong until `accrualEnd −
 noticePeriod`, credited `couponRatio`), and notice periods generally. Neither is exposed by
@@ -466,7 +466,7 @@ comparison. A **rounded literal** was dangerous out of all proportion to the rou
 `2.0137` for a true accrual start of `2.0136986301369864` landed 1.4e-6 after it, the coupon
 starting that day read as already elapsed, and the zero-vol price came out 14,336.12 instead
 of about 1,211 — a ~12x overstatement, silent and finite
-([I-29](../planning/known-issues.md#i-29)). The fix at the time snapped near-misses onto the schedule
+(I-29). The fix at the time snapped near-misses onto the schedule
 within a tolerance band, and exempted Americans from it with a flag.
 
 Both are gone. Exercise is now given in dates, as ORE takes it. An exercise date equal to an
@@ -492,11 +492,11 @@ count truncates), piecewise volatility and the zero-vol limit, each at `ShiftHor
 0.5 (ORE's default), and two beyond the maturity (1.5). Measured worst case: 8.7e-12 at every
 horizon. Before the changes on this page, 22 of the 23 cases at 0 failed; before the shift
 (2026-10-12), the engine was 1.6e-6 to 1.5e-4 from ORE at 0.5
-([I-32](../planning/known-issues.md#i-32)).
+(I-32).
 
 **That parity is with ORE's Grid solver**, the solver this engine reproduces. ORE's FD solver
 (used in its shipped American config) differs from the Grid solver by up to 1.6e-3; it is an
-option to add ([F-01](../planning/features.md#f-01)). The oracle takes it as a parameter, so the
+option to add (F-01). The oracle takes it as a parameter, so the
 gap can be re-measured at any time.
 
 ## Tested by

@@ -5,7 +5,7 @@ stores beside the result (`engine.api.job_queue`, `artifacts`) and
 `GET /runs/{run_id}/artifacts/{name}/{chunk}` serves.
 
 A reference says everything needed to rebuild and verify the array without reading the result
-again (the contract `docs/planning/details/traderx-integration.md` settled for the TraderX path's cube):
+again (the contract `docs/internal/planning/details/traderx-integration.md` settled for the TraderX path's cube):
 
     {"name": "npv_cube", "dtype": "float64", "byte_order": "little",
      "shape": [S, D, N], "axes": ["scenario", "date", "trade"],

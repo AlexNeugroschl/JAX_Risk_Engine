@@ -174,14 +174,14 @@ Hull-White model, not the market's quotes, so it has no Vega either; on Bachelie
 
 Both methods report ORE's Theta (`trade_theta`), equal to ORE's sensitivity analytic's: the
 trade repriced on the sensitivity market rebuilt on `thetaDate = asof + theta_days` calendar
-days ([I-38](../planning/known-issues.md#i-38)), less its value there. A flow paid in the roll
+days (I-38), less its value there. A flow paid in the roll
 leaves Theta as it leaves the NPV: ORE adds back the flows paid in `(asof, thetaDate]`, but reads
 them from the trade's cash flows on the Theta date without its past ones, where every flow of the
 roll has occurred, so with ORE's settings it adds back nothing (until 2026-10-18 the engine added
-them back, [I-39](../planning/known-issues.md#i-39), which ORE's analytic disproved,
-[I-116](../planning/known-issues.md#i-116)); the owner kept ORE's definition (decision A-26,
+them back, I-39, which ORE's analytic disproved,
+I-116); the owner kept ORE's definition (decision A-26,
 2026-10-18). For a carry with the cash received, add the flows paid in the roll, which are to be
-reported beside Theta as a figure of their own ([F-11](../planning/features.md#f-11)). ORE's
+reported beside Theta as a figure of their own (F-11). ORE's
 simulation-market curves hold their tenor
 points at the tenors' times from the as-of date, with the as-of curve's discount factors there,
 and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, the same
@@ -191,7 +191,7 @@ factor, floats with it: its option dates roll from its reference date, the first
 or after the Theta date, where each option's variance starts (a Theta across a weekend reads the
 volatilities from the Monday). Fixings between the dates
 are backfilled with the index's forecast there. A bond maturing on the Theta date is worth 0
-there ([I-70](../planning/known-issues.md#i-70)), its redemption having occurred, so its Theta is
+there (I-70), its redemption having occurred, so its Theta is
 minus its value. Until
 2026-10-17 the engine's Theta market kept each curve's discount factors fixed in dates, off
 ORE's by 60–290% of each trade's Theta (I-51).

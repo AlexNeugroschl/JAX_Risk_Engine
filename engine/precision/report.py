@@ -1,5 +1,5 @@
 """
-The precision report every result carries (docs/planning/details/precision.md §9.5): what a
+The precision report every result carries (docs/internal/planning/details/precision.md §9.5): what a
 run's precision was, read from what it did, and how far its figures are from float64.
 
     PrecisionReport

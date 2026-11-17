@@ -21,7 +21,7 @@ recursion `x_{i+1} = M_i x_i + b_i + L_i Z_i` runs on device
 (`engine.market_simulation.paths.evolve_states`), in difference form: the state is its mean
 path, computed here in float64, plus a deviation in units of a power of two near its standard
 deviation (`path_moments`), so the device's products multiply numbers near 1 that no level
-swamps (F-07; docs/planning/details/precision.md §8.2). `L_i` is the Cholesky factor of
+swamps (F-07; docs/internal/planning/details/precision.md §8.2). `L_i` is the Cholesky factor of
 the step covariance: ORE's `pseudoSqrt` with the CAM's default `SalvagingAlgorithm::None`
 is `CholeskyDecomposition(cov, flexible = true)`, reproduced by `flexible_cholesky`.
 

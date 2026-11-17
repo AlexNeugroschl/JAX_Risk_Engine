@@ -14,7 +14,7 @@ through time.
 It is **not** market-risk VaR. A loss quantile of a risk-neutral, multi-year simulation
 is not a forecast of tomorrow's loss. Short-horizon VaR/ES is
 [Market Risk](market-risk.md). The cube's statistics were reported as `VaR_95`/`ES_95`
-until the 2026-09-24 audit ([R-1](../planning/known-issues.md#r-1)).
+until the 2026-09-24 audit (R-1).
 
 ## Definitions
 
@@ -46,7 +46,7 @@ times (ACT/365; ORE's report labels the dates with ActualActual (ISDA) times ins
 The numeraire is the base currency's LGM numeraire `N(t, x)`, exact at each date (ORE's),
 whichever model simulates it (the Hull-White model is ORE's LGM in another parametrization);
 `P(0,t)` comes from the base currency's discount curve. (Until 2026-10-01 the Hull-White
-model's numeraire was a left-point money-market account, [I-45](../planning/known-issues.md#i-45).)
+model's numeraire was a left-point money-market account, I-45.)
 
 **Netting.** A netting set's exposure is computed on the *sum* of its trades' paths, so
 offsetting trades net before any statistic is taken. It is never the sum of the trades'
@@ -80,12 +80,12 @@ trade's row, its `exposure`, objects with the same fields ([HTTP API](../referen
 The statistics above are exact on the cube they are given, and the cube is ORE's: the
 cross-asset model, paid flows dropping out, options wrapped as ORE wraps them, under either
 interest-rate model. (Until 2026-10-01 the Hull-White model had a separate cube with three
-known weaknesses, [I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04)
-and [I-43](../planning/known-issues.md#i-43), and warned about them.) Since 2026-10-07 the
+known weaknesses, I-42, I-04
+and I-43, and warned about them.) Since 2026-10-07 the
 assembled profiles are compared with an ORE simulation (`tests/test_ore_xva_parity.py`): the
 definitions on ORE's own cube to 1.8e-13, every trade's cube on ORE's paths to 3e-11
 (Bermudans and Americans since 2026-10-12, their LGM kept as ORE built it,
-[I-49](../planning/known-issues.md#i-49)), and the profiles in distribution.
+I-49), and the profiles in distribution.
 
 ## Tested by
 

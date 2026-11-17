@@ -1,10 +1,10 @@
 {
   "standard": "A-11",
-  "description": "The acceptance standard of the precision evidence table (I-55; docs/planning/details/precision.md §10): what a reduced-precision figure must meet, against float64 on the same paths, for its combination to pass at a path count. A passing row is engineering evidence, not a regulatory approval. Every value carries its citation; tests/support/precision_evidence.py reads them, and no threshold appears as a literal in code (Basel plan §4, rule 1).",
+  "description": "The acceptance standard of the precision evidence table (I-55; docs/internal/planning/details/precision.md §10): what a reduced-precision figure must meet, against float64 on the same paths, for its combination to pass at a path count. A passing row is engineering evidence, not a regulatory approval. Every value carries its citation; tests/support/precision_evidence.py reads them, and no threshold appears as a literal in code (Basel plan §4, rule 1).",
   "statistical": {
     "value": 0.01,
     "rule": "The root mean square precision error over the seeds, at most this share of the figure's statistical error (its float64 spread over the seeds), on every entry float64 does not hold fixed.",
-    "cite": "Basel plan P6.2 (docs/planning/details/basel-iii.md, Phase 6), decision A-11",
+    "cite": "Basel plan P6.2 (docs/internal/planning/details/basel-iii.md, Phase 6), decision A-11",
     "applies": "Every figure. For the market-risk figures (P&L, VaR, ES) it is the Basel plan's P6.2 rule; for every other figure (NPV, EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE and the Basel EPE and EEPE) an engineering rule, Basel setting no numeric tolerance for them (CRE53 requires EPE backtesting only)."
   },
   "fixed": {

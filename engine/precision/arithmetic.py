@@ -1,5 +1,5 @@
 """
-The arithmetic of a stage (F-07; docs/planning/details/precision.md §3.1, §8): the two
+The arithmetic of a stage (F-07; docs/internal/planning/details/precision.md §3.1, §8): the two
 formats its kernels compute with, one implementation for every precision (decision A-16).
 
     compute     the format of its matrix products: their operands are rounded to it, the one

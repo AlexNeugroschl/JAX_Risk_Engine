@@ -80,5 +80,4 @@ RMS in 0.75–1.33; their failures remain research results. At least three outer
 are needed to estimate the independent reference's uncertainty. Historical records
 without entry labels pooled dates and omitted zero-width misses.
 
-See the [precision measurements](../../compliance/precision-measurements/README.md)
-and [implementation plan and measurements](../planning/details/precision-accuracy.md).
+See the [precision measurements](../../compliance/precision-measurements/README.md).

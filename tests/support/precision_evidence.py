@@ -1,5 +1,5 @@
 """
-The precision evidence table (I-55; docs/planning/details/precision.md §10.3), generated from
+The precision evidence table (I-55; docs/internal/planning/details/precision.md §10.3), generated from
 the precision harness's measurements of record and the acceptance standard, never typed:
 
     .venv/Scripts/python.exe -m tests.support.precision_evidence [--check]
@@ -259,7 +259,7 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "record ([precision-measurements/](precision-measurements/)) and the acceptance standard "
         "([precision-acceptance.json](precision-acceptance.json)); do not edit. The engine reads the same rows "
         "(`engine/precision/evidence.json`) and warns of every figure of a run that has no passing row, saying what "
-        "is validated and up to how many paths ([I-55](../docs/planning/known-issues.md#i-55), decision D-9: no run "
+        "is validated and up to how many paths ([I-55](../docs/internal/planning/known-issues.md#i-55), decision D-9: no run "
         "is refused on precision). A passing row is engineering evidence against decision A-11's standard, not a "
         "regulatory approval.", "",
         "## The acceptance standard (A-11)", "",
@@ -285,7 +285,7 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "across independent seeds, never from the paired estimator's own standard errors (I-111).",
         "- **The path ceiling** is the largest measured path count at which the row passes and at every smaller one; "
         "none if it fails at the smallest. On Sobol paths the precision error grows against the statistical error "
-        "with the path count ([precision.md §15.4](../docs/planning/details/precision.md#154-the-storage-harness-"
+        "with the path count ([precision.md §15.4](../docs/internal/planning/details/precision.md#154-the-storage-harness-"
         "2026-10-09)), so a run with fewer paths than a ceiling is validated, and one with more is not.",
         "- **A run's figure is validated** by the rows of its combination, scope, kind and pricing settings "
         "(`engine.precision.evidence`): a trade's by its product's rows measured under the run's settings for it; the "
@@ -293,7 +293,7 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "pricing stage for all its trades; a figure the paired sample corrects (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, "
         "the Basel EPE and EEPE) by the rows of the largest paired share at most the run's; the smallest ceiling where "
         "rows of two campaigns match.",
-        "- **Pricing settings** ([I-114](../docs/planning/known-issues.md#i-114)) are each product's settings that "
+        "- **Pricing settings** ([I-114](../docs/internal/planning/known-issues.md#i-114)) are each product's settings that "
         "change its kernel's arithmetic (`engine.pricing.config.PricingConfig.kernel_settings`), as the campaign's "
         "analytic ran them: the European engine (and Jamshidian's root solver), the rollback grid (ORE's `nx` and "
         "`sx`, an American's exercise steps per year), and whether a calibrated option keeps one model "
@@ -303,7 +303,7 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "calibration strategy, shift horizon) are part of the campaign, like its market, not of the key.",
         "- **CPU formats below float32 are emulated**; GPU execution follows the verified native/emulated "
         "format table in `engine.precision.products` "
-        "([precision.md §8.3](../docs/planning/details/precision.md#83-emulation-and-native-speed)). Each campaign's "
+        "([precision.md §8.3](../docs/internal/planning/details/precision.md#83-emulation-and-native-speed)). Each campaign's "
         "row names the code it measured: its commit, whether the tree had local changes, and the digest of the "
         "engine's Python sources.", "",
         "## Campaigns", "",

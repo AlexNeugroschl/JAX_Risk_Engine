@@ -40,4 +40,4 @@ qualification remains I-97/I-121. No speedup conclusion is drawn from these smal
 The finite, shared-seed FP64 reference and descriptive equal-accuracy interpolation are
 recorded without supported confidence bounds. Larger counts/more seeds and target hardware
 remain the next research work. See [method and usage](../../benchmarks/README.md) and
-[execution plan](../../docs/planning/details/comparison-report.md).
+[execution plan](../../docs/internal/planning/details/comparison-report.md).

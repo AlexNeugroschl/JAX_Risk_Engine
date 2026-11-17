@@ -27,7 +27,7 @@ classic exposure and sensitivity pipeline: `CrossAssetModel` simulation, `Scenar
 algorithms. The interest-rate model of a currency is ORE's LGM in either of its
 parametrizations (Hagan's, the default, or Hull-White's); until 2026-10-01 the Hull-White
 model was a separate pipeline with known differences from ORE, closed with it
-([I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47)).
+(I-42 to I-47).
 
 ## The pipeline
 
@@ -48,25 +48,25 @@ model was a separate pipeline with known differences from ORE, closed with it
 | `DiscountingSwapEngine` with at-par coupons (`IborCouponPricer::initializeCachedData`), `hasOccurred` | `engine.pricing.legs` | tests/test_pricing.py (t=0 and every path/date), tests/test_shared_portfolio.py | 1e-10 |
 | `BlackMultiLegOptionEngine` (qle/pricingengines/blackmultilegoptionengine.cpp), incl. `ParYieldCurve` cash settlement; `DynamicSwaptionVolatilityMatrix` on paths | `engine.pricing.european` | OREApp oracle at t=0; QuantLib `BachelierSwaptionEngine` on every path | 1e-10 (t=0), 2e-14 (cash) |
 | QuantLib `JamshidianSwaptionEngine` (configured, not ORE's default) | `engine.pricing.jamshidian` | tests/test_jamshidian.py (QuantLib's engine, and its formula at the exact root); tests/test_end_to_end.py on Hull-White paths | Brent's 1e-8 on r* (≤ 5e-6); 1e-10 at the exact root |
-| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine`; `LgmBuilder::calibrate`'s acceptance (`getCalibrationError` against `Tolerance`, since 2026-10-12, [I-73](../planning/known-issues.md#i-73)) | `engine.pricing.bermudan`, `engine.calibration.lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_pricing.py (on ORE's path curves, the model as built), tests/test_calibration_acceptance.py | 2e-11 (t=0), 1e-10 (paths) |
+| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine`; `LgmBuilder::calibrate`'s acceptance (`getCalibrationError` against `Tolerance`, since 2026-10-12, I-73) | `engine.pricing.bermudan`, `engine.calibration.lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_pricing.py (on ORE's path curves, the model as built), tests/test_calibration_acceptance.py | 2e-11 (t=0), 1e-10 (paths) |
 | `OptionWrapper` / `BermudanOptionWrapper` (OREData/ored/portfolio/optionwrapper.cpp), its position (`OptionData/LongShort`: the NPV times -1 for a short, the exercise the holder's) | `engine.pricing.options` (`wrap`, `position_sign`) | tests/test_pricing.py (exercise, physical vs cash); a short option against ORE's trade builder with `LongShort` Short, today (tests/test_shared_portfolio.py) and on ORE's paths (tests/test_ore_xva_parity.py) | rule-level; a short 1e-10 (Europeans), 1e-9 (calibrated) of ORE's |
 | `DiscountingRiskyBondEngine` without credit | `engine.pricing.cube.bond_legs` | tests/test_shared_portfolio.py vs `DiscountingBondEngine` | 2e-16 |
 | `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.counterparty.exposure` | tests/test_ore_xva_parity.py: the engine's profiles of ORE's own cube are ORE's reports, per trade and netting set; tests/test_pipeline.py (a bill's EE_B identity) | 1.8e-13 |
-| The assembled pipeline: `XvaAnalytic` (`EXPOSURE`, `PFE`) | `price_portfolio` | tests/test_ore_xva_parity.py: on ORE's paths each trade's cube against ORE's (L3); independent simulations within four standard errors (L4) | every trade 3.0e-11 of its scale; Bermudans/Americans since 2026-10-12 ([I-49](../planning/known-issues.md#i-49)) |
-| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp), its Theta and `recalibrateModels` | `engine.risk.greeks.bump` (Bump), `engine.risk.greeks.ad` (AD, ORE's `UseAD` semantics) | **OREApp run** (tests/test_sensitivity_ore_parity.py, `tests/support/ore_sensitivity_oracle.py`): every Delta, Gamma, Vega and Theta of the shared portfolio, calibrated options recalibrated ([I-51](../planning/known-issues.md#i-51), 2026-10-17); the AD Greeks of its swaps, Europeans and bond as the shift vanishes; tests/test_greeks.py, tests/test_greeks_bermudan.py | 2e-14 of the trade's NPV (Bump); 2e-5 of the curve's largest Delta (AD, O(h³)) |
-| `HistoricalPnlGenerator` / `MarketRiskReport` (orea/engine/historicalpnlgenerator.cpp, marketriskreport.cpp): the `ValuationEngine` with the trades' model builders, recalibrating under every scenario | `engine.risk.market` (`revaluation`: a calibrated option's LGM recalibrated per scenario, `price_functions.recalibrated_pnl`) | tests/test_market_risk_ore_parity.py: each scenario of a calibrated Bermudan and American against ORE's LGM engine calibrated on that scenario's curves ([I-112](../planning/known-issues.md#i-112), 2026-10-17); **ORE's `HISTSIM_VAR` analytic end to end** (tests/test_ore_parity_sweep.py, `tests/support/ore_market_risk_oracle.py`, 2026-10-18): every trade's P&L in every Monte Carlo or historical scenario of the seeded sweeps, and ORE's VaR | 7e-11; 5e-13 of the notional (sweeps) |
+| The assembled pipeline: `XvaAnalytic` (`EXPOSURE`, `PFE`) | `price_portfolio` | tests/test_ore_xva_parity.py: on ORE's paths each trade's cube against ORE's (L3); independent simulations within four standard errors (L4) | every trade 3.0e-11 of its scale; Bermudans/Americans since 2026-10-12 (I-49) |
+| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp), its Theta and `recalibrateModels` | `engine.risk.greeks.bump` (Bump), `engine.risk.greeks.ad` (AD, ORE's `UseAD` semantics) | **OREApp run** (tests/test_sensitivity_ore_parity.py, `tests/support/ore_sensitivity_oracle.py`): every Delta, Gamma, Vega and Theta of the shared portfolio, calibrated options recalibrated (I-51, 2026-10-17); the AD Greeks of its swaps, Europeans and bond as the shift vanishes; tests/test_greeks.py, tests/test_greeks_bermudan.py | 2e-14 of the trade's NPV (Bump); 2e-5 of the curve's largest Delta (AD, O(h³)) |
+| `HistoricalPnlGenerator` / `MarketRiskReport` (orea/engine/historicalpnlgenerator.cpp, marketriskreport.cpp): the `ValuationEngine` with the trades' model builders, recalibrating under every scenario | `engine.risk.market` (`revaluation`: a calibrated option's LGM recalibrated per scenario, `price_functions.recalibrated_pnl`) | tests/test_market_risk_ore_parity.py: each scenario of a calibrated Bermudan and American against ORE's LGM engine calibrated on that scenario's curves (I-112, 2026-10-17); **ORE's `HISTSIM_VAR` analytic end to end** (tests/test_ore_parity_sweep.py, `tests/support/ore_market_risk_oracle.py`, 2026-10-18): every trade's P&L in every Monte Carlo or historical scenario of the seeded sweeps, and ORE's VaR | 7e-11; 5e-13 of the notional (sweeps) |
 
 The whole portfolio at t=0 against ORE, trade by trade, on one sloped market:
-tests/test_shared_portfolio.py ([the shared portfolio](../planning/details/ore-parity-validation.md#the-shared-portfolio)), worst case 3.8e-11 (a calibrated Bermudan).
+tests/test_shared_portfolio.py, worst case 3.8e-11 (a calibrated Bermudan).
 
 **The assembled pipeline against an ORE simulation** (2026-10-07,
-`tests/support/ore_xva_oracle.py`, [details](../planning/details/ore-parity-validation.md#the-ore-simulation-oracle-2026-10-07)):
+`tests/support/ore_xva_oracle.py`):
 every trade equals ORE's cube on ORE's own paths, Bermudans and Americans since 2026-10-12
-([I-49](../planning/known-issues.md#i-49): ORE's exposure simulation keeps the model it calibrated when it built the
+(I-49: ORE's exposure simulation keeps the model it calibrated when it built the
 trade, which the engine had recalibrated on every path, 0.5–4% apart), and the exposure equals
 ORE's in distribution. Since 2026-10-17 the Greeks equal ORE's sensitivity analytic, run in-process
-(L5, [I-51](../planning/known-issues.md#i-51)), and a calibrated Bermudan's market risk ORE recalibrating per
-scenario ([I-112](../planning/known-issues.md#i-112)).
+(L5, I-51), and a calibrated Bermudan's market risk ORE recalibrating per
+scenario (I-112).
 
 ### Verification gates
 
@@ -76,9 +76,9 @@ by an OREApp run; the column says which.
 
 | Gate | Answer | Source | Evidence |
 |---|---|---|---|
-| V-1 | `ValuationEngine` recalibrates the model builders it is given on each scenario (`recalibrate = true` by default, `recalibrateModels` → `LgmBuilder::recalibrate`), but `XvaAnalytic` gives it none (single-threaded) or `recalibrateModels = false` (multi-threaded), so ORE's exposure simulation never recalibrates; its sensitivity analysis and historical P&L, on the as-of date, do. Non-simulated swaption vols are the t=0 surface seen from the scenario date (`DynamicSwaptionVolatilityMatrix`) | valuationengine.cpp, xvaanalytic.cpp, historicalpnlgenerator.cpp, lgmbuilder.cpp, qle/termstructures/dynamicswaptionvolmatrix.cpp | **OREApp run** (tests/test_ore_xva_parity.py): Europeans on the decayed vols, and calibrated Bermudans and Americans on their as-of models, equal ORE on its paths (closed 2026-10-12, [I-49](../planning/known-issues.md#i-49); ORE's debug log of the run shows no recalibration after the build) |
+| V-1 | `ValuationEngine` recalibrates the model builders it is given on each scenario (`recalibrate = true` by default, `recalibrateModels` → `LgmBuilder::recalibrate`), but `XvaAnalytic` gives it none (single-threaded) or `recalibrateModels = false` (multi-threaded), so ORE's exposure simulation never recalibrates; its sensitivity analysis and historical P&L, on the as-of date, do. Non-simulated swaption vols are the t=0 surface seen from the scenario date (`DynamicSwaptionVolatilityMatrix`) | valuationengine.cpp, xvaanalytic.cpp, historicalpnlgenerator.cpp, lgmbuilder.cpp, qle/termstructures/dynamicswaptionvolmatrix.cpp | **OREApp run** (tests/test_ore_xva_parity.py): Europeans on the decayed vols, and calibrated Bermudans and Americans on their as-of models, equal ORE on its paths (closed 2026-10-12, I-49; ORE's debug log of the run shows no recalibration after the build) |
 | V-2 | Absolute shift, `ShiftScheme::Forward`; delta `up − base`, gamma `up − 2·base + down`; scaling by target over actual shift | sensitivitycube.cpp, sensitivityscenariogenerator.cpp | Source; tests/test_sensitivities.py |
-| V-3 | `thetaDate = asof + thetaPeriod` (calendar); a new sim market from today's market with the evaluation date moved: its curves hold their tenor points at the tenors' times from the as-of date and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`), the simulated ATM vol matrix floats with it, from its reference date, the first business day on or after the Theta date (the reading of 'fixed in dates', the engine's until 2026-10-17, was wrong by 60-290% of Theta; the Theta date's own reference, the engine's until 2026-10-18, by a weekend's variance); fixings backfilled; the period flows ORE adds are read after the roll, where they have occurred, so none (the engine added them until 2026-10-18, I-116) | sensitivityanalysis.cpp, scenariosimmarket.cpp | **OREApp run** (tests/test_sensitivity_ore_parity.py: every trade's Theta to 1e-13 of its NPV, [I-51](../planning/known-issues.md#i-51)); tests/test_sensitivities.py, tests/test_trade_dates.py |
+| V-3 | `thetaDate = asof + thetaPeriod` (calendar); a new sim market from today's market with the evaluation date moved: its curves hold their tenor points at the tenors' times from the as-of date and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`), the simulated ATM vol matrix floats with it, from its reference date, the first business day on or after the Theta date (the reading of 'fixed in dates', the engine's until 2026-10-17, was wrong by 60-290% of Theta; the Theta date's own reference, the engine's until 2026-10-18, by a weekend's variance); fixings backfilled; the period flows ORE adds are read after the roll, where they have occurred, so none (the engine added them until 2026-10-18, I-116) | sensitivityanalysis.cpp, scenariosimmarket.cpp | **OREApp run** (tests/test_sensitivity_ore_parity.py: every trade's Theta to 1e-13 of its NPV, I-51); tests/test_sensitivities.py, tests/test_trade_dates.py |
 | V-4 | Can ORE's scenario dump reprice the cube? Yes: its numeraire gives each path's LGM state, which rebuilds every dumped curve | crossassetmodelscenariogenerator.cpp, scenariowriter.cpp | **OREApp run**: tests/test_ore_xva_parity.py, 1.2e-11 (2026-10-07) |
 | V-5 | Co-terminal basket from the trade's exercise dates; `CoterminalDealStrike` (first fixed rate less spread) with the ±3 std-dev fallback, or ATM; `ReferenceCalibrationGrid` keeps one helper per interval; an American's expiries are the grid dates in its window | lgmbuilder.cpp, irmodelbuilder.cpp | **OREApp run**: tests/test_ore_lgm_calibration.py, calibrated price = ORE's to 2e-11 |
 | V-6 | `CalibrationSwaptions`: tenor-based expiries and terms, ATM | crossassetmodelbuilder.cpp | **OREApp run**: tests/test_ore_xva_parity.py (ORE's calibrated simulation rebuilt by the engine's calibration, both models) |
@@ -202,7 +202,7 @@ every path on the device; one step equals ORE's `IrLgm1fStateProcess` (tests/tes
 There is no short-rate recursion: the short rate is a function of the state,
 r(t) = f(0,t) + H′(t)x + ζ(t)H(t)H′(t). (Until 2026-10-01 the Hull-White model simulated an
 Ornstein-Uhlenbeck short rate toward a constant θ, which was not fitted to a sloped curve,
-[I-42](../planning/known-issues.md#i-42).)
+I-42.)
 
 ### 3b. Today's-curve calibration: A(t,T) and B(t,T)
 
@@ -267,7 +267,7 @@ index maturity (or the accrual period, adjusted, for an at-par coupon) and `span
 **index** day counter's year fraction over it, which is then multiplied by the leg's accrual.
 `engine.instruments.schedules.par_coupon_forecast_period` returns the three from QuantLib's own
 coupon. Until 2026-09-29 the engine divided by the leg's accrual instead, which differs for
-any leg day count other than the index's ([I-36](../planning/known-issues.md#i-36)).
+any leg day count other than the index's (I-36).
 
 **Verified:** `tests/test_swap.py::TestAgainstORE` (direct NPV comparison against a real
 `ORE.VanillaSwap` + `ORE.DiscountingSwapEngine`, 1e-12, across payer/receiver/par/spread
@@ -279,8 +279,8 @@ cases) and `tests/test_pricing.py` (today and on every path and date).
 (Bachelier on the market volatility, `engine.pricing.european`, [above](#the-pipeline)).
 This section documents the Jamshidian engine (`PricingConfig.european="Jamshidian"` with its
 Hull-White model), which matches QuantLib's `JamshidianSwaptionEngine` and refuses what it
-refuses: a floating spread, `a <= 0`, cash settlement ([I-37](../planning/known-issues.md#i-37),
-[I-41](../planning/known-issues.md#i-41), [I-52](../planning/known-issues.md#i-52)).
+refuses: a floating spread, `a <= 0`, cash settlement (I-37,
+I-41, I-52).
 
 **This engine:** `engine/pricing/jamshidian.py` (`jamshidian_npv`, `_solve_decreasing_root`),
 `engine/models/hull_white.py::bond_call`/`bond_put`. It is written in discount factors only
@@ -428,7 +428,7 @@ Bermudan must collapse to the intrinsic value of the forward-starting underlying
 ORE values with a plain `DiscountingSwapEngine` and no model at all. It must be built with
 QuantLib's **indexed** Ibor coupons, which project over each index fixing period as ORE's
 LGM engine does; QuantLib's default at-par coupons project over the accrual period and
-differ by 2.3e-3 on this trade (1211.47 vs 1214.23, [I-31](../planning/known-issues.md#i-31)).
+differ by 2.3e-3 on this trade (1211.47 vs 1214.23, I-31).
 
 **No pricing defect was found *against these engines*.** (Against ORE's own LGM engine,
 two were — see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23). A few-percent
@@ -442,7 +442,7 @@ of linear zero-rate; and a 12x overstatement at low vol from passing a *rounded*
 time. That last one was recorded as a **sensitivity, not a bug**: an exercise time of
 `2.0137` instead of the true `2.0136986301369864` is 1.4e-6 late, far outside the
 coupon-liveness tolerance then in use, so that date's fixed coupon was dropped from the
-exercise value entirely ([I-29](../planning/known-issues.md#i-29)). It is gone by construction now:
+exercise value entirely (I-29). It is gone by construction now:
 exercise is given in **dates**, as ORE takes it, and an exercise date equal to an accrual
 date maps to the identical time. `TestExerciseDatesAreExact` pins that.
 
@@ -473,11 +473,11 @@ could not see:
 1. **American exercise was mispriced** — up to 6.0x for a payer, 0.09x for a receiver.
    ORE keeps a coupon until its accrual *end* for an American and credits
    `couponRatio(t)`; the engine priced Americans with the Bermudan rule
-   ([I-06](../planning/known-issues.md#i-06)). The mid-period *Bermudan* behaviour the register had
+   (I-06). The mid-period *Bermudan* behaviour the register had
    called a 7.4x error turned out to be ORE's own rule.
 2. **Floating coupons were projected over the wrong period** — ORE's LGM engine uses the
    index's fixing period, the engine used the accrual period; ~2e-4 on every trade
-   ([I-31](../planning/known-issues.md#i-31)).
+   (I-31).
 3. **A closed-form exercise value is not ORE's number.** Mathematically it has the same
    limit as ORE's rolled-back `underlyingNpv`; numerically it differs by up to 1e-4 at a
    48-point grid (shrinking ~4x per doubling). The engine now replays ORE's cashflow
@@ -518,7 +518,7 @@ engine's `value_at_risk` reads `sorted_pnl[var_rank(N, p)]`, `var_rank` being th
 `target = (1 - p) * N` computed in double precision as QuantLib computes it. Where the target
 is not a whole number the index is `floor(target)`, which the engine took until 2026-10-11;
 where it is (16 scenarios at 0.9375), QuantLib's is the observation below, and so the engine's
-now is ([I-102](../planning/known-issues.md#i-102), closed). Confirmed against
+now is (I-102, closed). Confirmed against
 `ORE.RiskStatistics.valueAtRisk` directly in `tests/test_var_es.py`: the sweep of sizes and
 levels, and `TestExactRankBoundaryAgainstORE` at exact boundaries (dyadic levels, ties, a
 target weight of two, and `var_rank` against ORE's index at every count from 1 to 299). ORE
@@ -588,7 +588,7 @@ the configured tenors; one tenor's zero rate (or one swaption quote) is shifted 
 NPVs (`delta = NPV_up − NPV_base`, `gamma = NPV_up − 2·NPV_base + NPV_down`). Bermudans are
 recalibrated under every shift. `portfolio_sensitivities` reproduces it (gates V-2, V-3), and
 equals an OREApp sensitivity run to 2e-14 of each trade's NPV
-([I-51](../planning/known-issues.md#i-51), tests/test_sensitivity_ore_parity.py). One engine curve is two of
+(I-51, tests/test_sensitivity_ore_parity.py). One engine curve is two of
 ORE's factors there: ORE's LGM builder discounts its model and its helpers on the swap index's
 discounting index, and a bond on its reference curve, each an `IndexCurve` factor beside the
 `DiscountCurve`, both from the engine's one discount curve; the oracle shifts both and reads
@@ -613,7 +613,7 @@ its Delta and Gamma recalibrate as ORE's bumps do. For swaps, Europeans and bond
 are ORE's as the shift vanishes (2e-5, against ORE's report); a Bermudan's/American's grid price
 is piecewise smooth in the rates, so its AD Greeks are the price's derivatives, not ORE's 1bp
 secants across the grid's kinks (Delta within 0.4%, Gamma not comparable), and an AD run says so
-([I-78](../planning/known-issues.md#i-78)).
+(I-78).
 
 **Rho:** confirmed absent from ORE entirely — `QuantExt::RiskFactorKey::KeyType`
 ([`QuantExt/qle/termstructures/scenario.hpp`](../../reference/ORE/QuantExt/qle/termstructures/scenario.hpp))
@@ -621,7 +621,7 @@ has no rho-specific entry, so the interest-rate-curve Delta is ORE's equivalent 
 textbook Rho.
 
 **Theta:** `generateSensitivities`'s theta branch advances the evaluation date by a
-configured period (calendar days, [I-38](../planning/known-issues.md#i-38)), builds a new
+configured period (calendar days, I-38), builds a new
 simulation market from today's, reprices, and means to add back the interim cashflows,
 `Theta = NPV(t+dt) − NPV(t) + CF(t, t+dt]`; but it reads them with `aggregateTradeFlow` from the
 trade's cash flows on the Theta date without its past flows (`Trade::cashflows(...,
@@ -636,10 +636,10 @@ market's as a function of the time from its reference date; the simulated ATM vo
 on or after the Theta date, where each option's variance starts
 (`engine.pricing.context.floating_volatility_date`). Both methods report it (`trade_theta`),
 equal to ORE's sensitivity analytic; the engine's curves fixed in dates were 60–290% off ORE's
-Theta until 2026-10-17 ([I-51](../planning/known-issues.md#i-51)), and its add-back of the
-roll's flows ([I-39](../planning/known-issues.md#i-39)) and the Theta date's own volatility
+Theta until 2026-10-17 (I-51), and its add-back of the
+roll's flows (I-39) and the Theta date's own volatility
 reference until 2026-10-18, both found by the seeded sweeps
-([I-116](../planning/known-issues.md#i-116)).
+(I-116).
 
 **Root-finds.** Naively differentiating through a root solver gives a silently wrong
 gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
@@ -702,7 +702,7 @@ simulation) — see [Calibration: Tested by](calibration.md#tested-by) for the f
 ## The parity matrix
 
 What is compared with ORE, product by analytic by setting, and what is not, with the reason
-([I-116](../planning/known-issues.md#i-116), closed 2026-10-18). Each parity test declares the
+(I-116, closed 2026-10-18). Each parity test declares the
 cells it compares (an `ore_parity` marker, derived from the very trades and configurations it
 runs: tests/support/ore_parity_matrix.py); tests/test_ore_parity_matrix.py fails on a public
 setting, a value of one or an analytic with neither a test nor a reason, on a field of a request

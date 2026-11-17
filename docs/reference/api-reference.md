@@ -273,7 +273,7 @@ The main entry point — combines the three functions above.
 | `ES_99_tailCount` | **Effective sample size** — how many observations the ES mean actually averaged. At 99% over 10,000 scenarios this is ~100, so the estimate rests on 1% of the sample. |
 | `ES_99_standardError` | Monte Carlo standard error of the ES mean (`s/√n`, `ddof=1`). **NaN, never `0.0`, when `n < 2`** — `0.0` would read as "perfectly converged" for the least trustworthy case. |
 
-The two diagnostic keys are additive (W0.6, part of [I-11](../planning/known-issues.md#i-11)); the
+The two diagnostic keys are additive (W0.6, part of I-11); the
 `VaR_*`/`ES_*` keys and values are unchanged. See
 [The TraderX Path: tail diagnostics](traderx-path.md#tail-statistics-carry-their-own-convergence-diagnostics).
 
@@ -477,7 +477,7 @@ Over HTTP it runs through the run request in the engine worker (`engine.api.work
 
 ## `engine.precision`
 
-The precision of a run ([details/precision.md](../planning/details/precision.md)); imports
+The precision of a run; imports
 nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
 `engine.run`.
 
@@ -553,15 +553,15 @@ pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
 | `bundle` | W0.1 | `load_bundle(root) -> Bundle`, `Bundle`, `BundleIntegrityError`. Reads and hash-verifies every artifact **in binary, exactly as read** — see the CRLF trap. |
 | `terms` | W0.2 / W1.6.1 | `join_terms`, `TermsEntry`, `AccrualBasis`, `TermsJoinError`, `SUPPORTED_TERMS_SCHEMAS`. |
 | `normalize` | W0.3 | `normalize_position`, `NormalizedPosition`, `Quantity`, `MAPPING_VERSION`. |
-| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed ([I-05](../planning/known-issues.md#i-05)). |
+| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed (I-05). |
 | `result` | W0.5 | `RiskResult`, `ItemResult`, `Coverage`, `CALCULATIONS`, `STATUSES`. |
-| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback ([I-11](../planning/known-issues.md#i-11)). |
-| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals ([I-10](../planning/known-issues.md#i-10)). |
-| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store ([I-08](../planning/known-issues.md#i-08)). |
+| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback (I-11). |
+| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals (I-10). |
+| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store (I-08). |
 | `capabilities` | W0.9 | `capabilities()` — the supported (product × convention × calculation) matrix. |
 | `bill` | W1.2 | `price_bill`, `BillPrice`, `is_bill`, `BillPricingError`. |
 | `note` | W1.3 | `price_note`, `NotePrice`, `rate_sensitivity`, `AccruedReconciliation`, `accrual_mismatch_tolerance`, `is_note`. |
-| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
+| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source (I-18). |
 | `schema_version` | W1.6.2 | `RESULT_SCHEMA_VERSION`, `CAPABILITY_SCHEMA_VERSION` — a dependency-free leaf that breaks the `result` ↔ `schema` cycle. |
 | `schema` | W1.6.2 | `result_schema()`, `capability_schema()` — JSON Schema **derived** from the frozen vocabulary, never hand-written. |
 | `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. `AttemptStore.submit(key, submission_id, reuse_existing=...) -> Submission(attempt, reused)` binds a submission id before any cached result is returned (I-57); only a call that gets `reused=False` executes the attempt. |

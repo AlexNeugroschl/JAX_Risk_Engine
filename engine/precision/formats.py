@@ -1,7 +1,7 @@
 """
 The format table: every number format the engine knows, by name. It is the only place that
 maps a name to a dtype, a bit count, a range or a kind of matrix product
-(docs/planning/details/precision.md §6.1); validation, the HTTP schema, storage, the matrix
+(docs/internal/planning/details/precision.md §6.1); validation, the HTTP schema, storage, the matrix
 products and the report read it.
 
 The table's `shared_terms` and `shared_dtype` describe the historical compensated
@@ -51,7 +51,7 @@ coarser grid, a change below 2^-15 of the slice's largest, far below e5m2's own 
 Emulated or native, the products are these numbers (`engine.precision.products`).
 
 "Storage" and "compute" say whether each use is enabled, or name the planning item
-(docs/planning) whose work enables it; a format used before then is refused, naming the item
+(docs/internal/planning) whose work enables it; a format used before then is refused, naming the item
 (`engine.precision.policy`). Every array format is enabled for storage, and every format for
 compute since the kernel rewrite (F-07); FP4 joins with F-07's FP4 part. The mantissa bits, the
 minimum normal exponent and the max define the grid a value is rounded to when stored in a
@@ -78,7 +78,7 @@ class Format:
     product whose compute format this is runs (`PRODUCT_KINDS`). `shared_terms`: how many terms
     of the format such a product carries the operand every path shares in; `base`: the row whose
     grid, dtype and units its products use (see the module docstring).
-    `storage_pending`/`compute_pending`: the planning item (docs/planning) whose work enables
+    `storage_pending`/`compute_pending`: the planning item (docs/internal/planning) whose work enables
     the format for storage/compute, `None` once it is enabled. `shared_dtype`: the format whose
     range and dtype the operand every path shares is held in, `None` for its own (see the module
     docstring)."""

@@ -1,5 +1,5 @@
 """
-Compute below float32 (F-07; docs/planning/details/precision.md §3.1, §8): the kernels in
+Compute below float32 (F-07; docs/internal/planning/details/precision.md §3.1, §8): the kernels in
 difference form with explicit accumulators, one implementation for every precision (A-16), and
 the policy's product formats (A-22).
 
@@ -177,7 +177,7 @@ class TestProducts:
         to 150, two terms 1.5 for a 10-bit grid and 2.3 for bfloat16's). FP8's two terms leave 5
         (e4m3) and 8 (e5m2), a twelfth of one pass's or less; that rest is each path's own
         rounding on FP8's grid, not the shared operand's: a third term, or the shared operand
-        unrounded, leaves the same (docs/planning/details/precision.md §15.5)."""
+        unrounded, leaves the same (docs/internal/planning/details/precision.md §15.5)."""
         rng = np.random.default_rng(11)
         paths = 1.0 + 0.3 * rng.standard_normal((4096, 12))
         weights = rng.standard_normal((12, 6)) * np.logspace(0, -2, 6)
@@ -675,7 +675,7 @@ class TestPipeline:
         operands in two terms (A-23), 14 to 24 with the single pass (`<name>_1x`, what the code
         before ran under the format's name). FP8 e4m3's two terms leave up to 9 on the bond, the
         paths' own rounding on FP8's grid, which a third term does not change
-        (docs/planning/details/precision.md §15.5)."""
+        (docs/internal/planning/details/precision.md §15.5)."""
         exact = np.asarray(price_portfolio(_request(samples=2048)).npv_cube)
 
         def significance(compute):

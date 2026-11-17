@@ -206,5 +206,5 @@ def _stencil(curve, t):
 
 def curve_dtype(curve):
     """The working dtype of a `ZeroCurve` or a `DiscountCurve`: kernels that read a curve
-    compute in it (docs/planning/details/precision.md §6.4)."""
+    compute in it (docs/internal/planning/details/precision.md §6.4)."""
     return (curve.log_discounts if isinstance(curve, DiscountCurve) else curve.pillar_rates).dtype

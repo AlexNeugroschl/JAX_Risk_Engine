@@ -27,8 +27,7 @@ this codebase's JAX code.
   the kernel), stating its precision in the program; without an arithmetic, float32 or float64
   operands in their own format, full precision (decision A-22). A kernel with products is in
   difference form: what enters a product is a path's deviation from a level no path depends on,
-  the level computed and added at the accumulate format (F-07; [details/precision.md
-  §8](../planning/details/precision.md#8-compute-below-float32)). Never round a value by a
+  the level computed and added at the accumulate format (F-07). Never round a value by a
   dtype round trip inside a kernel (`x.astype(low).astype(float32)`): XLA may remove it; round
   on the format's grid (`engine.precision.grid`). Why: a product that states none
   runs at the device's default, which is below float32 on accelerators (TensorFloat-32 on an

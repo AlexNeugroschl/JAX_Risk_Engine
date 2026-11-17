@@ -1,6 +1,6 @@
 """
 Storage between stages: `store(x, format)` keeps an array in a format, `load(x, dtype)` reads
-it back at the next stage's compute dtype (docs/planning/details/precision.md §6.2). Every
+it back at the next stage's compute dtype (docs/internal/planning/details/precision.md §6.2). Every
 array that crosses a stage boundary goes through this pair, so the cast points are the only
 places a format changes.
 

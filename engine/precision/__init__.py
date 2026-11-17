@@ -1,5 +1,5 @@
 """
-`engine.precision`: the numeric precision of a run (docs/planning/details/precision.md).
+`engine.precision`: the numeric precision of a run (docs/internal/planning/details/precision.md).
 
     formats.py   the format table: name -> dtype, bits, mantissa bits, max, array or product
                  format, scaled, the kind of matrix product, the shared operand's terms (each

@@ -1,6 +1,6 @@
 """
 The precision harness's campaigns of record (`tests/support/precision_harness.py`; I-75, F-07,
-docs/planning/details/precision.md §15.4), and the command that runs them:
+docs/internal/planning/details/precision.md §15.4), and the command that runs them:
 
     .venv/Scripts/python.exe -m tests.support.precision_campaigns CAMPAIGN [--paths N ...]
         [--seeds K] [--cases TEXT ...] [--out DIR]

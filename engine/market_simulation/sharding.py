@@ -1,5 +1,5 @@
 """
-The scenario axis across the devices of a run (I-61; docs/planning/details/precision.md §11.3).
+The scenario axis across the devices of a run (I-61; docs/internal/planning/details/precision.md §11.3).
 
 A run's scenario draws (the simulation's Sobol normals, market risk's shifts) are placed on a
 one-axis `Mesh` of devices, split along the scenario axis (`shard_scenarios`). Everything after

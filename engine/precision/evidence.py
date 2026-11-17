@@ -1,5 +1,5 @@
 """
-The evidence table at run time (I-55; docs/planning/details/precision.md §10): which precision
+The evidence table at run time (I-55; docs/internal/planning/details/precision.md §10): which precision
 combinations have passed the acceptance standard (decision A-11) for which figure, up to how
 many paths, and the warning a result carries for every figure that has no passing row. The
 standard labels results; it never refuses a run (D-9).

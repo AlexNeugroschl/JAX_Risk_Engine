@@ -1,7 +1,7 @@
 """
 The state paths of the cross-asset model (`engine.models.cam`): the exact discretization's
 recursion `x_{i+1} = M_i x_i + b_i + L_i z_i`, run on the device on every path at once, in
-difference form (F-07; docs/planning/details/precision.md §8.2).
+difference form (F-07; docs/internal/planning/details/precision.md §8.2).
 
 The step moments `(M_i, b_i, L_i)` and the path moments (the mean path `m_i` and the scale
 `s_i`, a power of two per component near its standard deviation) are the model's

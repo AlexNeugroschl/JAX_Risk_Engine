@@ -1,5 +1,5 @@
 """
-The engine's assembled exposure pipeline against ORE's own exposure simulation (I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4), through
+The engine's assembled exposure pipeline against ORE's own exposure simulation (I-50; docs/internal/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4), through
 `tests/support/ore_xva_oracle.py`, on the shared portfolio's sloped two-curve market
 (tests/support/portfolio.py), under both interest-rate models calibrated to a tenor basket:
 

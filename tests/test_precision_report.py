@@ -1,6 +1,6 @@
 """
 The paired float64 sample, the two-level estimator and the precision report (decision
-A-13, I-12; docs/planning/details/precision.md §9, §13.6).
+A-13, I-12; docs/internal/planning/details/precision.md §9, §13.6).
 
   * The estimator needs no market (§13.6): identical samples give the plain mean and a zero
     correction; a known bias is removed within the estimate's standard error, and the

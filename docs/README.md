@@ -25,10 +25,9 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Trace Python calls and GPU kernels across both engine pipelines | [Python/GPU profiling demo](concepts/profiling-python.md) |
 | Compare CPU/GPU scaling and numerical outputs for each instrument | [GPU scaling study](concepts/gpu-scaling.md) |
-| Arrange Google Cloud permissions and hardware for CPU/GPU/TPU research | [Hardware testing](hardware-testing/README.md) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
-| **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](planning/known-issues.md)** |
+| Know the modelling decisions behind the numbers | [Decisions](../compliance/decisions.md) |
 
 ## Concepts
 
@@ -114,31 +113,8 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
 - **[Selecting numerical experiments](reference/numerical-experiments.md)** — per-stage
   product options for low-precision matrix products.
 
-## Hardware testing
+## Decisions
 
-- **[Hardware testing](hardware-testing/README.md)** — running correctness trials on Google
-  Cloud H100s and TPUs, and the dated reports of what they found.
-
-## Known issues and planning
-
-- **[Planning](planning/README.md)** — how the plan is organized and the rules for adding
-  to it. Three documents carry it:
-  - **[Known Issues](planning/known-issues.md)** — every open defect and important
-    shortcoming, what it does to a number a user would see, and what closing it takes. Read
-    it before trusting an exposure profile or an EOD result. Fixed issues keep one line in
-    its closed ledger.
-  - **[Features](planning/features.md)** — additive work beyond today's scope (Basel III
-    figures, sub-FP32 precision, FX/equity trades, CVA, engine options).
-  - **[Roadmap](planning/roadmap.md)** — the order of work: first accurate and fast on TPU
-    and GPU clusters, then the precision research result, Basel III, fixes, and new features.
-  - **[details/](planning/details/)** — design for the large items: the
-    [configurable engine](planning/details/configurable-engine.md),
-    [ORE parity validation](planning/details/ore-parity-validation.md),
-    [Basel III](planning/details/basel-iii.md),
-    [precision](planning/details/precision.md) (down to FP8, and the engine worker),
-    [rounding and uncertainty](planning/details/precision-accuracy.md), and the
-    [TraderX integration](planning/details/traderx-integration.md) (the agreed EOD contract
-    and what is open with TraderX).
 - **[Decisions](../compliance/decisions.md)** — the dated modelling decisions behind the
   numbers: the ORE alignment's targets, the differences from ORE that remain, and the owner's
   decisions on how the engine is configured.

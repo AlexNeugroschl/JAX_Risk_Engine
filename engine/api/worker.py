@@ -1,7 +1,7 @@
 """
 The engine worker: one single-threaded process per host that takes jobs from the job queue
 (`engine.api.job_queue`), runs them and writes the results back (decision A-14;
-docs/planning/details/precision.md §11).
+docs/internal/planning/details/precision.md §11).
 
     jax-risk-worker [--queue PATH] [--lock PATH] [--parent-pid PID]
 

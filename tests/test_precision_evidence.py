@@ -1,5 +1,5 @@
 """
-The precision evidence table (I-55; docs/planning/details/precision.md §10.3): the acceptance
+The precision evidence table (I-55; docs/internal/planning/details/precision.md §10.3): the acceptance
 standard as cited data (A-11), the rows the generator reads off the precision harness's
 measurements (`tests/support/precision_evidence.py`), and the warnings the engine gives a
 result whose figures have no passing row (`engine.precision.evidence`; D-9: never a refusal).

@@ -1,6 +1,6 @@
 """
 `accrualSource` on the standalone `accruedInterest` outcome (W1.6.3,
-`docs/planning/details/traderx-integration.md`).
+`docs/internal/planning/details/traderx-integration.md`).
 
 The standalone outcome uses the same vocabulary as the note's NPV payload
 (`exported-fraction`), while a bill keeps `structural-zero`: its zero comes from having no

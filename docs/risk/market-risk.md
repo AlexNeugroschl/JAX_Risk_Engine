@@ -15,7 +15,7 @@ backtest or Basel's internal-models approach means by VaR/ES. It is **not** what
 `price_portfolio` produces. That path simulates the portfolio forward for months or years
 under the risk-neutral measure, which gives an exposure profile
 ([Exposure](exposure.md)), not a VaR. The two were once reported under the same name;
-see [audit finding R-1](../planning/known-issues.md#r-1).
+see audit finding R-1.
 
 ```
 scenarios (Monte Carlo or historical)      engine/risk/market/scenarios.py
@@ -83,8 +83,8 @@ naming the trade and the pair, as is a reporting currency the market has no mark
 rate pillars are shocked, so a converted trade's spot is the same in every scenario: FX risk is
 not in the VaR/ES, and the result's warnings say so, naming the converted trades. Until
 2026-10-11 the run had no reporting currency and added a EUR trade's P&L to a USD trade's as if
-both were dollars ([I-100](../planning/known-issues.md#i-100), closed); FX as a shocked factor
-waits on FX trades in the pipeline ([F-04](../planning/features.md#f-04)).
+both were dollars (I-100, closed); FX as a shocked factor
+waits on FX trades in the pipeline (F-04).
 
 ## Risk factors
 

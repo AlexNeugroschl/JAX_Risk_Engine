@@ -28,7 +28,7 @@ This page is about *running* the code. For how it works internally, see
 > `.venv/Scripts/python.exe` on Windows (`.venv/bin/python` on Linux/macOS). A bare `python`
 > may resolve to a system interpreter where `pydantic` and `jsonschema` are absent, which
 > makes whole test files **silently uncollectable** rather than failing — see
-> [I-25](../planning/known-issues.md#i-25). The commands below write `python` for brevity; substitute
+> I-25. The commands below write `python` for brevity; substitute
 > the venv interpreter.
 
 ## Setting up
@@ -329,8 +329,8 @@ prints what it returns:
 
 These sections were once `__main__` blocks inside the engine modules; they moved to
 `demos/` so the shipped package holds no demo code
-([I-65](../planning/known-issues.md#i-65)). `tests/test_demos.py` runs every section, which
-also guards [I-28](../planning/known-issues.md#i-28).
+(I-65). `tests/test_demos.py` runs every section, which
+also guards I-28.
 
 ## Running the tests
 
@@ -507,7 +507,7 @@ behave differently on purpose:
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `run_id`, then poll | **Synchronous** — one call returns the result |
 | Body | the run request (`RunRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | A durable SQLite job queue; a run survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
+| Durability | A durable SQLite job queue; a run survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart (I-08: a running attempt does not) |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly
@@ -836,7 +836,7 @@ keeps the cube in FP8. By default a block whose paths sit close together against
 midpoint beside its scale and stores its values' deviations from it
 (`Precision.offset="block"`, 2026-10-09): a bond's values near 1e6 that vary by 1e4 then keep
 their spread to the format's precision rather than spending the format's few bits on the
-level, which biased their mean ([I-75](../planning/known-issues.md#i-75),
+level, which biased their mean (I-75,
 closed). `offset="none"` stores the values themselves, as the OCP MX formats do.
 
 Compute goes below float32 too (2026-10-10): `float16`, `bfloat16`, `float8_e4m3fn`,
@@ -865,14 +865,12 @@ scaled/residual profile. The `_1x` names remain accepted and require one shared 
 Padding, FP16 subnormal normalization, mixed FP8 representation and software products
 are also explicit options; see [Selecting numerical experiments](../reference/numerical-experiments.md).
 FP8
-compute still leaves a bias of its own rounding ([I-98](../planning/known-issues.md#i-98)): pair
+compute still leaves a bias of its own rounding (I-98): pair
 such a run with float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects
 the means. How
 much each format costs in accuracy, per stage, figure and path count, is measured, not assumed:
 the precision harness's measurements are in
-[compliance/precision-measurements/](../../compliance/precision-measurements/)
-([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09),
-[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)), and judged
+[compliance/precision-measurements/](../../compliance/precision-measurements/), and judged
 against decision A-11's acceptance standard in the evidence table
 ([compliance/precision-evidence.md](../../compliance/precision-evidence.md)). A run is never
 refused on precision; its `warnings` name every figure whose combination has no passing row,

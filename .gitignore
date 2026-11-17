@@ -43,3 +43,7 @@ __pycache__/
 .profile-out*/
 
 # reference/ORE and reference/traderX are git submodules (see .gitmodules).
+
+# Internal documentation (planning, known issues, hardware-trial reports and cloud setup).
+# Kept locally only; the public docs/ covers the engine itself.
+/docs/internal/

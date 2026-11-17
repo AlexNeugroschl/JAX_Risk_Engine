@@ -39,9 +39,9 @@ in time?"* — producing its column of the same NPV cube.
 - **Jamshidian** (`european="Jamshidian"` with `jamshidian=JamshidianEngineConfig(a, σ)`):
   QuantLib's `JamshidianSwaptionEngine` on a Hull-White model with the configured reversion
   and volatility. ORE has no builder for it; it is kept as an option (decision A-1). It
-  refuses what QuantLib's engine refuses: a floating spread ([I-37](../planning/known-issues.md#i-37)),
-  a non-positive reversion ([I-41](../planning/known-issues.md#i-41)), cash settlement
-  ([I-52](../planning/known-issues.md#i-52)). It reads no volatility quote, so it has no Vega.
+  refuses what QuantLib's engine refuses: a floating spread (I-37),
+  a non-positive reversion (I-41), cash settlement
+  (I-52). It reads no volatility quote, so it has no Vega.
 
 Both price whichever interest-rate model simulates the paths: they read only the path's
 curves. The Jamshidian engine's Hull-White model is its own; when it equals the simulated
@@ -61,7 +61,7 @@ model: those are the market's and the configuration's. The notional is positive:
 option is `"Short"`, worth exactly minus the long one, since ORE's `OptionWrapper` multiplies
 the engine's NPV by -1 and the holder still decides the exercise. A negative notional would be
 a different option, on the reversed swap, so it is refused
-([I-101](../planning/known-issues.md#i-101)).
+(I-101).
 
 ### 2. Building the real trade: `underlying_swap()`, `european_terms()`
 

@@ -1,5 +1,5 @@
 """
-Estimates from a paired float64 sample (docs/planning/details/precision.md §9; decision A-13).
+Estimates from a paired float64 sample (docs/internal/planning/details/precision.md §9; decision A-13).
 
 A run at reduced precision can re-run a prefix within each independent scramble at float64:
 the same random numbers, since a scrambled Sobol sequence's first `n` points do not depend on

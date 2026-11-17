@@ -74,7 +74,7 @@ class TestCalibration:
 # =============================================================================
 # Regressions of the defects the Hull-White model had as a separate pipeline (before
 # 2026-10-01), on the 3% -> 5% curve. Each was measured on the code before then
-# (docs/planning/known-issues.md, ledger); the per-path ORE comparisons of the shared pricers
+# (docs/internal/planning/known-issues.md, ledger); the per-path ORE comparisons of the shared pricers
 # on Hull-White paths are tests/test_pricing.py (parametrized over both models).
 # =============================================================================
 from engine.instruments.european_swaption import SwaptionConfig  # noqa: E402

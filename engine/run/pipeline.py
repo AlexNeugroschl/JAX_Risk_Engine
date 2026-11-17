@@ -19,7 +19,7 @@ Every choice comes from the request's run configuration (`engine.run.config`):
 `greeks` (the method and ORE's sensitivity settings), `precision` and the reporting currency.
 What the pipeline does not implement is refused before any work (`validate_request`).
 
-Precision (`engine.precision`, docs/planning/details/precision.md): `simulate` and
+Precision (`engine.precision`, docs/internal/planning/details/precision.md): `simulate` and
 `value_portfolio` hold the cast points of the simulation, market and pricing stages; the
 calibration, t=0 values, Greeks and reductions use their declared internal roles
 (FP64 by default). Reductions load one stored column and the numeraire at a time

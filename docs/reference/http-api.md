@@ -12,7 +12,7 @@
 ## Plain-language summary
 
 Everything the engine computes is one request, as ORE runs a portfolio, its market data and its
-configuration files with a list of analytics (decision A-2, [I-87](../planning/known-issues.md#closed)):
+configuration files with a list of analytics (decision A-2, I-87):
 
 ```
 POST /runs   {"market": ..., "portfolio": [...], "analytics": ["npv", "exposure", ...], "config": {...}}
@@ -241,7 +241,7 @@ before a boundary sees the cancel finishes `done`.
 ### `GET /runs/{run_id}/artifacts/{name}/{chunk}`
 
 One chunk of an array a done run returns by reference (decision A-17,
-[I-09](../planning/known-issues.md#closed)): the raw bytes, `application/octet-stream`, exactly as
+I-09): the raw bytes, `application/octet-stream`, exactly as
 the result's reference describes them. A chunk that does not exist is a `404`. The chunks are
 written to the queue in the same transaction as the result, so a `done` run always has all of
 them.
@@ -293,7 +293,7 @@ timeout/retry/progress problems this pattern already avoids.
 
 ## Runs: the queue and the engine worker
 
-Since 2026-10-04 (decision A-14; [details/precision.md §11](../planning/details/precision.md#11-execution-architecture)):
+Since 2026-10-04 (decision A-14):
 
 ```
  API process(es)                    job queue (SQLite)                    engine worker (one per host)
@@ -390,7 +390,7 @@ Since 2026-10-04 (decision A-14; [details/precision.md §11](../planning/details
 **The TraderX path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
 through a crash-safe filesystem store (`engine/traderx/publication.py`), so an EOD result
 survives a restart and stays addressable by `attemptId`; a *running* EOD attempt is still
-memory-only ([I-08](../planning/known-issues.md#i-08),
+memory-only (I-08,
 [The TraderX Path](traderx-path.md#w164--the-eod-http-routes)).
 
 <a id="the-run-request-post-runs"></a>
@@ -666,7 +666,7 @@ beside it (I-87; the project audit's AUD-39). Mirrors `engine.run.RunResult`:
 
 **The precision report** (`precision` of `exposure` and `market_risk`) is built in the worker
 that ran the run, so its `devices` and `backend` are the worker's, not those `/version` names
-([I-12](../planning/known-issues.md#i-12), closed): `policy` (the request's `precision`, defaults
+(I-12, closed): `policy` (the request's `precision`, defaults
 filled in), `trades`, `realized` (the format of every stored array), `products`, `devices`,
 `backend`, `jax_version`, `paths`, `paired_paths`, `figures` (each with `"kind": "mean"` or
 `"quantile"`; NaN as `null`), `replicates`, `uncertainty_method`, `interval`, and with a stage's
@@ -724,8 +724,7 @@ and `demos/demo_api.py` for every analytic, the cube by reference and the idempo
 ## Design: one request for every analytic
 
 Decided 2026-09-30 ([compliance/decisions.md](../../compliance/decisions.md) A-2; ORE
-alignment plan 9.2); every setting reachable on 2026-10-07; one request on 2026-10-18 (I-87,
-[details/configurable-engine.md](../planning/details/configurable-engine.md#one-run-request-i-87-i-88-i-89)):
+alignment plan 9.2); every setting reachable on 2026-10-07; one request on 2026-10-18 (I-87):
 
 - **One route, one request.** What to compute is the `analytics` list; how is the `config`,
   one section per ORE file, each setting in one place (the model per currency is
@@ -733,7 +732,7 @@ alignment plan 9.2); every setting reachable on 2026-10-07; one request on 2026-
   `config.base_currency`). Defaults are ORE's. Each analytic runs the engine's own entry point,
   so a run of one analytic is that entry point's direct call, and a run of several each alone;
   sharing work between analytics in one run (the cross-asset model's calibration, today's
-  values) is an optimization not yet made ([I-118](../planning/known-issues.md#i-118)).
+  values) is an optimization not yet made (I-118).
 - **Every setting reachable, and arriving.** `tests/test_api_completeness.py` walks every
   configuration type from `RunRequest` and fails on a field without an API field, a type
   without a schema, or an exemption naming no field; and sets every field of every schema to a
@@ -746,7 +745,7 @@ alignment plan 9.2); every setting reachable on 2026-10-07; one request on 2026-
 - **Names say what they are.** No route or field is named like a version unless it marks a
   revision of the contract itself. `/v2` and `schema_version: "2"` went on 2026-10-07.
 - **Every figure says what it is.** One row per trade with its `trade_id`
-  ([I-10](../planning/known-issues.md#closed)); every array names its axes and carries its trade
+  (I-10); every array names its axes and carries its trade
   order hashed; every section its pricing settings; the result its configuration as run and the
   engine that ran it.
 

@@ -11,7 +11,7 @@ measurement, resumable isolated campaigns, operation/workload lowering and trace
 bounded fresh-process full-suite validation. It fixes zero-volatility European liveness,
 delayed bond redemption/payment and small-reversion LGM H(t), plus Windows worker ownership,
 Unicode logging and ORE failure cleanup. It preserves A-10/A-11 and existing ORE tolerances.
-The [execution plan](../../../docs/planning/details/native-fp8-reliability.md) tracks the
+The [execution plan](../../../docs/internal/planning/details/native-fp8-reliability.md) tracks the
 remaining target hardware, performance and statistical work.
 
 ## What was measured

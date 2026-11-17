@@ -73,7 +73,7 @@ below* the target `N × (1 − percentile)`, so with equal weights it stops at
 `ceil(target) − 1`. Where the target is not a whole number this is `floor(target)`; where it
 is, it is the observation one below. Sixteen P&Ls −16, …, −1 at 0.9375 have a target of
 exactly 1: ORE's VaR is 16 (index 0). Until 2026-10-11 the engine took `floor(target)`,
-index 1, and reported 15 ([I-102](../planning/known-issues.md#i-102), closed). The target is
+index 1, and reported 15 (I-102, closed). The target is
 computed as QuantLib computes it, `(1 − p) × N` in double precision, so the usual levels
 (0.95, 0.99, whose `1 − p` is inexact in binary) meet the boundary exactly when ORE's do,
 and dyadic ones (0.9375, 0.96875) at every multiple of `1 / (1 − p)` scenarios.
@@ -199,7 +199,7 @@ the case where the estimate is least trustworthy.
 
 This does not make any estimate better. It makes the uncertainty visible — the difference
 between a number a reader can weigh and one they must simply trust. Part of
-[I-11](../planning/known-issues.md#i-11); added by
+I-11; added by
 [W0.6](../reference/traderx-path.md#w06--market-input-selection--closes-part-of-i-11),
 purely additively, so every pre-existing key and value is unchanged.
 

@@ -1,6 +1,6 @@
 """
 The TraderX path: TraderX's end-of-day bundle in, identified risk result out
-(docs/planning/details/traderx-integration.md).
+(docs/internal/planning/details/traderx-integration.md).
 
 The rule: nothing is silently approximated. An explicit `unsupported` is recoverable; a
 plausible wrong number is not.

@@ -96,12 +96,11 @@ result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=c
 path, by discounting its remaining flows on its currency's curve (ORE's
 `DiscountingRiskyBondEngine` without credit), with exposure, Greeks (discount curve only, no
 Vega) and scenario risk. (Until 2026-10-01 the Hull-White model refused a bond with
-scenario risk, [I-24](../planning/known-issues.md#i-24).)
+scenario risk, I-24.)
 
 ## `Precision`
 
-On `RunConfig.precision` (`engine.precision`, exported by `engine.run` too; design:
-[details/precision.md](../planning/details/precision.md)). A `StagePrecision(storage, compute,
+On `RunConfig.precision` (`engine.precision`, exported by `engine.run` too). A `StagePrecision(storage, compute,
 accumulate)` of format names per adjustable stage, each `"float64"` by default:
 
 | Field | Governs |
@@ -136,7 +135,7 @@ compute format the run used and whether the device ran it natively or the engine
 Below float32 a product's path-independent operand (a flow's value at the level, a market
 loading) is carried in two terms of the format (2026-10-11, decision A-23): rounded once, its
 error would move every path alike, a bias more paths do not remove
-([I-96](../planning/known-issues.md#i-96), fixed). `"<format>_1x"` (`"float16_1x"`,
+(I-96, fixed). `"<format>_1x"` (`"float16_1x"`,
 `"bfloat16_1x"`, `"float8_e4m3fn_1x"`, `"float8_e5m2_1x"`, `"tensorfloat32_1x"`) is the single
 pass, a compute format only, kept for measuring it. Nearest rounding can bias per-path
 operands; stochastic compute rounding removes that conditional bias (I-98), but nonlinear
@@ -150,7 +149,7 @@ three times its nearest, is stored as its deviations from its midpoint (in float
 the scale), so the format's bits go to the block's spread: a bond's values near 1e6 that vary by 1e4 across paths keep that variation to
 the format's precision, where without an offset FP8 kept about one bit of it and every path of
 a block rounded the same way, a bias more paths did not remove
-([I-75](../planning/known-issues.md#i-75), closed 2026-10-09). The deviations are symmetric,
+(I-75, closed 2026-10-09). The deviations are symmetric,
 so nearest rounding moves as many values up as down; no value changes sign; the error bound is
 never worse than without an offset; and every other block (shocks, P&L, an option's values
 reaching zero) is stored exactly as without one. Each value is rounded to the format's
@@ -159,9 +158,7 @@ rounding errors average out over the paths instead of biasing a mean; the draws 
 `rounding_seed` and the array's name (the trade id for a cube column), so runs reproduce. The
 scenario market's tenor grid and its curves' levels stay float64, as every path-independent level does.
 What each format costs in accuracy, per stage, figure and path count, is measured by the
-precision harness ([details/precision.md
-§15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09),
-[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)).
+precision harness (`tests/support/precision_harness.py`).
 
 A trade is priced at `Precision.precision_for(trade)`: its `by_trade` entry, else its
 product's `by_product` entry, else `pricing` (decision A-15). Each trade's cube column is
@@ -227,8 +224,7 @@ market=float64/float64/float64 pricing=float32/float64/float64: NPV validated up
 value per simulation date (the cube); today's NPV is float64 at every precision.
 ```
 
-A row is evidence for the market and portfolio its campaign measured, not proof for every run
-([precision.md §10.4](../planning/details/precision.md#104-as-built-2026-10-11)). Evidence keys
+A row is evidence for the market and portfolio its campaign measured, not proof for every run. Evidence keys
 include stochastic compute rounding and the replicate count; another policy or sampling
 design cannot inherit a passing row.
 
@@ -275,9 +271,9 @@ Float32, float64 and `bfloat16_3x` refuse stochastic compute rounding by name.
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's index in `request.trades`; see [Greeks](../risk/greeks.md) for the keys. |
 | `warnings` | `List[str]` | Run warnings: at a precision below float64, each figure without a passing row in the evidence table ([above](#precision)); none at float64. |
 | `base_npv_per_trade` | `List[float]` | Each trade's value today, in `request.trades` order. |
-| `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row ([I-10](../planning/known-issues.md#i-10)). |
+| `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row (I-10). |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
-| `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.market.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
+| `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.market.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss (I-11). |
 | `precision` | `PrecisionReport` | The precision as run, read from the run's arrays, and with a paired sample each figure's estimate ([above](#precision)). |
 | `exercised` | `Dict[str, jax.Array]` | Each option's (European, Bermudan, American) exercise decisions, by `trade_id`: `[Scenarios, Dates]` bool, whether the holder has exercised on the path on or before the date, as ORE's `OptionWrapper` decides it (a physical option is its swap from then on, a cash-settled one 0). A precision below float64 can flip a decision; the precision harness measures the share each format flips (decision A-24). Empty without scenario risk. Python only: the HTTP result does not carry it. |
 
@@ -319,14 +315,13 @@ path). A calibration that misses its
 basket by ORE's acceptance is refused, naming the trade or currency
 ([calibration](calibration.md#acceptance)). Until 2026-10-01 the Hull-White model took one shared
 basket for every uncalibrated trade (`calibration_targets`,
-[I-47](../planning/known-issues.md#i-47)).
+I-47).
 
 ### Known-limitation flagging
 
 (Section title kept for links.) The Hull-White model's cube warnings (aged swaps, options
 expiring in the horizon, a curve inconsistent with its short rate) went with that pipeline on
-2026-10-01: what they warned about is priced correctly now. A run's known limitations are in
-[known issues](../planning/known-issues.md). Since 2026-10-11 `warnings` carries the
+2026-10-01: what they warned about is priced correctly now. Since 2026-10-11 `warnings` carries the
 precision evidence's ([Precision](#precision)).
 
 ## Greeks

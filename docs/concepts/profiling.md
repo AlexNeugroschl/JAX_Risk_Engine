@@ -134,7 +134,7 @@ genuinely execution-dominated timeline needs the closure-identity recompile fixe
 §2.2's warm half is the full lane/category breakdown, which quantifies exactly that: 79%
 compilation against 1.6% arithmetic even after the cache is warm.
 All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
-[Known Issues I-21 and I-22](../planning/known-issues.md#i-21) — two different mechanisms needing
+issues I-21 and I-22 — two different mechanisms needing
 two different fixes, which is why they are filed separately.
 
 ### 1.5 `block_until_ready` before the context exits
@@ -326,7 +326,7 @@ any AD Greeks call (the old code's too) slows the pricing of every later job in 
 the new single programs more than the old pieces: measured, pricing-only jobs before and after
 one Greeks call, 1.60 → 1.89 s new and 1.49 → 1.71 s old; on Linux 1.32 → 1.32–1.38 s new. No
 compile, trace or garbage collection is involved, and one large allocation does not do it
-([I-53](../planning/known-issues.md#i-53)).
+(I-53).
 
 **What tracing costs on the GPU.** Measured on the warm repeat in process, the same job under
 each profiler setting (untraced 5.8 s):
@@ -412,7 +412,7 @@ grid rollback on the paths (at 4,096 paths the options' path cubes take 31–36 
 recalibration 0.07–0.09 s of it), whose memory also stops the job at 65,536
 paths on the CPU (a 277 GB allocation, the old code's too) and at 1,024 on the 8 GB GPU (6 GB),
 so the 64k and 256k job baseline could not be taken until the kernel rewrite (F-07) gave the rollback its
-matrix form ([I-83](../planning/known-issues.md#i-83), 2026-10-13: below). A cold job is 3 s (8%) slower on the CPU
+matrix form (I-83, 2026-10-13: below). A cold job is 3 s (8%) slower on the CPU
 and 1–3 s on the GPU: each bootstrap bucket's program now holds Newton's derivative of the
 helper's price and the nested y\* solve in several places (the bracket's ends, the step, the
 model value), 5.4 s of compile for the job's ten bucket programs against 3.3 s. Evaluating a
@@ -430,7 +430,7 @@ both: the job runs through the API and the engine worker on the GPU and its trac
 
 Unchanged by 2.5, on Windows' CPU only: pricing after an AD Greeks call is slower, 1.57–1.83 s
 before one Greeks call and 1.98–2.25 s after, with the old and the new code alike
-([I-53](../planning/known-issues.md#i-53)). The options' bump Greeks (each bump recalibrates)
+(I-53). The options' bump Greeks (each bump recalibrates)
 take 0.58–0.67 s warm on the CPU, as before (0.61–0.75 s): their cost there is the grid, not the
 calibration.
 
@@ -438,7 +438,7 @@ calibration.
 
 The Bermudan/American rollback became one `[nodes, nodes]` operator per step shared by every path,
 the cashflows one product of each path's coefficients with functions of the state, in
-difference form ([I-83](../planning/known-issues.md#i-83), F-07); each date of a cube is one
+difference form (I-83, F-07); each date of a cube is one
 program, its paths in blocks within a 1 GiB budget. **The demo's job** (its request in one
 process, AD Greeks included; run 1 compiles, run 2 repeats; the peak is the process's working
 set on the CPU, the device's on the GPU; the old code a worktree of `6e85d09`, the run before;
@@ -563,7 +563,7 @@ The reason is entirely §3.5's residual recompile. All 31 warm compilations sit 
 `PjitFunction(combined)` and `PjitFunction(price_fn)` in the Greeks phase — `price_fn` is a
 fresh closure per call and `jax.jit` keys on function identity, so the grad+Hessian-diagonal
 program recompiles on every Greeks call even for an identical trade. That is the whole warm
-cost. Fixing it (Known Issues [I-21](../planning/known-issues.md#i-21)/[I-22](../planning/known-issues.md#i-22),
+cost. Fixing it (issues I-21/I-22,
 done in §3.7) is what would turn this into an execution-dominated timeline; nothing else on the list would
 move the number meaningfully, because there is only 0.25 s of arithmetic to expose.
 
@@ -599,8 +599,8 @@ waiting for the host: dispatch, a launch, or a compile.
 > **History.** This investigation and its numbers predate 2026-10-01: they were measured on
 > the Hull-White pipeline, where each trade carried its model (`hw_sigma`) and the Greeks
 > were the bump-and-AD hybrid of that path. The lessons (§3.2–3.4, §3.6) carry over
-> unchanged; the current pipeline's costs are in [I-53](../planning/known-issues.md#i-53)
-> and [I-21](../planning/known-issues.md#i-21).
+> unchanged; the current pipeline's costs are in I-53
+> and I-21.
 
 ### 3.1 The measurements
 
@@ -829,7 +829,7 @@ Callers that build a fresh closure per call were deliberately *not* jitted as a 
 AD Greeks and market risk (`revalue_trade`) differentiated or vmapped closures over the
 jitted pricers, relying on JAX to cache the derivative and batched programs per pricer. That
 cache turned out to be bounded (§3.8), and since 2026-10-06 the AD Greeks are jitted whole
-on the price function as data; market risk still vmaps its closure ([I-53](../planning/known-issues.md#i-53)).
+on the price function as data; market risk still vmaps its closure (I-53).
 `jamshidian_npv` itself stays eager when pricing because its x* derivative rule closes over
 intermediates that `jax.grad` cannot carry through a jit boundary; its cube is jitted, and its
 Greeks trace it inside their own jit (§3.8).
@@ -845,8 +845,7 @@ Measured, cold process, no disk cache (repeat = the same call again in the proce
 
 Floating-point results move at rounding level: XLA fuses a whole program differently from
 op-by-op dispatch, and the old eager results also depended on which operands XLA folded as
-constants. This was accepted for this change on 2026-10-02 (planning `details/precision.md`
-§13.1 records the measured size); every ORE parity suite passes at its tolerance.
+constants. This was accepted for this change on 2026-10-02; every ORE parity suite passes at its tolerance.
 
 **Across processes**, the test suite also keeps JAX's persistent compilation cache in
 `.jax_cache/` (`tests/conftest.py`), so a rerun reads back most programs instead of
@@ -905,7 +904,7 @@ CPU) 46 AD Greek arrays moved, by at most 3.4e-14 of each array's largest magnit
 demo Bermudan's discount-curve Gamma), and all but three Greeks of the demo's options (each
 in both of its runs) by less than 1e-14; everything else, cubes, exposures, today's values,
 bump Greeks, market risk and the float32 runs, is bit for bit. On the GPU the cube and exposure are bit for bit with the old code, the AD Greeks
-within 6.6e-16 of their scale (planning `details/precision.md` §13.1).
+within 6.6e-16 of their scale.
 
 ### 3.9 The AD Greeks through a calibration, forward mode (2026-10-17)
 
@@ -939,7 +938,7 @@ the triangular solve unrolled row by row (over 9 GB), and `jax.lax.custom_linear
 tangent system, whose derivative takes one directional derivative of the Jacobian instead of all
 of it (108 s, 8.4 GB). Without y\*'s implicit derivative (which Gamma needs) the American compiles
 in 75 s: the bulk is the helpers' prices traced again in every derivative context. The cold cost
-is [I-115](../planning/known-issues.md#closed)'s, closed by §3.10.
+is I-115's, closed by §3.10.
 
 ### 3.10 The Greeks on an accelerator (2026-10-19)
 
@@ -979,7 +978,7 @@ holds more: a batch of shifts up to the grid engine's induction budget (§17) wh
 one, the parity sweeps' heaviest Greeks case (an American, seed 28) peaking at 3.0 GB against 1.5 GB
 on the CPU. Cold it is slower: each bucket of the bootstrap compiles again batched over the shifts beside its
 unbatched program (21 against 10 bucket programs, 9.5 s of the CPU's compile;
-[I-81](../planning/known-issues.md#i-81)). A first attempt that jitted the whole basket's
+I-81). A first attempt that jitted the whole basket's
 calibration as one program per option compiled 13.4 s for three options and was dropped.
 
 **A calibrated option's AD Greeks in two programs, its basket priced as one helper.** Split as
