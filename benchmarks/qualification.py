@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import sys
 
-from demos.benchmark_reporting import atomic_json, launch_worker, read_json
+from demos.benchmark_reporting import atomic_json, default_out, launch_worker, read_json
 
 TIERS = {"reproduce": ((1024, 4096, 16384), 16),
          "large": ((16384, 65536, 262144), 16),
@@ -185,7 +185,7 @@ def report(directory, requests):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, help="new or empty directory (default: a fresh one under output/qualification/)")
     parser.add_argument("--campaigns", nargs="+", default=["compute", "compute_market_risk"])
     parser.add_argument("--tier", choices=TIERS, default="reproduce")
     parser.add_argument("--paths", type=int, nargs="+")
@@ -203,7 +203,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.worker:
         return worker(json.loads(args.worker), args.out)
-    paths = args.paths or TIERS[args.tier][0]
+    if args.resume and args.out is None:
+        parser.error("--resume requires --out, the collection to resume")
+    args.out = args.out or default_out("qualification")
+    paths =args.paths or TIERS[args.tier][0]
     seeds = args.seed_ids or list(range(1, TIERS[args.tier][1] + 1))
     for values in (paths, seeds, args.campaigns, args.models, args.grids, args.fixture_seeds or [None]):
         if len(values) != len(set(values)):

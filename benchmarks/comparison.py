@@ -13,7 +13,7 @@ import statistics
 import sys
 import zipfile
 
-from demos.benchmark_reporting import atomic_json, launch_worker, named_errors, read_json
+from demos.benchmark_reporting import atomic_json, default_out, launch_worker, named_errors, read_json
 
 FORMATS = ("float64", "float32", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
 POLICIES = ("combined", "compute", "storage")
@@ -308,7 +308,7 @@ def markdown(data):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, help="collection directory (default: a fresh one under output/comparison/)")
     parser.add_argument("--transport", choices=("api", "direct"), default="api",
                         help="API end-to-end timing (default), or the original direct precision study")
     parser.add_argument("--repeats", type=int, default=3,
@@ -335,6 +335,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.worker:
         return worker(json.loads(args.worker), args.out)
+    args.out = args.out or default_out("comparison")
     import math
     if (len(set(args.seeds)) != len(args.seeds) or len(args.seeds) < 3 or min(args.seeds) < 0
             or len(set(args.paths)) != len(args.paths) or any(n < 128 or n & (n - 1) for n in args.paths)):

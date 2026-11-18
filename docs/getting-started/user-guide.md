@@ -264,7 +264,7 @@ python demos/demo_profile_small.py --phase pricing          # traces only one ph
 Exercises what `demo_structured.py` does — calibration, simulation, every trade type,
 exposure and Greeks, over the real HTTP API, in the real engine worker, under
 `jax.profiler.trace` — on a deliberately small portfolio, writing its trace under
-`.profile-out-small/` and printing the worker's summary of it: wall time, compiles, events,
+`output/profiles/small/` and printing the worker's summary of it: wall time, compiles, events,
 and time per phase and per trade's Greeks. It leaves Greeks **on**: they are a large part of
 where the engine spends its time. On CPU the job takes 33 s from scratch, 16 s with the
 worker's disk cache and 1.8 s repeated, a repeat compiling nothing
@@ -336,7 +336,7 @@ also guards I-28.
 
 ```bash
 .venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 2   # fast tier; choose concurrency by memory
-.venv/Scripts/python.exe -m benchmarks.test_suite --out .profile-out-full --batch-size 8  # complete suite
+.venv/Scripts/python.exe -m benchmarks.test_suite --out output/test_suite/full --batch-size 8  # complete suite
 .venv/Scripts/python.exe -m pytest tests/test_pricing.py -q      # one area while working on it
 ```
 
@@ -931,12 +931,12 @@ traced at its own cost alone. A name the job does not have traces nothing and wa
 
 The turnkey way is [`demos/demo_structured.py`](../../demos/demo_structured.py), which
 launches its own API server **with the profiler already on** (it sets `JAX_RISK_PROFILE_DIR`
-for that server, defaulting to `./.profile-out`):
+for that server, defaulting to `./output/profiles/structured`):
 
 ```bash
 python demos/demo_structured.py
-# -> "pricing-job profiler ON -> traces in '.profile-out' ..."
-# -> .profile-out/pid-<worker-pid>/plugins/profile/<timestamp>/*.xplane.pb
+# -> "pricing-job profiler ON -> traces in 'output/profiles/structured' ..."
+# -> output/profiles/structured/pid-<worker-pid>/plugins/profile/<timestamp>/*.xplane.pb
 ```
 
 To profile a single job directly, with no server or worker process, set the variable
@@ -944,7 +944,7 @@ yourself and call `price_job` on the request body (the JSON the HTTP route takes
 
 ```python
 import json, os
-os.environ["JAX_RISK_PROFILE_DIR"] = ".profile-out"   # set before the call
+os.environ["JAX_RISK_PROFILE_DIR"] = "output/profiles/structured"   # set before the call
 
 from engine.api.worker import price_job
 # `body` is the HTTP request as a dict (see demos/demo_api.py)
@@ -954,7 +954,7 @@ result_json = price_job(json.dumps(body).encode())
 **3. Open the timeline:**
 
 ```bash
-xprof --port 8791 .profile-out
+xprof --port 8791 output/profiles/structured
 ```
 
 Then open `http://localhost:8791`, pick the `pid-<pid>` entry under **Runs**, then pick a

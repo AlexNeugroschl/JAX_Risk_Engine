@@ -48,6 +48,21 @@ def test_bad_experiments_fail_before_writing(tmp_path, args):
     assert not list(tmp_path.iterdir())
 
 
+def test_default_out_is_a_fresh_directory_under_output(tmp_path, monkeypatch):
+    import demos.benchmark_reporting as reporting
+    monkeypatch.setattr(reporting, "OUTPUT_ROOT", tmp_path)
+    first, second = reporting.default_out("qualification"), reporting.default_out("qualification")
+    assert first.parent == second.parent == tmp_path / "qualification"
+    assert first != second  # even within one clock tick
+    assert not list(first.iterdir())  # the tools require an empty directory
+
+
+def test_resume_needs_a_named_collection():
+    with pytest.raises(SystemExit) as exc:
+        main(["--resume"])
+    assert exc.value.code == 2
+
+
 def test_junit_counts_include_failures_errors_and_skips(tmp_path):
     path = tmp_path / "junit.xml"
     path.write_text('<testsuites><testsuite tests="4" failures="1" errors="1" skipped="1"/></testsuites>')

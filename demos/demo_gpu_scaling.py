@@ -55,7 +55,7 @@ def main(argv=None):
     parser.add_argument("--atol", type=float, default=1e-6)
     parser.add_argument("--timeout", type=int, default=3600, help="seconds per isolated worker")
     parser.add_argument("--no-plots", action="store_true", help="omit PDF/PNG plots; matplotlib not needed")
-    parser.add_argument("--output", default=".profile-out-benchmark")
+    parser.add_argument("--output", default="output/gpu-scaling")
     parser.add_argument("--resume", type=Path, help="reuse a run's settings and skip completed workers")
     parser.add_argument("--report-only", type=Path, help="regenerate a run's report without engine work")
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)

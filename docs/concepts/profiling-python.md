@@ -32,7 +32,7 @@ From the repository root in a Linux/WSL terminal, with a Linux virtual environme
 ```bash
 .venv/bin/python -m pip install -c constraints.txt -e ".[gpu,profiling]"
 .venv/bin/python demos/demo_profile_python.py
-.venv/bin/xprof --port 8791 --logdir .profile-out-python
+.venv/bin/xprof --port 8791 --logdir output/profiles/python
 ```
 
 If your environment is elsewhere, replace `.venv/bin/python` with its interpreter path.
@@ -88,7 +88,7 @@ option grid. Edit the visible configuration in `main()` to match your intended p
 
 ```bash
 .venv/bin/python demos/demo_profile_python.py --preset representative --baseline
-.venv/bin/xprof --port 8791 --logdir .profile-out-python
+.venv/bin/xprof --port 8791 --logdir output/profiles/python
 ```
 
 The presets resolve to these settings; explicit command-line overrides take precedence:
@@ -255,7 +255,7 @@ For a native Windows smoke check, from PowerShell:
 
 ```powershell
 .venv/Scripts/python.exe demos/demo_profile_python.py --device cpu
-.venv/Scripts/xprof.exe --port 8791 --logdir .profile-out-python
+.venv/Scripts/xprof.exe --port 8791 --logdir output/profiles/python
 ```
 
 On Linux use the same `--device cpu` option with your Linux interpreter. CPU mode keeps

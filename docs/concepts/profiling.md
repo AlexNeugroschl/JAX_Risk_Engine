@@ -749,7 +749,7 @@ a good proxy for dispatch count. Compile counts and wall time are.
 
 > Measuring this yourself: the profiler writes a new `pid-<pid>/` per run and never cleans
 > up, so summing the whole directory reports every run ever done into it. Delete
-> `.profile-out-small` between runs — the demo now reports per-run size and warns when
+> `output/profiles/small` between runs — the demo now reports per-run size and warns when
 > older runs are present, after exactly this mistake hid a real reduction behind three
 > stale runs.
 
@@ -1098,16 +1098,16 @@ degraded diagnostic must never fail a pricing job whose result is already correc
 
 ```bash
 pip install -e ".[api,profiling]"     # brings in xprof; quote it in PowerShell
-rm -rf .profile-out-small             # the profiler never cleans up after itself
+rm -rf output/profiles/small          # the profiler never cleans up after itself
 python demos/demo_profile_small.py    # warm; --cold [--no-disk-cache] for a first run
 python demos/demo_profile_small.py --phase pricing   # one phase only (the GPU's way, §1.6)
-xprof --port 8791 .profile-out-small
+xprof --port 8791 output/profiles/small
 ```
 
 `xprof` is an optional extra, not a core dependency — collecting a trace needs only JAX,
 so a missing `xprof` means you can still capture but not view. If the command is not found
 after installing, `.venv/Scripts` is probably not on `PATH`; `python -m xprof --port 8791
-.profile-out-small` sidesteps that.
+output/profiles/small` sidesteps that.
 
 Open `http://localhost:8791`, pick the `pid-<pid>` run, then a tool:
 

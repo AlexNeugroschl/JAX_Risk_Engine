@@ -12,7 +12,7 @@ pricing implementation or API selection setting changes.
 From the pinned environment, with the API and development dependencies installed:
 
 ```powershell
-.venv/Scripts/python.exe -m benchmarks.comparison --out .profile-out-api-comparison `
+.venv/Scripts/python.exe -m benchmarks.comparison --out output/comparison/api `
   --backends cpu --formats float64 float32 --paths 128 512 --repeats 3
 ```
 
@@ -62,8 +62,8 @@ comparisons. Service logs and partial measurements survive failures.
 Merge API collections without rerunning them:
 
 ```powershell
-.venv/Scripts/python.exe -m benchmarks.comparison --out .profile-out-api-joined `
-  --merge .profile-out-api-comparison
+.venv/Scripts/python.exe -m benchmarks.comparison --out output/comparison/api-joined `
+  --merge output/comparison/api
 ```
 
 ## Direct precision comparison
@@ -83,7 +83,7 @@ flags remain in the evidence. No format silently selects a different emitter.
 Independent reference seeds can be collected alongside matched-path references:
 
 ```bash
-python -m benchmarks.comparison --transport direct --out .profile-out-h100-comparison --backends cpu gpu \
+python -m benchmarks.comparison --transport direct --out output/comparison/h100 --backends cpu gpu \
   --expected-gpu H100 --formats float64 float32 float16 float8_e4m3fn float8_e5m2 \
   --policies combined compute storage --paths 16384 65536 262144 \
   --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
@@ -108,7 +108,7 @@ when qualification calls for it. It cannot switch a running worker per job.
 python -m tests.support.precision_devices --platform gpu --expected-device H100 \
   --formats float16 float16_1x float8_e4m3fn float8_e4m3fn_1x \
   float8_e5m2 float8_e5m2_1x --require-native-fp8 \
-  --out .profile-out-h100-native --engine-workloads comparison_single comparison_portfolio
+  --out output/precision_devices/h100-native --engine-workloads comparison_single comparison_portfolio
 ```
 
 This retains numerical comparisons with CPU emulation, per-operation optimized HLO,
@@ -123,9 +123,9 @@ remain marked incomplete. Repeat after JAX, driver or accelerator-library change
 ## Broader accuracy campaigns
 
 ```bash
-python -m benchmarks.qualification --out .profile-out-accuracy-large --tier large \
+python -m benchmarks.qualification --out output/qualification/large --tier large \
   --campaigns compute compute_market_risk --cases float32 float16 float8
-python -m benchmarks.qualification --out .profile-out-accuracy-holdout --paths 1024 16384 \
+python -m benchmarks.qualification --out output/qualification/holdout --paths 1024 16384 \
   --campaigns compute --fixture-seeds 40 41 --models LGM HullWhite --grids recorded default \
   --seed-ids 1001 1002 1003 1004 --cases pricing:compute:float16 --multi-currency
 ```
@@ -151,7 +151,7 @@ requested count was silently truncated to the campaign's existing seed list.
 ## Complete suite evidence
 
 ```bash
-python -m benchmarks.test_suite --out .profile-out-full-suite --batch-size 8
+python -m benchmarks.test_suite --out output/test_suite/full --batch-size 8
 ```
 
 This collects every node under `tests/` once, runs bounded batches in fresh processes,
@@ -166,7 +166,7 @@ weekly and on manual dispatch, retaining the artifacts.
 Run from the checkout with the pinned environment in `constraints.txt`:
 
 ```powershell
-.venv/Scripts/python.exe -m benchmarks.comparison --transport direct --out .profile-out-comparison
+.venv/Scripts/python.exe -m benchmarks.comparison --transport direct --out output/comparison/local
 ```
 
 The defaults are a smoke study: 128 and 512 scenarios, seeds 1, 2 and 3, the single swap
@@ -187,7 +187,7 @@ The RTX 5060 / JAX 0.10.2 compiler faults are explicit **local test configuratio
 ```bash
 XLA_FLAGS=--xla_gpu_enable_triton_gemm=false \
 JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x \
-python -m tests.support.precision_devices --platform gpu --out .profile-out-local-device
+python -m tests.support.precision_devices --platform gpu --out output/precision_devices/local-device
 ```
 
 This keeps FP8 native through cuBLAS and emulates BF16_3x for its local vector-fusion fault.
@@ -257,7 +257,7 @@ relative equal-accuracy estimation unavailable; its absolute matched errors rema
 For meaningful timing, use more seeds and counts from 65,536 upward as memory permits:
 
 ```bash
-python -m benchmarks.comparison --transport direct --out .profile-out-research --backends cpu gpu \
+python -m benchmarks.comparison --transport direct --out output/comparison/research --backends cpu gpu \
   --paths 65536 131072 262144 --seeds 1 2 3 4 5 6 7 8
 ```
 
@@ -292,7 +292,7 @@ For a separate warm engine capture on H100 after numerical/device qualification:
 
 ```bash
 python compliance/precision-research/2026-10-20/reproduction/warm_native_trace.py \
-  --out .profile-out-h100-warm --expected-device H100 --paths 512
+  --out output/warm_native_trace/h100 --expected-device H100 --paths 512
 ```
 
 The script warms the exact workload objects before each trace and fails if compilation

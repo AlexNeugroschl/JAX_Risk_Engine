@@ -36,7 +36,7 @@ the charts and does not need Matplotlib. `profiling` installs the XProf viewer; 
 tracing uses JAX itself. Native Windows can run `--devices cpu` to check execution and
 reporting, but CPU/GPU comparisons must run through a Linux/WSL interpreter.
 
-Every invocation prints a unique directory under `.profile-out-benchmark/`. It keeps
+Every invocation prints a unique directory under `output/gpu-scaling/`. It keeps
 progress after each point and logs each worker. The default repeats each warmed point
 **five times**, following two unmeasured warmups. Both presets cover the same cases;
 `quick` deliberately uses coarse option grids and small counts. It is a functional check,
@@ -230,7 +230,7 @@ duration, profiler slowdown against that point's median, compilation count, Pyth
 event counts, file size, and `benchmark`/`capture_end` markers.
 
 ```bash
-xprof --port 8791 --logdir .profile-out-benchmark/<printed-run-directory>
+xprof --port 8791 --logdir output/gpu-scaling/<printed-run-directory>
 ```
 
 Select the product/point run, then `trace_viewer`. Search for `benchmark`, select that
@@ -272,10 +272,10 @@ python demos/demo_gpu_scaling.py --instruments swap european_bachelier \
   --stages greeks --greeks-methods AD Bump
 
 # Resume an interrupted study using its saved settings; completed workers are retained.
-python demos/demo_gpu_scaling.py --resume .profile-out-benchmark/<run>
+python demos/demo_gpu_scaling.py --resume output/gpu-scaling/<run>
 
 # Recompute comparisons and charts without running the engine.
-python demos/demo_gpu_scaling.py --report-only .profile-out-benchmark/<run>
+python demos/demo_gpu_scaling.py --report-only output/gpu-scaling/<run>
 ```
 
 Resume retries an incomplete worker from its beginning, not from its last point; this

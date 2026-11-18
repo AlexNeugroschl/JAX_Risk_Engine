@@ -38,8 +38,11 @@ __pycache__/
 # JAX's persistent XLA compilation cache (tests/conftest.py).
 .jax_cache/
 
-# Profiler traces (JAX_RISK_PROFILE_DIR) -- .profile-out/.profile-out-small are
-# the demos' own defaults; the glob covers ad-hoc dirs from a manual capture.
+# Default destination of every demo trace and benchmark run (output/profiles/, output/<tool>/).
+# Generated, never source; safe to delete whole.
+/output/
+
+# Profiler traces from before output/ existed, and any old command still run by hand.
 .profile-out*/
 
 # reference/ORE and reference/traderX are git submodules (see .gitmodules).

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-from demos.benchmark_reporting import atomic_json, launch_worker
+from demos.benchmark_reporting import atomic_json, default_out, launch_worker
 
 
 def junit_counts(path):
@@ -25,13 +25,14 @@ def junit_counts(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, help="new or empty directory (default: a fresh one under output/test_suite/)")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--timeout", type=float, default=1200.)
     parser.add_argument("--markers", help="optional pytest marker expression; omit for the full suite")
     args = parser.parse_args(argv)
     if args.batch_size < 1 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("batch size and finite timeout must be positive")
+    args.out = args.out or default_out("test_suite")
     args.out.mkdir(parents=True, exist_ok=True)
     if any(args.out.iterdir()):
         parser.error("output directory must be empty")

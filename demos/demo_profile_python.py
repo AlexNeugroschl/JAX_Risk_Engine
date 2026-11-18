@@ -2,7 +2,7 @@
 
 From the repository root, in a Linux/WSL GPU environment:
     python demos/demo_profile_python.py
-    xprof --port 8791 --logdir .profile-out-python
+    xprof --port 8791 --logdir output/profiles/python
 
 Larger synthetic workload, with an untraced warm repeat for comparison:
     python demos/demo_profile_python.py --preset representative --baseline
@@ -101,7 +101,7 @@ def main(argv=None):
     parser.add_argument("--baseline", action="store_true", help="time an additional untraced warm repeat")
     parser.add_argument("--model", choices=("HullWhite", "LGM"), default="HullWhite")
     parser.add_argument("--greeks", choices=("AD", "Bump"), default="AD", help="Bump can be much slower")
-    parser.add_argument("--output", default=".profile-out-python", help="trace root; runs get unique subdirectories")
+    parser.add_argument("--output", default="output/profiles/python", help="trace root; runs get unique subdirectories")
     args = parser.parse_args(argv)
     # Explicit overrides win over the preset. Keep the resolved settings in summary.json.
     large = args.preset == "representative"

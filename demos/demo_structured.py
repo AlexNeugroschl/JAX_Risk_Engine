@@ -95,7 +95,7 @@ _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 #       here). Off still keeps compilation, dispatch, tracing and execution; it drops only
 #       CPython frames. Measured on this portfolio: on, CPython frames were 97% of events
 #       and the trace's .trace.json.gz covered the first 1.6s of a ~90s job (469MB vs 50MB).
-PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", ".profile-out")
+PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", "output/profiles/structured")
 
 
 def wait_until_healthy(timeout_s: float = 60.0) -> None:

@@ -11,7 +11,29 @@ import signal
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Everything a tool writes when not told where: gitignored, safe to delete whole.
+OUTPUT_ROOT = Path(__file__).resolve().parents[1] / "output"
+
+
+def default_out(tool):
+    """A new, empty `output/<tool>/<UTC time>-pid-<pid>/` for a run given no --out, announced on stdout.
+
+    Created here, so two calls within one clock tick (Windows) still get distinct directories.
+    """
+    stem = OUTPUT_ROOT / tool / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S_%fZ}-pid-{os.getpid()}"
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(1000):
+        path = stem.with_name(f"{stem.name}-{attempt}") if attempt else stem
+        try:
+            path.mkdir()
+        except FileExistsError:
+            continue
+        print(f"Output directory: {path}", flush=True)
+        return path
+    raise FileExistsError(f"no free output directory under {stem.parent}")
 
 
 def atomic_json(path, value):

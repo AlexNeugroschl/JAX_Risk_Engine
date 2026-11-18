@@ -3,7 +3,7 @@ A small portfolio sized for a profiler trace that is practical to open, on the s
 `demo_structured.py`: calibration -> simulation -> all four instrument pricers -> exposure
 -> Greeks, over the HTTP API, in the engine worker, under `jax.profiler.trace`.
 
-Output: one `pid-<pid>/` directory under `.profile-out-small`, with the timeline labelled by
+Output: one `pid-<pid>/` directory under `output/profiles/small`, with the timeline labelled by
 phase (calibration / simulation / pricing / exposure / greeks, and one region per trade inside
 greeks, `greeks/trade<i>/<type>`), and beside each trace the worker's summary of it
 (`<run>.summary.json`: wall time, compiles, events, time per phase), which this script prints;
@@ -33,14 +33,14 @@ whole repeat traced takes 1.6 s against 1.4 s untraced on an RTX 5060 (32 s agai
 before), and a phase traced alone is a choice rather than a necessity.
 
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache] [--phase NAME]
-View with: xprof --port 8791 .profile-out-small
+View with: xprof --port 8791 output/profiles/small
 
 On a GPU (Linux or WSL2 with the `gpu` extra, docs/getting-started/user-guide.md)
 the same command runs the job on the GPU; the result's `ran on:` line names the device the
 engine worker used. Measured on an RTX 5060 in `docs/concepts/profiling.md` §2.0, with the
 device lane read phase by phase.
 
-Delete `.profile-out-small` between runs when comparing: each run adds a `pid-<pid>/`.
+Delete `output/profiles/small` between runs when comparing: each run adds a `pid-<pid>/`.
 """
 import argparse
 import glob
@@ -105,10 +105,10 @@ RISK_PERCENTILES = [0.95, 0.99]
 API_BASE = "http://127.0.0.1:8000"
 _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
-# A separate directory from demo_structured.py's `.profile-out`. Passed to uvicorn and its
+# A separate directory from demo_structured.py's `output/profiles/structured`. Passed to uvicorn and its
 # engine worker via os.environ.copy() in start_server; it arms the profiler hook in
 # engine/api/worker.py::_profiled.
-PROFILE_DIR = ".profile-out-small"
+PROFILE_DIR = "output/profiles/small"
 
 # Cache modes (command-line switches, see `parse_args`):
 #
