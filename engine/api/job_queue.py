@@ -176,8 +176,8 @@ def migration_statements(version: int) -> Tuple[str, ...]:
 
 def default_queue_path() -> Path:
     """`JAX_RISK_JOB_QUEUE` if set, else `jax-risk-jobs/jobs.sqlite3` under the system temp
-    directory (the TraderX path's store convention, `engine.traderx.publication.default_store_root`:
-    not the working directory, so the queue does not depend on where a process started)."""
+    directory (not the working directory, so the queue does not depend on where a process
+    started)."""
     configured = os.environ.get("JAX_RISK_JOB_QUEUE")
     if configured:
         return Path(configured)

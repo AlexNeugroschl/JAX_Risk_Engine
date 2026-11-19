@@ -26,11 +26,6 @@ class ZeroCurveConfig:
     """A zero curve as market data: pillar times in years (ACT/365 from the as-of date) and
     continuously compounded zero rates, interpolated as `engine.market_data.curves.ZeroCurve`.
 
-    `provenance` is optional metadata (observed, assumed or synthetic); pricing never reads
-    it. `None` means unstated, which `engine.traderx` treats as not observed when it
-    reports a result's market provenance (I-11). See
-    `engine.traderx.market_inputs.CurveProvenance`.
-
     Checked on construction, before any pricing (I-103): at least one pillar, as many rates as
     times, every value finite, times non-negative and strictly increasing. Rates may be zero or
     negative. The interpolation assumes all of it: an unsorted curve priced silently wrong, and
@@ -38,9 +33,6 @@ class ZeroCurveConfig:
     """
     times: List[float]
     rates: List[float]
-    # Optional[object] rather than CurveProvenance, so this module does not import
-    # engine.traderx (the dependency runs the other way).
-    provenance: Optional[object] = None
 
     def __post_init__(self):
         _check_pillars(self.times, self.rates)

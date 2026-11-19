@@ -26,8 +26,7 @@ jobs:
     # that on the hosted runner: 30 min left no margin as the suite grew.
     timeout-minutes: 45
     steps:
-      # No submodules: reference/ORE and reference/traderX are read by humans,
-      # and the one test that reads reference/traderX skips when it is absent.
+      # No submodules: reference/ORE and reference/traderX are read by humans.
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

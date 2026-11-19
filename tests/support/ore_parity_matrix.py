@@ -427,8 +427,7 @@ REASONS: Dict[Tuple[str, str, str, str], Reason] = {
         CANNOT, "the oracle's bond pays each coupon at its period's end (ORE's leg data pays at a lag in days, not "
                 "on a date per period), and a delayed last payment is valued wrong today (I-104)"),
     ("*", "*", "BondConfig.redemption_fraction", "≠ 1.0"): Reason(
-        CANNOT, "the oracle books a coupon bond redeemed at par; a bill redeemed below par is a TraderX "
-                "instrument priced by its own pricer (I-93)"),
+        CANNOT, "the oracle books a coupon bond redeemed at par, not a redemption below par"),
     ("*", "european_swaption", "PricingConfig.european", "Jamshidian"): _JAMSHIDIAN,
     ("*", "european_swaption", "JamshidianEngineConfig.reversion", "*"): _JAMSHIDIAN,
     ("*", "european_swaption", "JamshidianEngineConfig.volatility", "*"): _JAMSHIDIAN,
@@ -563,16 +562,11 @@ def unclassified_fields() -> List[str]:
 #: Each HTTP route of `engine.api.app.app` (its OpenAPI paths): the analytics it runs, space-separated
 #: ("" for a route that computes no figure: status, runs, artifacts, schemas). `POST /runs` runs every analytic,
 #: as its request's `analytics` list names them (I-87); its settings are the entry points' (`ROOTS`), onto
-#: which tests/test_api_completeness.py proves the run request maps every field. TraderX's `/eod/price`
-#: prices Treasury bills and notes by its own pricers (I-93), the `npv` analytic's bond column once it moves
-#: onto the engine.
+#: which tests/test_api_completeness.py proves the run request maps every field.
 ROUTES = {
     "/health": "", "/version": "", "/config/defaults": "", "/runs/{run_id}": "", "/runs/{run_id}/cancel": "",
     "/runs/{run_id}/artifacts/{name}/{chunk}": "",
     "/runs": "npv exposure sensitivities market_risk calibration",
-    "/eod/capabilities": "", "/eod/schemas/result": "", "/eod/schemas/capabilities": "",
-    "/eod/price": "npv",
-    "/eod/results/by-workload/{workload_key_value}": "", "/eod/attempts/{attempt_id}": "",
 }
 
 

@@ -273,9 +273,8 @@ The main entry point — combines the three functions above.
 | `ES_99_tailCount` | **Effective sample size** — how many observations the ES mean actually averaged. At 99% over 10,000 scenarios this is ~100, so the estimate rests on 1% of the sample. |
 | `ES_99_standardError` | Monte Carlo standard error of the ES mean (`s/√n`, `ddof=1`). **NaN, never `0.0`, when `n < 2`** — `0.0` would read as "perfectly converged" for the least trustworthy case. |
 
-The two diagnostic keys are additive (W0.6, part of I-11); the
-`VaR_*`/`ES_*` keys and values are unchanged. See
-[The TraderX Path: tail diagnostics](traderx-path.md#tail-statistics-carry-their-own-convergence-diagnostics).
+The two diagnostic keys are additive (part of I-11); the
+`VaR_*`/`ES_*` keys and values are unchanged.
 
 ### Risk measure constants
 
@@ -532,37 +531,3 @@ has no dependency on this package.
 | `engine.api.requests` | The run request and the wire forms it shares (curves, coupon periods, the precision policy): `RunRequestSchema` (`.check()`, `.body_sha256()`) and its parts (market, trades, `RunRequestConfigSchema` with `ModelsSchema` (`LgmConfigSchema`/`HullWhiteConfigSchema`, piecewise volatilities), `SimulationSchema`, `PricingConfigSchema`, `SensitivitySchema`, `ExposureSchema`, `MarketRiskSchema` (Monte Carlo or historical scenarios), `PrecisionSchema`; `OutputsSchema`). |
 | `engine.api.results` | The run's result: `RunResultSchema` (one `TradeRowSchema` per trade; `ExposureSectionSchema`, `SensitivitiesSectionSchema`, `MarketRiskSectionSchema`, `CalibrationSectionSchema`; every array an `InlineArraySchema` or `ArrayArtifactSchema`), `run_result_document`, the precision report, `RunStatusSchema`, `HealthSchema`, `VersionSchema`. |
 | `engine.api.artifacts` | `array_artifact`, `items_record`, `read_array`: an array as chunked, hashed bytes with its trade order (decision A-17). |
-| `engine.api.traderx_routes` | `router` (prefix `/eod`) — the TraderX path's contract, plain dicts under a published JSON Schema. See [The TraderX Path](traderx-path.md#w164--the-eod-http-routes). |
-
----
-
-## `engine.traderx`
-
-The TraderX path: a hash-verified bundle in, an **identified** risk result out. Its
-governing rule is that **nothing is ever silently approximated** — an explicit `unsupported`
-is recoverable, a plausible wrong number is not.
-
-Documented in full in [The TraderX Path](traderx-path.md); this table is the
-module index. **This package imports no FastAPI, no Pydantic, no JAX, and no simulation
-pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
-`engine.api` → `engine.traderx`, never the reverse, and it is enforced by
-`tests/test_traderx_pipeline.py::TestPackageImportsNoSimulationPricer`.
-
-| Module | Task | Contents |
-|---|---|---|
-| `bundle` | W0.1 | `load_bundle(root) -> Bundle`, `Bundle`, `BundleIntegrityError`. Reads and hash-verifies every artifact **in binary, exactly as read** — see the CRLF trap. |
-| `terms` | W0.2 / W1.6.1 | `join_terms`, `TermsEntry`, `AccrualBasis`, `TermsJoinError`, `SUPPORTED_TERMS_SCHEMAS`. |
-| `normalize` | W0.3 | `normalize_position`, `NormalizedPosition`, `Quantity`, `MAPPING_VERSION`. |
-| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed (I-05). |
-| `result` | W0.5 | `RiskResult`, `ItemResult`, `Coverage`, `CALCULATIONS`, `STATUSES`. |
-| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback (I-11). |
-| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals (I-10). |
-| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store (I-08). |
-| `capabilities` | W0.9 | `capabilities()` — the supported (product × convention × calculation) matrix. |
-| `bill` | W1.2 | `price_bill`, `BillPrice`, `is_bill`, `BillPricingError`. |
-| `note` | W1.3 | `price_note`, `NotePrice`, `rate_sensitivity`, `AccruedReconciliation`, `accrual_mismatch_tolerance`, `is_note`. |
-| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source (I-18). |
-| `schema_version` | W1.6.2 | `RESULT_SCHEMA_VERSION`, `CAPABILITY_SCHEMA_VERSION` — a dependency-free leaf that breaks the `result` ↔ `schema` cycle. |
-| `schema` | W1.6.2 | `result_schema()`, `capability_schema()` — JSON Schema **derived** from the frozen vocabulary, never hand-written. |
-| `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. `AttemptStore.submit(key, submission_id, reuse_existing=...) -> Submission(attempt, reused)` binds a submission id before any cached result is returned (I-57); only a call that gets `reused=False` executes the attempt. |
-| `pipeline` | — | `price_bundle(bundle_or_path, market_inputs=None) -> RiskResult` — the composition of all of the above. Accepts a loaded `Bundle` or a path to load one from. |

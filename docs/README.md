@@ -20,8 +20,6 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Use the HTTP API, with examples of every analytic | [API Guide](getting-started/api-guide.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
 | Interpret standard errors and confidence-interval availability | [Sampling uncertainty](reference/sampling-uncertainty.md) |
-| Consume a TraderX end-of-day bundle (and know what gets refused) | [The TraderX Path](reference/traderx-path.md) |
-| Actually submit an EOD bundle over HTTP, end to end | [User Guide: Pricing a TraderX EOD bundle](getting-started/user-guide.md#pricing-a-traderx-eod-bundle) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Trace Python calls and GPU kernels across both engine pipelines | [Python/GPU profiling demo](concepts/profiling-python.md) |
 | Compare CPU/GPU scaling and numerical outputs for each instrument | [GPU scaling study](concepts/gpu-scaling.md) |
@@ -63,8 +61,7 @@ Every trade is valued today and on every simulated path by the engine ORE uses f
 
 **Treasury bills and notes** (`engine/instruments/treasury.py`) are discounted cashflows on
 their currency's curve, today and on every path, as ORE's `DiscountingRiskyBondEngine`
-without credit. Their TraderX-bundle counterparts live at the integration boundary
-([The TraderX Path](reference/traderx-path.md)).
+without credit.
 
 ## Risk
 
@@ -89,16 +86,7 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
   (`RunConfig`), the single call that ties every module together.
 - **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
   `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
-  response schemas. The same app also serves the TraderX path's contract under `/eod` — a second,
-  deliberately different contract governed by a published JSON Schema rather than Pydantic.
-- **[The TraderX Path](reference/traderx-path.md)** — `engine/traderx/`'s
-  hash-verified TraderX bundle ingestion, terms join, unit normalization, convention
-  allowlist and per-calculation coverage model, plus both Treasury pricers, (W1.6) the
-  versioned contract interface served over HTTP under `/eod`, and (W0.8) the crash-safe
-  durable result store behind it. Read it for the zero-coupon accrued rule, the CRLF hash
-  trap, why a USD-SOFR booking is refused rather than routed through the generic swap
-  builder, why an equity is refused rather than valued at its own exported mark, and why
-  a published manifest — not a pointer file — is the commit point for a result.
+  response schemas.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
   (`engine/market_data/`, `engine/models/`, `engine/instruments/schedules.py`): the LGM's
   analytics in both parametrizations (Hagan's, and the Hull-White model's), curves, the time

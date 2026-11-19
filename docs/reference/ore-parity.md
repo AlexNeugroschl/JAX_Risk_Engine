@@ -1267,7 +1267,7 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 **Reasons.**
 
 - **R1** (not compared yet) a second currency: the oracles are one-currency until F-04 extends them.
-- **R2** (ORE cannot express it) the oracle books a coupon bond redeemed at par; a bill redeemed below par is a TraderX instrument priced by its own pricer (I-93).
+- **R2** (ORE cannot express it) the oracle books a coupon bond redeemed at par, not a redemption below par.
 - **R3** (ORE cannot express it) the oracle's bond pays each coupon at its period's end (ORE's leg data pays at a lag in days, not on a date per period), and a delayed last payment is valued wrong today (I-104).
 - **R4** (ORE cannot express it) ORE has no builder for QuantLib's Jamshidian engine, so no ORE analytic prices with it; its value and every market-risk scenario are QuantLib's engine's, in tests/test_jamshidian.py and tests/test_market_risk_ore_parity.py.
 - **R5** (not ORE's) the engine's own scrambles of its paths (X-1); on ORE's paths (L3) a cell is compared whatever drew them.

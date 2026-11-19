@@ -13,7 +13,7 @@ fields silently.
   * A live European's exercise leaves a whole period of each leg to enter; an expired one is
     worth nothing, as ORE builds no option for it. A Bermudan's exercise into no whole period is
     ORE's (its builder warns and prices the empty underlying, worth nothing), so it is accepted.
-  * Every model of the API refuses an unknown field, TraderX's submission included.
+  * Every model of the API refuses an unknown field.
   (The standalone calibration's notional, I-103's fourth input, went with the standalone
   calibration, I-94.)
 """
@@ -107,12 +107,11 @@ class TestAnExpiryWithNoWholePeriod:
 
 class TestEveryModelIsStrict:
     def test_every_request_model_refuses_an_unknown_field(self):
-        """Red before 2026-10-18: `ZeroCurveConfigSchema`, `CouponPeriodSchema` and TraderX's
-        `EodSubmissionSchema` (and the retired standalone calibration's) dropped one."""
-        from engine.api.traderx_routes import EodSubmissionSchema
-
+        """Red before 2026-10-18: `ZeroCurveConfigSchema` and `CouponPeriodSchema` (and the retired
+        standalone calibration's and `/eod` path's submissions) dropped one."""
         models = [cls for cls in vars(wire).values() if isinstance(cls, type) and issubclass(cls, BaseModel)
-                  and cls.__module__ == wire.__name__] + [EodSubmissionSchema]
+                  and cls.__module__ == wire.__name__]
+        assert models
         lax = sorted(cls.__name__ for cls in models if cls.model_config.get("extra") != "forbid")
         assert lax == []
 
@@ -123,8 +122,4 @@ class TestEveryModelIsStrict:
     def test_an_unknown_field_is_named(self, schema, fields):
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             schema.model_validate(fields)
-
-    def test_a_traderx_submission_with_an_unknown_field_is_a_422(self, test_client):
-        r = test_client.post("/eod/price", json={"bundlePath": "nowhere", "reuseExisting": False})
-        assert r.status_code == 422 and "reuseExisting" in r.text
 

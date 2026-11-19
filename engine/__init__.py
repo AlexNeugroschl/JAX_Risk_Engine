@@ -6,7 +6,7 @@ default, float32 where the run configuration asks for it), which needs 64-bit ty
 Until 2026-10-01 this was a side effect of importing the Hull-White simulation module, which
 `engine.market_data.market` imported; it is set here, for the whole package, now that the module is gone.
 
-This module does not import JAX itself, so `engine.traderx` stays free of it (I-05): it
+This module does not import JAX itself, so importing `engine` stays cheap: it
 sets `JAX_ENABLE_X64`, which JAX reads when it is first imported, or updates the flag when JAX
 is already loaded. The engine worker gets it the same way, by importing `engine` (I-71).
 

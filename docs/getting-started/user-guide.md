@@ -14,19 +14,16 @@ This page is about *running* the code. For how it works internally, see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`.
 - Four optional extras: `api` (`fastapi`, `pydantic>=2`, `uvicorn[standard]` — needed only
-  to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `pytest-xdist`, `httpx`,
-  `jsonschema` — needed to run the test suite; `pytest-xdist` runs it in parallel
-  processes, `httpx` is required by FastAPI's own `TestClient`, and
-  `jsonschema` is deliberately test-only, since the engine must emit correct EOD documents
-  without depending on a validator to produce them — see
-  [the TraderX path doc](../reference/traderx-path.md)), and `profiling`
+  to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `pytest-xdist`, `httpx`
+  — needed to run the test suite; `pytest-xdist` runs it in parallel
+  processes, and `httpx` is required by FastAPI's own `TestClient`), and `profiling`
   (`xprof` — needed only to collect/view a profiler trace of a pricing job, see
   [Profiling a pricing job](#profiling-a-pricing-job)), and `gpu` (JAX's CUDA 13 plugin, Linux
   or WSL2 only — see [On a GPU](#on-a-gpu-linux-or-wsl2-on-windows)).
 
 > **⚠ Run everything through the venv's own interpreter**, e.g.
 > `.venv/Scripts/python.exe` on Windows (`.venv/bin/python` on Linux/macOS). A bare `python`
-> may resolve to a system interpreter where `pydantic` and `jsonschema` are absent, which
+> may resolve to a system interpreter where `pydantic` is absent, which
 > makes whole test files **silently uncollectable** rather than failing — see
 > I-25. The commands below write `python` for brevity; substitute
 > the venv interpreter.
@@ -190,8 +187,7 @@ The examples on this page assume you're running from the repository root. `engin
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
 `from engine.run import ...` works without any extra path setup and
 without `cd`-ing anywhere in particular. What the repository root buys you is that the
-**relative paths in these examples resolve**: `tests/fixtures/traderx-eod/...`,
-`demos/demo.py`, `tests/`.
+**relative paths in these examples resolve**: `demos/demo.py`, `tests/`.
 
 If you're using the project's own `.venv/` on Windows, replace `python` in the commands
 below with `.venv\Scripts\python.exe` (or activate the venv first with
@@ -399,7 +395,7 @@ ORE parity sweeps (2026-10-18) the fast tier takes about 4 minutes at `-n 6` and
 
 **While changing one area**, run its test files directly (they are named by area:
 `test_pricing.py`, `test_ore_lgm_*.py`, `test_greeks*.py`, `test_market_risk*.py`,
-`test_traderx_*.py`, ...), add `-x` to stop at the first failure, and run the fast tier
+...), add `-x` to stop at the first failure, and run the fast tier
 before committing. `--lf` reruns only what failed last time.
 
 **Two tiers.** Tests marked `@pytest.mark.slow` are excluded by the **fast tier**,
@@ -422,28 +418,7 @@ weekly on Monday and by manual dispatch from the Actions tab ("Run workflow"). L
 JUnit and manifests are retained even on failure. The bounded configuration still needs
 repeatability/peak-memory qualification on that 16 GB hosted runner (I-27). Run it before
 merging anything that touches pricing, calibration or Greeks, and after upgrading a pin.
-CI does not check out the `reference/` submodules; the one test that reads
-`reference/traderX` skips without it.
-
-For a fast inner loop while working on
-the TraderX path, the integration tests are a self-contained subset — 751 tests in
-a few seconds:
-
-```bash
-python -m pytest tests/test_traderx_*.py -q
-```
-
-They are fast because [`engine.traderx`](../reference/traderx-path.md#module-map)
-imports **no simulation pricer, no ORE builder and no curve construction** — it does import
-`ORE` itself, which W1.2 permitted for date and day-count arithmetic, but nothing that
-builds a pricing object. (Running them via `tests/` rather than by path still pays for
-`tests/conftest.py`, which imports JAX at collection time to enable x64 for the rest of the
-suite.)
-
-`tests/conftest.py` provides shared `pytest` fixtures (the demo scenarios' evaluation date,
-a `portfolio_request` fixture — a USD swap on the demo market, simulated by the Hull-White
-model — and a `test_client` fixture for `engine.api` tests); `tests/support/` holds the shared
-test portfolio and its ORE references, and other helpers shared across test modules.
+CI does not check out the `reference/` submodules; no test needs them.
 
 ## Running the API
 
@@ -493,131 +468,6 @@ and the cross-asset model's calibration (`calibration`): name them in `analytics
 `GET /config/defaults` returns every section with ORE's defaults to copy, and `POST
 /runs/<run_id>/cancel` cancels a run. See [HTTP API](../reference/http-api.md) for the full
 endpoint reference, request/response schemas, and the async pattern's reasoning.
-
-The same app also mounts a second router at `/eod`, the TraderX overnight batch contract —
-see [Pricing a TraderX EOD bundle](#pricing-a-traderx-eod-bundle) below.
-
-## Pricing a TraderX EOD bundle
-
-The same server also exposes a **second, separate contract** under `/eod` — the overnight
-batch boundary for TraderX. It is worth knowing which one you are talking to, because they
-behave differently on purpose:
-
-| | `/runs` | `/eod/price` |
-|---|---|---|
-| Shape | **Asynchronous** — `202` + `run_id`, then poll | **Synchronous** — one call returns the result |
-| Body | the run request (`RunRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | A durable SQLite job queue; a run survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart (I-08: a running attempt does not) |
-| Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
-
-That last row is the design: returning an HTTP error for a refusal would make "we correctly
-declined to guess" indistinguishable from "we broke." See
-[the TraderX path doc](../reference/traderx-path.md) for the reasoning behind all four.
-
-**Ask what the engine can price, before submitting anything:**
-
-```bash
-curl http://127.0.0.1:8000/eod/capabilities
-```
-
-Returns the capability document — supported products, conventions, calculations, market-input
-modes and known limitations — derived from the allowlist on every call, so it cannot go stale
-relative to the engine serving it. This is what makes "no silent exclusions" checkable in
-advance rather than discovered afterwards.
-
-**Price a bundle:**
-
-```bash
-curl -X POST http://127.0.0.1:8000/eod/price \
-  -H "Content-Type: application/json" \
-  -d '{
-    "bundlePath": "tests/fixtures/traderx-eod/bill/v2",
-    "marketInputs": {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"},
-    "submissionId": "batch-2025-06-02-001"
-  }'
-```
-
-Only `bundlePath` is required, and it must point at a **versioned** bundle directory
-(`.../bill/v2`, not `.../bill`). The vendored fixtures under
-[`tests/fixtures/traderx-eod/`](../../tests/fixtures/traderx-eod/) — `bill`, `note`, `sofr`,
-`equity`, each with a `v1` and `v2` — are real delivered TraderX bundles and are the easiest
-thing to try this against.
-
-- **`marketInputs` is optional, and omitting it prices nothing** rather than falling back to
-  an assumed curve. There is deliberately no default profile at this layer: the fallback this
-  contract refuses to have would have to be introduced right here, so its absence is stated
-  rather than implied.
-- **`submissionId` is a caller-generated idempotency key.** Retrying a lost response with the
-  same value recovers the *same* attempt instead of launching a second overnight batch — and
-  since W0.8 that holds across an engine restart too. Reusing it with *different* inputs is a
-  `409`, not a silently different answer, even when a result for those inputs is cached. A
-  retry that arrives while its attempt is still pricing gets `"state": "running"`; it does not
-  price the attempt again.
-- **`reuseExistingResult`** (default `true`) controls whether a previously completed result
-  may be served. `false` means "don't serve me a cache" — it does not disable `submissionId`
-  idempotency.
-
-The response is a completed attempt. Against the `bill/v2` fixture above:
-
-```json
-{
-  "workloadKey": "sha256:0564833c09a8e927...",
-  "attemptId": "...",
-  "state": "completed",
-  "reused": false,
-  "result": {
-    "itemOrder": {"scheme": "traderx-item-v1", "itemCount": 2, "itemIds": ["389c658c...", "f453f240..."], "sha256": "5475633f..."},
-    "items": [
-      {
-        "itemId": "389c658c1cc130bc4acea7496b59bd82",
-        "sourceIdentity": {"kind": "position", "accountId": "22214", "security": "UST-BILL-20251202"},
-        "calculations": {
-          "npv": {
-            "status": "ok",
-            "value": 98507.14563826029,
-            "method": "discounted-cashflow",
-            "discountFactor": 0.9850714563826029,
-            "dayCount": "ACT/365 (Fixed)",
-            "curveProvenance": {"curveId": "flat-3pct-v1", "inputOrigin": "assumed", "construction": "flat-constant"}
-          }
-        }
-      }
-    ],
-    "coverage": {"byCalculation": {"npv": {"ok": 2, "unsupported": 0, "unavailable": 0, "failed": 0, "notApplicable": 0}}}
-  }
-}
-```
-
-Two things in there carry most of the contract. **Every calculation has a `status`**, so a
-number and a refusal are distinguishable per instrument per calculation rather than lumped
-into one job-level verdict — and `coverage` counts those statuses so a coordinator can assert
-a batch was complete without walking every item. **`curveProvenance` travels with the
-number**, so `"inputOrigin": "assumed"` is visible on the price itself rather than buried in
-a submission you would have to go back and find.
-
-Try the same call against `tests/fixtures/traderx-eod/bill/v1` to see the other half: it
-returns `200` with `npv` counted as `unsupported: 2` — a refusal, reported rather than raised.
-
-**Look a result up again**, either by its workload key (the content-addressed identity of the
-computation) or by attempt id:
-
-```bash
-curl http://127.0.0.1:8000/eod/results/by-workload/<workload_key>
-curl http://127.0.0.1:8000/eod/attempts/<attempt_id>
-```
-
-Both survive a restart, because terminal attempts are published to a durable store rather
-than held in memory — see
-[TraderX path: W0.8](../reference/traderx-path.md#w08--crash-safe-publication-and-the-durable-result-store)
-for the four-step protocol and where the store lives (`JAX_EOD_STORE_ROOT`, else a per-user
-directory under the system temp root).
-
-The published JSON Schemas for the result and capability documents are served alongside:
-
-```bash
-curl http://127.0.0.1:8000/eod/schemas/result
-curl http://127.0.0.1:8000/eod/schemas/capabilities
-```
 
 ## Pricing a portfolio from Python
 

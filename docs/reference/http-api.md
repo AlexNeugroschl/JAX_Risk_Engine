@@ -74,37 +74,25 @@ Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI (a 
 supplement to this doc, not a replacement for it — this page stays the authoritative
 narrative reference, matching every other doc in this repository).
 
-## Two contracts on one app
+## Routes
 
-This app serves **two independent contracts**, mounted as separate routers:
+The app serves one contract, the run request: every analytic of the engine, as
+Pydantic-wrapped engine dataclasses. **Every route on the app, so one page answers "what is
+served here?":**
 
-| Prefix | Contract | Shape |
-|---|---|---|
-| *(none)* | The run request — every analytic of the engine | Pydantic-wrapped engine dataclasses |
-| `/eod` | The [TraderX path](traderx-path.md) (W1.6.4) | Plain dicts governed by a **published JSON Schema** |
+| Route | Documented in |
+|---|---|
+| `GET /health` | below |
+| `GET /version` | below |
+| `GET /config/defaults` | below |
+| `POST /runs` | below |
+| `GET /runs/{run_id}` | below |
+| `POST /runs/{run_id}/cancel` | below |
+| `GET /runs/{run_id}/artifacts/{name}/{chunk}` | below |
 
-They share no state and speak deliberately different shapes. The EOD result is *not* wrapped
-in a Pydantic model, because its contract is the published schema — re-describing it here
-would create a second definition that can drift from the one consumers pin against. Keeping
-the routers separate keeps either free to change.
-
-**Every route on the app, so one page answers "what is served here?":**
-
-| Route | Contract | Documented in |
-|---|---|---|
-| `GET /health` | run request | below |
-| `GET /version` | run request | below |
-| `GET /config/defaults` | run request | below |
-| `POST /runs` | run request | below |
-| `GET /runs/{run_id}` | run request | below |
-| `POST /runs/{run_id}/cancel` | run request | below |
-| `GET /runs/{run_id}/artifacts/{name}/{chunk}` | run request | below |
-| `GET /eod/capabilities` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
-| `GET /eod/schemas/result` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
-| `GET /eod/schemas/capabilities` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
-| `POST /eod/price` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
-| `GET /eod/results/by-workload/{key}` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
-| `GET /eod/attempts/{attemptId}` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+**Removed on 2026-11-19:** the TraderX path's `/eod` routes (`/eod/price`, `/eod/capabilities`,
+`/eod/schemas/...`, `/eod/results/...`, `/eod/attempts/...`). TraderX submits through the run
+request, as every other caller does.
 
 **Removed on 2026-10-18**, there being no client (A-2's revision of 2026-10-07): `POST
 /portfolio/price`, `POST /portfolio/market-risk`, `POST /calibration/cam`, `POST
@@ -115,10 +103,8 @@ route is an analytic of the run request, each flag its `analytics` list, each ou
 analytic is ORE's. Before that, on 2026-10-07, the API removed `POST /v2/portfolio/price`,
 `schema_version: "2"` and `GET /portfolio/price/{job_id}`.
 
-**One behavioural difference worth knowing up front.** `POST /runs` is **asynchronous** (`202`
-+ a `run_id` to poll, because a 4096-scenario Monte Carlo measured ~52s — see below), while
-`POST /eod/price` is **synchronous**: the TraderX path is closed-form discounted cashflows over
-a handful of rows. A quick run (a calibration alone) needs one long poll (`?wait=`), not a sleep
+**One behaviour worth knowing up front.** `POST /runs` is **asynchronous** (`202`
++ a `run_id` to poll, because a 4096-scenario Monte Carlo measured ~52s — see below). A quick run (a calibration alone) needs one long poll (`?wait=`), not a sleep
 loop.
 
 ---
@@ -263,7 +249,7 @@ its first axis into chunks of whole rows of at most 8 MiB. To read it: fetch eac
 its `sha256`, concatenate in order, check the whole array's `sha256`, and reshape. The trade (or
 option) order travels as its own hashed record (`items`: the ids' canonical JSON,
 `json.dumps(ids, separators=(",", ":"))`), so a consumer can verify the order it read is the
-order published, as the EOD result's `itemOrder`. `engine.api.artifacts.read_array(reference,
+order published. `engine.api.artifacts.read_array(reference,
 fetch)` does all of it in Python; `demos/demo_api.py` does it with `hashlib` and `struct` alone.
 
 ## Why async, not sync: the measured latency
@@ -276,7 +262,7 @@ default framework choice:
 JAX JIT compilation (a one-time-per-shape cost that partially amortizes across repeated
 calls with the same array shapes, but the first call after process start — or any call with
 a new time-grid/scenario-count shape — pays it in full) plus the Monte Carlo simulation
-itself. A larger, TraderX-realistic portfolio (dozens of trades, more scenarios) will only
+itself. A larger, realistic portfolio (dozens of trades, more scenarios) will only
 be slower.
 
 A synchronous HTTP response held open for tens of seconds to minutes is fragile: client and
@@ -317,8 +303,7 @@ Since 2026-10-04 (decision A-14):
   `idempotency_key` the queue records the key and the SHA-256 of the body's canonical JSON
   (every default filled in, so a retry with its fields reordered or a default spelt out is the
   same body). The same key and body return the first `run_id` (`202`, nothing queued); the same
-  key with another body is a `409`, checked before anything is returned (the binding I-57 found
-  missing on the TraderX path). The key is unique in the file, so two API processes racing on
+  key with another body is a `409`, checked before anything is returned (I-57). The key is unique in the file, so two API processes racing on
   one key get one run.
 - **Retention** (I-76). Between runs, at most once a minute, the worker deletes the finished
   runs (done, failed, interrupted, cancelled) that finished more than `JAX_RISK_RETENTION_DAYS`
@@ -386,12 +371,6 @@ Since 2026-10-04 (decision A-14):
   (their supervisor restarts them), and the restarted process 0 runs the run again once, whole:
   claimed a second time and stopped again, it is `interrupted`. Process 0 alone purges finished
   runs.
-
-**The TraderX path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
-through a crash-safe filesystem store (`engine/traderx/publication.py`), so an EOD result
-survives a restart and stays addressable by `attemptId`; a *running* EOD attempt is still
-memory-only (I-08,
-[The TraderX Path](traderx-path.md#w164--the-eod-http-routes)).
 
 <a id="the-run-request-post-runs"></a>
 ## The run request: `POST /runs`

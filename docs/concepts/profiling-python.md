@@ -73,7 +73,7 @@ The default is a small representative run through the engine's two analytics ent
 | `market_risk` | Shock generation, 256 rate scenarios, all seven trades revalued, portfolio P&L, VaR and ES |
 
 This covers the computational engine on one configuration. HTTP transport, job queues,
-TraderX ingestion, startup/imports, initial input construction, alternative configurations,
+startup/imports, initial input construction, alternative configurations,
 and the optional reduced-precision paired sample are outside this capture. Pricing's
 schedule construction and Python orchestration inside the entry points are included.
 The market-risk calculation shocks rate pillars; its fixed-volatility and fixed-FX

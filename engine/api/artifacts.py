@@ -5,7 +5,7 @@ stores beside the result (`engine.api.job_queue`, `artifacts`) and
 `GET /runs/{run_id}/artifacts/{name}/{chunk}` serves.
 
 A reference says everything needed to rebuild and verify the array without reading the result
-again (the contract `docs/internal/planning/details/traderx-integration.md` settled for the TraderX path's cube):
+again (documented in `docs/reference/http-api.md`):
 
     {"name": "npv_cube", "dtype": "float64", "byte_order": "little",
      "shape": [S, D, N], "axes": ["scenario", "date", "trade"],
@@ -16,7 +16,7 @@ again (the contract `docs/internal/planning/details/traderx-integration.md` sett
 The array is C-ordered (the last axis fastest) and split along its first axis, whole rows per
 chunk, each chunk at most `CHUNK_BYTES`. The item order travels as its own hashed record, so a
 consumer can check that the trade order it read is the order published, not inferred from array
-position (as the TraderX result's `itemOrder`, `engine.traderx.identity.item_order_artifact`).
+position.
 
 No JAX: the API process and the tests read references with `read_array` as any client would.
 """

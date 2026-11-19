@@ -246,7 +246,7 @@ def compute_risk_metrics(
     diagnostic above, not dependence-aware ES uncertainty; market-risk runs replace it.
 
     The risk measure is not labelled here, because a cube does not say which measure
-    produced it; `RISK_MEASURE_*` and `engine.traderx.result` carry it (I-11).
+    produced it; `RISK_MEASURE_*` carries it (I-11).
     """
     pnl = portfolio_pnl(npv_cube, base_npv)
     metrics: Dict[str, jax.Array] = {}

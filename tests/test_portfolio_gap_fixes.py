@@ -1,6 +1,6 @@
 """
 Regression tests for gaps where `price_portfolio` returned a quietly incomplete result
-(found while writing the TraderX contract proposal; see docs/internal/planning/details/traderx-integration.md).
+(found while writing an integration contract proposal).
 Each class failed against the code it was written for; since 2026-10-01 they run on the one
 pipeline (a `Market`, any model).
 

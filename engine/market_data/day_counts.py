@@ -1,9 +1,7 @@
 """
 Day counts: the simulation's time axis, and the table of day counts a trade may accrue on.
 
-A leaf module that imports only `ORE`, so the TraderX path (`engine.traderx`), which may not
-import JAX or the pricing layers (I-05; tested by
-`tests/test_traderx_pipeline.py::TestPackageImportsNoSimulationPricer`), can use it.
+A leaf module that imports only `ORE`, so it can be used without JAX or the pricing layers.
 
 Actual/365Fixed plays two separate roles; they are named apart.
 

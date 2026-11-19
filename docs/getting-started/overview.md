@@ -84,12 +84,9 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   is described more in [Architecture](../concepts/architecture.md); exactly which products,
   analytics and settings are compared with ORE, and why the rest are not, is the
   [parity matrix](../reference/ore-parity.md#the-parity-matrix).
-- **A live API, now built.** The engine is exposed as a web API that another system
-  ("TraderX") can call, rather than only running as an overnight batch script. Two separate
-  contracts are served: a general portfolio-pricing one, and a stricter end-of-day one for
-  TraderX's hash-verified overnight bundles. See [HTTP API](../reference/http-api.md) and
-  [The TraderX Path](../reference/traderx-path.md). What remains planned is *coverage* —
-  the range of instruments the end-of-day path can price without refusing.
+- **A live API, now built.** The engine is exposed as a web API that other systems can call,
+  rather than only running as an overnight batch script: one run request for every analytic.
+  See [HTTP API](../reference/http-api.md).
 
 ## What's actually built right now
 
@@ -105,14 +102,7 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
 | Calibration | Fits the model's volatility to real market swaption quotes | ✅ Working |
 | Portfolio entry point | Prices a whole mixed portfolio in one call | ✅ Working |
 | Live API | A running web service other systems can call over HTTP | ✅ Working |
-| TraderX end-of-day integration | Accepts TraderX's overnight book snapshot, prices Treasuries, and **explicitly refuses** everything it cannot price faithfully | ⚠️ Partial |
 | XVA (valuation adjustments) | Not yet built | 🔜 Planned |
-
-**On that "explicitly refuses".** The end-of-day boundary is built around one rule: it never
-guesses. If it cannot price something faithfully — a USD-SOFR swap, a cash equity, a corporate
-bond — it returns a *named refusal* saying exactly what it would need, rather than a
-confident-looking number that happens to be wrong. See
-[The TraderX Path](../reference/traderx-path.md).
 
 ## Where to go next
 

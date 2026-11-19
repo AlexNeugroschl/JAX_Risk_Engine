@@ -149,13 +149,9 @@ The trades' legs as arrays, valued on any date and path, are `engine/pricing/leg
 and re-exported from this module, so every existing import and all 27 of
 `tests/test_day_count_roles.py` are unchanged.
 
-**Why they moved.** W1.3's note pricer
-([`engine/traderx/note.py`](../../engine/traderx/note.py)) needs ACT/ACT (ICMA), but
-`engine/traderx/` is **forbidden** to import `engine.models` — this module is where
-`build_vanilla_swap` lives, the exact object the TraderX path's convention refusal exists to
-keep unreachable (I-05). Importing it just to borrow a dictionary
-would put that builder one attribute access from the refusal boundary. The dictionary moved to
-a leaf module that imports only `ORE` and can therefore pull nothing in behind it.
+**Why they live there.** The Treasury note's accrual needs ACT/ACT (ICMA), and borrowing a
+dictionary should not import the swap builder or JAX with it. The dictionary lives in a leaf
+module that imports only `ORE` and can therefore pull nothing in behind it.
 
 **`TIME_AXIS_DAY_COUNTER` deliberately did *not* move.** It is a property of this engine's
 simulated curve cube, not of any contract, so keeping the two roles in separate modules makes
@@ -169,7 +165,7 @@ count per-instrument" look like a one-line change when it is not:
 | Role | Constant | Configurable? |
 |---|---|---|
 | **Time axis** — dates → year-fractions for the curves, the model, the simulation dates and every cashflow | `TIME_AXIS_DAY_COUNTER` | **No, permanently ACT/365.** The model's time, the scenario market's tenor times and every pricer's cashflow times must be measured alike (ORE's model day counter); changing one silently desynchronizes the others — no error, just wrong discount factors. |
-| **Instrument accrual** — the day count a contract's coupons accrue on | `accrual_day_count` | **Yes, per-instrument.** A property of the booking, not the engine: the TraderX note is ACT/ACT (ICMA), a USD-SOFR swap is ACT/360. |
+| **Instrument accrual** — the day count a contract's coupons accrue on | `accrual_day_count` | **Yes, per-instrument.** A property of the booking, not the engine: a Treasury note is ACT/ACT (ICMA), a USD-SOFR swap is ACT/360. |
 
 Tracing every use: **49 are the time axis, 2 are the accrual**
 ([`schedules.py:173-174`](../../engine/instruments/schedules.py#L173-L174)'s

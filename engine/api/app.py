@@ -15,7 +15,6 @@ import jax
 from fastapi import FastAPI
 
 from engine.api.routes import router, shutdown_worker
-from engine.api.traderx_routes import router as traderx_router
 from engine.run import engine_identity
 
 
@@ -59,9 +58,6 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(router)
-    # The TraderX path, under `/eod`. A separate router: it has a different
-    # contract (a JSON-Schema-published result document) and shares no state.
-    app.include_router(traderx_router)
     return app
 
 

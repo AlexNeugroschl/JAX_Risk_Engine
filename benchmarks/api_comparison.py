@@ -70,11 +70,7 @@ def request_body(campaign, paths, seed, label, output):
         body["trade_type"] = trade.product
         trades.append(body)
     market = wire(campaign.market)
-    for currency in market["currencies"].values():
-        # TraderX provenance is not a field of the public curve-input schema.
-        for curve in [currency["discount_curve"], *currency["index_curves"].values()]:
-            curve.pop("provenance", None)
-    body = {"market": market, "portfolio": trades, "analytics": ["market_risk"],
+    body ={"market": market, "portfolio": trades, "analytics": ["market_risk"],
             "config": {"pricing": wire(campaign.pricing),
                        "precision": PrecisionSchema.from_dataclass(precision).model_dump(mode="json"),
                        "market_risk": {"quantiles": list(campaign.quantiles), "scenarios": {

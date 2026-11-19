@@ -96,9 +96,7 @@ JAX_Risk_Engine/
 │   │   │                                 extrapolation) and DiscountCurve (log-linear,
 │   │   │                                 batched): the curve primitives
 │   │   └── day_counts.py                 The time axis (ACT/365) and the accrual day counts.
-│   │                                     A leaf importing only ORE, so the TraderX path,
-│   │                                     which may not import JAX or the models (I-05),
-│   │                                     can use it
+│   │                                     A leaf importing only ORE
 │   ├── models/
 │   │   ├── lgm.py                        LGM closed forms (piecewise-constant Sigma) in
 │   │   │                                 both parametrizations: H, zeta, Hull-White zeta
@@ -113,11 +111,6 @@ JAX_Risk_Engine/
 │   │   ├── swap.py, european_swaption.py,
 │   │   │   bermudan_swaption.py,
 │   │   │   american_swaption.py, treasury.py
-│   ├── traderx/                          The TraderX path -- hash-verified bundle in,
-│   │                                     identified result out: both Treasury shapes price,
-│   │                                     everything else is REFUSED. Imports no simulation
-│   │                                     pricer, no FastAPI, no Pydantic, no JAX
-│   │                                     (one module per W-task; see traderx-path.md)
 │   ├── calibration/
 │   │   ├── lgm.py                        ORE's LgmBuilder: SwaptionHelper baskets and the
 │   │   │                                 bootstrap, batched over curves; every LGM
@@ -205,9 +198,7 @@ JAX_Risk_Engine/
 │       │                                 hook and its trace summary (profiling.md)
 │       ├── hosts.py                      A pod slice's worker set: process 0 shares each
 │       │                                 job, cancel and outcome with every host (I-61)
-│       ├── supervisor.py                 Starts and restarts the worker from the API
-│       └── traderx_routes.py             /eod/* -- the TraderX path's contract. Plain
-│                                         dicts under a published JSON Schema, NOT Pydantic
+│       └── supervisor.py                 Starts and restarts the worker from the API
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
     ├── support/                          Shared helpers: the shared portfolio and its ORE
@@ -236,13 +227,7 @@ JAX_Risk_Engine/
     ├── test_api*.py, test_engine_worker.py, test_profiling_and_jit.py
     ├── test_import_layering.py           No package imports a layer above it; no demo
     │                                     or test code in engine/ (I-65)
-    ├── test_demos.py, test_demo_scenarios.py
-    ├── test_traderx_*.py             engine/traderx/, one file per task, run
-    │                                     against the delivered TraderX fixtures
-    └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr/equity,
-                                          each v1+v2), hash-pinned. LF bytes committed and
-                                          held that way by .gitattributes -- CRLF translation
-                                          breaks every hash (see traderx-path.md)
+    └── test_demos.py, test_demo_scenarios.py
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as

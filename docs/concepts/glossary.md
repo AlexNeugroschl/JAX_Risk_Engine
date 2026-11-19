@@ -6,8 +6,7 @@ skim for the terms you don't recognize.
 
 **Accrued interest** — Interest a bond has earned but not yet paid out, because the next
 coupon date hasn't arrived. A buyer pays it on top of the quoted price, which is why a
-bond has two prices — see **clean price / dirty price**. See
-[The TraderX Path](../reference/traderx-path.md).
+bond has two prices — see **clean price / dirty price**.
 
 **At-par (coupon pricing)** — A convention for pricing a floating-rate payment using a
 single forward interest rate covering its whole accrual period, rather than
@@ -193,11 +192,10 @@ specially constructed, evenly-spread sequences of numbers (like a **Sobol sequen
 instead of ordinary randomness, so that fewer simulated scenarios are needed to get a
 stable answer.
 
-**Refusal (`unsupported`)** — This project's central design rule at the TraderX boundary:
-when it cannot price something faithfully, it returns an explicit, named refusal saying
-what it would need, rather than a plausible-looking number. An explicit refusal is
-recoverable; a confidently wrong number is not. See
-[The TraderX Path](../reference/traderx-path.md).
+**Refusal** — This project's central design rule: when it cannot price something
+faithfully, it returns an explicit, named refusal saying what it would need, rather than a
+plausible-looking number. An explicit refusal is recoverable; a confidently wrong number is
+not.
 
 **Scenario** — One simulated "alternate future" — one complete, self-consistent
 simulated path for every rate/price being modeled, from today out to the simulation's
@@ -218,12 +216,6 @@ exercising will turn out to be favorable, not just on expected future cashflows.
 variants, which allow exercise on multiple dates rather than just one, also exist — see
 [Instruments: American/Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
 
-**TraderX** — An external trading system this engine serves, rather than only running as
-an offline script. Two integrations exist: the general portfolio API
-([HTTP API](../reference/http-api.md)), and the stricter **end-of-day (EOD)** contract,
-which accepts a hash-pinned overnight snapshot of TraderX's book and returns an identified
-result per position ([The TraderX Path](../reference/traderx-path.md)).
-
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
 loss such that we expect to lose *more* than that only X% of the time?" E.g. 95% VaR of
 $1M means: in 95% of simulated outcomes, the loss is under $1M; in the worst 5%, it's at
@@ -237,12 +229,6 @@ requirement throughout this codebase's JIT-compiled code.
 **Volatility** — How much a price or rate tends to fluctuate randomly; a higher
 volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in
 formulas.
-
-**Workload key** — On the TraderX path, a hash over *everything that can change a number*
-(bundle identity, market inputs, requested calculations, mapping/engine/schema versions,
-precision). Two submissions with the same key are the same computation, so a retry can
-return the stored result instead of recomputing it. Deliberately excludes the
-`submissionId`, which identifies a *request* rather than a computation.
 
 **Yield curve** — A full set of interest rates (or, equivalently, discount factors)
 across every future maturity date, as observed (or, in this project, simulated) at one

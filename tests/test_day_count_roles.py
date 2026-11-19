@@ -4,7 +4,7 @@ Day count as a per-instrument input. `Actual365Fixed` plays two roles:
 | Role | Must it stay ACT/365? |
 |---|---|
 | Simulation time axis: dates -> year fractions indexing the curve cube | Yes; changing it would silently misalign every pricer. |
-| Instrument accrual: the contract's coupon day count | No; per instrument (ACT/ACT (ICMA) for the TraderX note). |
+| Instrument accrual: the contract's coupon day count | No; per instrument (ACT/ACT (ICMA) for a Treasury note). |
 
 `TestOnlyTheAccrualRoleIsConfigurable` pins that the time axis is untouched while accrual is
 configurable. Also: defaults unchanged, ACT/ACT (ICMA) supported, unsupported day counts
@@ -125,7 +125,7 @@ class TestOnlyTheAccrualRoleIsConfigurable:
 
 
 class TestActActIcmaIsSupported:
-    """ACT/ACT (ICMA), required by the TraderX note's terms."""
+    """ACT/ACT (ICMA), a Treasury note's coupon day count."""
 
     def test_act_act_icma_resolves(self):
         assert "ACT/ACT (ICMA)" in SUPPORTED_ACCRUAL_DAY_COUNTS

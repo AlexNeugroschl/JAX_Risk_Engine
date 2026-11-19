@@ -7,5 +7,5 @@
                    may name
 
 Nothing is imported here, so `engine.market_data.day_counts` (ORE only) can be imported
-without JAX: the TraderX path depends on it (I-05).
+without JAX.
 """

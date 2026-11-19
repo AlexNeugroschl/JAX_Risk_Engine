@@ -20,7 +20,7 @@ ENGINE = pathlib.Path(__file__).resolve().parents[1] / "engine"
 LAYERS = (
     ("precision", "solvers"),           # JAX and NumPy only: every layer may use them
     ("market_data",),                   # today's market, curves, day counts
-    ("models", "instruments", "traderx"),
+    ("models", "instruments"),
     ("calibration",),
     ("market_simulation",),
     ("pricing",),

@@ -60,8 +60,6 @@ The project exists to answer two questions:
 **Running it**
 - One request for every analytic over an HTTP API, with a background job queue, cancellation
   and chunked result download
-- Integration with [TraderX](https://github.com/finos/traderX), the FINOS reference trading
-  platform, which submits end-of-day portfolio bundles
 
 ## Validation against ORE
 
@@ -168,7 +166,6 @@ engine/
   precision/          precision policies and low-precision storage
   run/                the run request: the single entry point for every analytic
   api/                the HTTP server and engine worker
-  traderx/            TraderX end-of-day bundle support
 ```
 
 ## Documentation

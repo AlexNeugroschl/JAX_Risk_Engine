@@ -6,9 +6,6 @@ cashflow on its currency's discount curve, today and on every simulated path
 (`engine.pricing.cube.bond_legs`): ORE's `DiscountingRiskyBondEngine` with no credit
 curve and no security spread, which is how a Treasury without credit is set up (plan V-9).
 NPV is dirty. The coupon schedule is supplied, not generated.
-
-The TraderX path prices TraderX's bills and notes with its own pricers
-(`engine.traderx.bill`, `engine.traderx.note`).
 """
 from dataclasses import dataclass, field
 from typing import ClassVar, Optional, Sequence, Tuple
@@ -113,8 +110,7 @@ class BondConfig:
 
 
 def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> None:
-    """Structure and contiguity of an explicit coupon schedule, as
-    `engine.traderx.note._parse_schedule` checks it. Gaps and overlaps are refused."""
+    """Structure and contiguity of an explicit coupon schedule. Gaps and overlaps are refused."""
     for i, period in enumerate(schedule):
         if period.end_date <= period.start_date:
             raise BondPricingError(
@@ -150,9 +146,8 @@ def accrued_interest(cfg: BondConfig) -> float:
     """Accrued interest in currency (position-signed) from the coupon schedule; 0 for a
     bill or before the first period.
 
-    This is the recomputed-schedule figure only. The integration boundary also reconciles
-    against the exporter's published accrued fraction (`engine.traderx.note`); a
-    direct caller has no exporter to reconcile against.
+    This is the recomputed-schedule figure: it is not reconciled against any published accrued
+    fraction.
     """
     if not cfg.coupon_schedule:
         return 0.0
